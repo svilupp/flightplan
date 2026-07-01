@@ -141,3 +141,21 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# --- Flightplan ---
+
+# OS cruft
+.DS_Store
+
+# Run output directories (artifacts, traces, screenshots, video)
+.flightplan-runs/
+out/
+
+# Throwaway exploration scripts (own sub-package)
+spikes/
+
+# NOTE: lock files are intentionally TRACKED — do NOT ignore them.
+# - bun.lock (dependency lockfile) is committed for reproducible installs.
+# - flightplan per-flow *.lock files (learned selector recipes) are a
+#   committed source artifact and MUST be version-controlled.
+# (.env above stays ignored because it holds API-key secrets.)

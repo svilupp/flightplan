@@ -1,0 +1,66 @@
+# Flightplan example flow — the /overlays fixture (target tier: L1 + auto-repair "covered").
+#
+# The real CTA (data-testid="overlays-cta", "Place order") loads UNDER a full-viewport cookie
+# consent overlay (data-testid="cookie-overlay"). The happy path clicks "Accept cookies" to
+# dismiss the overlay, then clicks the now-uncovered CTA. (If the CTA were clicked while still
+# covered, browser-pilot would report failureReason="covered" + coveringElement and Flightplan's
+# auto-repair would dismiss-then-retry with no model — the same end-state.) Resolution stays
+# deterministic (L1); the asserts confirm the overlay is gone and the order landed.
+#
+# Fixture contract: ../fixtures/README.md §04.
+
+version = 1
+kind = "flow"
+id = "examples.overlays"
+description = "Dismiss the cookie overlay and place an order on the overlays fixture"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[run]
+max_steps = 20
+assertions = "eager"
+assert_timeout_ms = 5000
+
+[[steps]]
+id = "open_overlays"
+do = "goto"
+url = "${inputs.base_url}/overlays"
+
+# The cookie overlay covers the CTA on load — its heading is in the page until dismissed.
+[[steps.assert]]
+type = "visible"
+text = "We use cookies"
+
+[[steps]]
+id = "dismiss_cookie_banner"
+do = "click"
+target = "the Accept cookies button in the cookie consent banner"
+hints = ["Accept cookies", "[data-testid='cookie-accept']"]
+intent = "accept cookies to dismiss the consent overlay"
+
+# dismissOverlay() removes the whole overlay subtree, so its heading is no longer present —
+# this is the "cookie-overlay hidden/removed" end-state from the contract.
+[[steps.assert]]
+type = "hidden"
+text = "We use cookies"
+timeout_ms = 4000
+
+[[steps]]
+id = "place_order"
+do = "click"
+target = "the Place order call to action"
+hints = ["Place order", "[data-testid='overlays-cta']"]
+intent = "place the order using the primary call to action"
+
+# placeOrder() appends data-testid="result" with text "Order placed". Page-text assertions are the
+# reliable oracle on the v0.0.18 AX snapshot (node names + page text, not raw data-testid selectors).
+[[steps.assert]]
+type = "visible"
+text = "Order placed"
+timeout_ms = 4000
+
+[[steps.assert]]
+type = "text"
+text = "Order placed"
+timeout_ms = 4000

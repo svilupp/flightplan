@@ -1,0 +1,55 @@
+{
+  "runId": "l2-escalate",
+  "flowId": "examples.l2-escalate",
+  "verdict": "passed",
+  "totalSteps": 2,
+  "tieredSteps": 1,
+  "histogram": {
+    "L0": 0,
+    "L1": 0,
+    "L2": 1,
+    "L3": 0,
+    "L4": 0,
+    "total": 1
+  },
+  "l0HitRate": 0,
+  "l1HitRate": 0,
+  "deterministicShare": 0,
+  "escalationRate": 1,
+  "l2Rate": 1,
+  "l3Rate": 0,
+  "l4Rate": 0,
+  "costUsd": 0.00000648,
+  "perRoleCost": {
+    "resolver": {
+      "calls": 1,
+      "cost_usd": 0.00000648
+    }
+  },
+  "driftCount": 0,
+  "healedSteps": [],
+  "driftHealSuccess": false,
+  "stepLatency": {
+    "p50": 850,
+    "p95": 1500,
+    "count": 2
+  },
+  "perTierLatency": {
+    "L0": {
+      "p50": 0,
+      "p95": 0,
+      "count": 1
+    },
+    "L1": {
+      "p50": 25,
+      "p95": 25,
+      "count": 1
+    },
+    "L2": {
+      "p50": 820,
+      "p95": 820,
+      "count": 1
+    }
+  },
+  "falsePositiveSteps": []
+}

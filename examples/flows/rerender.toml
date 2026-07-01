@@ -1,0 +1,65 @@
+# Flightplan example flow — the /rerender fixture (target tier: L1 + stale-ref re-resolve).
+#
+# Clicking "Refresh widget" fully REPLACES the #widget-host subtree 600ms later, invalidating any
+# cached ref:eN. The "Confirm" button exists ONLY in the re-rendered tree, so acting on it forces
+# L1 to take a FRESH snapshot and re-resolve against the new node — exactly the stale-ref path.
+# A `wait` step bridges the 600ms replacement before the second click. Resolution stays
+# deterministic (L1); the end-state assertion confirms the replacement happened.
+#
+# Fixture contract: ../fixtures/README.md §03. Lints clean; runnable against the fixture server
+# on http://localhost:3000 (Mode B headless Chrome).
+
+version = 1
+kind = "flow"
+id = "examples.rerender"
+description = "Refresh the widget, then confirm on the re-rendered (fresh-ref) node"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[run]
+max_steps = 20
+assertions = "eager"
+assert_timeout_ms = 5000
+
+[[steps]]
+id = "open_rerender"
+do = "goto"
+url = "${inputs.base_url}/rerender"
+
+# Page-text assertions: the v0.0.18 AX snapshot surfaces node names + page text (not raw
+# data-testid selectors), so the generation marker is asserted against the whole-page text.
+[[steps.assert]]
+type = "text"
+text = "generation: 1"
+
+[[steps]]
+id = "refresh_widget"
+do = "click"
+target = "the Refresh widget button"
+hints = ["Refresh widget", "[data-testid='rerender-trigger']"]
+intent = "refresh the widget so its subtree is re-rendered"
+
+# Bridge the fixed 600ms node-replacement delay before acting on the fresh subtree.
+[[steps]]
+id = "await_rerender"
+do = "wait"
+ms = 900
+
+# Proves the replacement happened: generation flips to 2 in the brand-new subtree.
+[[steps.assert]]
+type = "text"
+text = "generation: 2"
+timeout_ms = 4000
+
+[[steps]]
+id = "confirm_action"
+do = "click"
+target = "the Confirm button in the refreshed widget"
+hints = ["Confirm", "[data-testid='rerender-action']"]
+intent = "confirm the action on the re-rendered widget"
+
+[[steps.assert]]
+type = "text"
+text = "Re-rendered action confirmed"
+timeout_ms = 4000

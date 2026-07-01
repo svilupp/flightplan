@@ -1,0 +1,36 @@
+version = 1
+source = "examples/flows/drift.toml"
+source_hash = "sha256:562efcb5ade7b597c4a25c3437df567ae45ba10300e6757469ca0a2e99190186"
+description = "Create an order on the drift fixture and assert the deterministic result"
+
+[[targets]]
+step = "create_order"
+target = "the primary create-order call to action"
+strategy = "testid"
+selector = "[data-testid='create-order']"
+green_runs = 1
+last_seen = "2026-07-01T14:07:03.833Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/drift*"
+sig = "text:http://localhost:3000/drift?variant=a|-ca21t1;struct:/drift|179ujlf"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Create order\"]"
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Create order\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Create order\""
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Create order|"
+
+[[targets.candidates]]
+strategy = "testid"
+selector = "[data-testid=\"create-order\"]"

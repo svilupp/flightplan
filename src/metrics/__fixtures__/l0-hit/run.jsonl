@@ -1,0 +1,9 @@
+{"type":"run_start","ts":1700000000000,"runId":"l0-hit","flowId":"examples.l0-hit","inputs":{},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700000000100,"stepId":"s_open","do":"goto"}
+{"type":"assertion_result","ts":1700000001600,"stepId":"s_open","assertType":"visible","pass":true,"message":"\"text:Dashboard\" is visible","durationMs":3}
+{"type":"step_end","ts":1700000001600,"stepId":"s_open","ok":true,"healed":false,"durationMs":1500}
+{"type":"step_start","ts":1700000001600,"stepId":"s_click","do":"click","intent":"open the settings panel"}
+{"type":"step_end","ts":1700000001640,"stepId":"s_click","ok":true,"healed":false,"durationMs":40,"tier":"L0"}
+{"type":"step_start","ts":1700000001640,"stepId":"s_fill","do":"fill","intent":"type the new display name"}
+{"type":"step_end","ts":1700000001670,"stepId":"s_fill","ok":true,"healed":false,"durationMs":30,"tier":"L0"}
+{"type":"run_end","ts":1700000001700,"verdict":"passed","totals":{"steps_run":3,"drift_count":0,"total_cost_usd":0,"model_usage":[]}}

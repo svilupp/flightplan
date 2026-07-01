@@ -1,0 +1,79 @@
+# Flightplan example flow — the /wizard fixture (target tier: L0/L1).
+#
+# Multi-step form wizard with clean targets at every tier. Exercises a deterministic
+# happy-path resolve + assertion polling. Lints clean and is reused by Phase 2 to execute
+# against the fixture server on http://localhost:3000.
+#
+# Fixture contract: ../fixtures/README.md §01.
+
+version = 1
+kind = "flow"
+id = "examples.wizard"
+description = "Complete the multi-step wizard and assert the welcome result"
+
+[inputs]
+base_url = "http://localhost:3000"
+full_name = "Jane Doe"
+plan = "pro"
+
+[run]
+max_steps = 20
+assertions = "eager"
+assert_timeout_ms = 5000
+
+[[steps]]
+id = "open_wizard"
+do = "goto"
+url = "${inputs.base_url}/wizard"
+
+[[steps.assert]]
+type = "visible"
+text = "Full name"
+
+[[steps]]
+id = "enter_name"
+do = "fill"
+target = "the full name field"
+hints = ["Full name", "[data-testid='wizard-name']"]
+intent = "type the applicant's full name into the name field"
+value = "${inputs.full_name}"
+
+[[steps]]
+id = "advance_to_plan"
+do = "click"
+target = "the Next button"
+hints = ["Next", "[data-testid='wizard-next-1']"]
+# Intent is the fuzzy-match query (PLAN §7) — it must point squarely at the "Next" button, so
+# we keep it button-name-centric. (A wordy intent mentioning "plan" would mis-rank the Plan
+# dropdown over Next on the v0.0.18 AX snapshot.)
+intent = "click the Next button"
+
+[[steps]]
+id = "choose_plan"
+do = "select"
+target = "the plan dropdown"
+hints = ["Plan", "[data-testid='wizard-plan']"]
+intent = "choose the subscription plan"
+value = "${inputs.plan}"
+
+[[steps]]
+id = "advance_to_review"
+do = "click"
+target = "the Next button"
+hints = ["Next", "[data-testid='wizard-next-2']"]
+intent = "click the Next button"
+
+[[steps]]
+id = "submit_wizard"
+do = "click"
+target = "the Submit button"
+hints = ["Submit", "[data-testid='wizard-submit']"]
+intent = "click the Submit button"
+
+# The result text is surfaced in the page's accessibility text after submit. Assert against the
+# whole-page text (no selector) — the v0.0.18 AX snapshot exposes node names + page text, not
+# raw data-testid selectors, so page-text assertions are the reliable end-state oracle here.
+[[steps.assert]]
+type = "text"
+text = "Welcome, ${inputs.full_name}! Plan: ${inputs.plan}."
+timeout_ms = 4000

@@ -1,0 +1,476 @@
+// Flightplan — the Driver interface + supporting types.
+//
+// This module defines the ONE boundary between Flightplan and browser-pilot. The rest of
+// the codebase programs against the `Driver` INTERFACE only; it never imports browser-pilot
+// directly. If browser-pilot changes, only `src/driver/*` changes.
+//
+// Canonical references: PLAN.md §3 (driver lifecycle table, connect-config discriminated
+// union, wrapped method surface, gotchas-as-defaults) and §4 (the `Strategy` mapping table).
+// Source of truth for the browser-pilot API surface:
+// docs/research/FINDINGS_browser-pilot.md and browser-pilot's etc/browser-pilot.api.md.
+//
+// ---------------------------------------------------------------------------------------
+// Re-export policy
+// ---------------------------------------------------------------------------------------
+// browser-pilot's exported types are re-exported HERE (and again from `./index.ts`) so the
+// rest of Flightplan imports browser-pilot shapes ONLY through the driver. The two
+// exceptions are `FailureReason` and `FailureHint`: both are referenced by `StepResult`
+// but are *not* exported from the browser-pilot package root (they are
+// `ae-forgotten-export`s — see browser-pilot/etc/browser-pilot.api.md:1237 and :530). We
+// therefore re-declare `FailureReason` locally as the documented literal union
+// (FINDINGS_browser-pilot §6) and expose the failure-hint shape structurally. This is the
+// single justified place where the browser-pilot type surface is reconstructed rather than
+// imported (see the report / `any`-cast notes). No `any` is used to do it.
+
+import type {
+  BatchOptions as BpBatchOptions,
+  BatchResult as BpBatchResult,
+  CandidateStrategy as BpCandidateStrategy,
+  InteractiveElement as BpInteractiveElement,
+  PageSnapshot as BpPageSnapshot,
+  RankedCandidate as BpRankedCandidate,
+  SnapshotNode as BpSnapshotNode,
+  Step as BpStep,
+  StepResult as BpStepResult,
+} from "browser-pilot";
+import type { ConnectConfig } from "../config/types.ts";
+import type { Strategy } from "../types.ts";
+
+// ---------------------------------------------------------------------------
+// Re-exported browser-pilot types (the public boundary surface)
+// ---------------------------------------------------------------------------
+
+/**
+ * browser-pilot's accessibility snapshot. `interactiveElements` is what L1/the fuzzy
+ * matcher reads (each carries `ref` + `role` + accessible `name`, plus optional
+ * `disabled`/`checked`/`value`). The `selector` field on each element is a SYNTHETIC
+ * `[data-backend-node-id="N"]` — NOT a usable DOM selector; resolve by `ref:eN` within a
+ * cycle, never persist it (PLAN.md §3 gotchas / FINDINGS §3).
+ */
+export type PageSnapshot = BpPageSnapshot;
+
+/**
+ * A single interactive element from a snapshot. Exposes role + accessible name (+ optional
+ * `disabled`/`checked`/`value`). As of browser-pilot 0.1.0 (Phase 7 Change 3a) it also carries
+ * an opt-in `attributes?: Record<string,string>` of real DOM attributes
+ * (`data-testid`/`data-test`/`data-qa`/`id`/`class`/`name`/`type`) — populated ONLY when the
+ * snapshot was taken with `attributes: true` (see `SnapshotOpts`). The field rides in via the
+ * re-exported browser-pilot shape, so no separate declaration is needed.
+ */
+export type InteractiveElement = BpInteractiveElement;
+
+/** A node in the accessibility tree (role always present; hierarchy; disabled/checked). */
+export type SnapshotNode = BpSnapshotNode;
+
+/**
+ * A browser-pilot batch step (the union of all action fields keyed by `action`). Exported as
+ * `BatchStep` — NOT `Step` — to avoid colliding with Flightplan's flow-level `Step`
+ * (`src/flow/types.ts`), which is an entirely different concept (a flow verb). The ladder
+ * builds `BatchStep[]` from flow Steps to drive `Driver.batch`.
+ */
+export type BatchStep = BpStep;
+
+/** The result of `batch()` — `{ steps: StepResult[], success, totalDurationMs, ... }`. */
+export type BatchResult = BpBatchResult;
+
+/** Options for `batch()` (`onFail`, `record`, `timeout`). */
+export type BatchOptions = BpBatchOptions;
+
+/**
+ * The per-step outcome from a batch. The fields the escalation ladder cares about:
+ *  - `selectorUsed?: string` — which selector in the ordered array actually resolved (L1
+ *    reads this to learn the winning strategy; feed it to `selectorUsedToStrategy`).
+ *  - `failureReason?: FailureReason` — structured failure category (cheap escalation signal:
+ *    `covered` → dismiss-overlay repair, `disabled` → wait/retry, `missing` → re-resolve).
+ *  - `coveringElement?: { tag; id?; className? }` — the element blocking a `covered` click.
+ *  - `failedSelectors?` — only meaningful on total failure; usually undefined on success.
+ *  - `outcomeStatus?` / `retrySafe?` / `matchedConditions?` — outcome-condition evaluation.
+ *  - `screenshotPath?` — ONLY populated when `batch(steps, { record })` is configured;
+ *    `page.screenshot()` otherwise returns base64 in-memory (FINDINGS §7).
+ */
+export type StepResult = BpStepResult;
+
+/**
+ * The structured failure category on `StepResult.failureReason`. browser-pilot does NOT
+ * export the `FailureReason` symbol from its package root (it is an `ae-forgotten-export`,
+ * see browser-pilot/etc/browser-pilot.api.md:1237), so this is re-declared from the
+ * documented set in FINDINGS_browser-pilot §6. It is kept structurally compatible with
+ * `NonNullable<StepResult['failureReason']>` via the compile-time assertion below.
+ */
+export type FailureReason =
+  | "missing"
+  | "hidden"
+  | "covered"
+  | "disabled"
+  | "readonly"
+  | "detached"
+  | "replaced"
+  | "notEditable"
+  | "timeout"
+  | "navigation"
+  | "cdpError"
+  | "unknown";
+
+// Compile-time guard: our re-declared FailureReason must remain assignable to whatever
+// browser-pilot actually types `StepResult.failureReason` as. If browser-pilot widens or
+// renames the union, this line fails typecheck and forces us to update the boundary.
+type _FailureReasonIsCompatible = FailureReason extends NonNullable<
+  BpStepResult["failureReason"]
+>
+  ? true
+  : never;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _failureReasonCheck: _FailureReasonIsCompatible = true;
+
+/** The covering-element shape on `StepResult.coveringElement` (a `covered` failure). */
+export type CoveringElement = NonNullable<BpStepResult["coveringElement"]>;
+
+// ---------------------------------------------------------------------------
+// Connect config (re-exported from the config module — the single source of truth)
+// ---------------------------------------------------------------------------
+
+/**
+ * The driver connect config — the discriminated union from PLAN.md §3, owned by the config
+ * module (`src/config/schema.ts` `ConnectConfigSchema`). The driver re-exports it so callers
+ * can `import { ConnectConfig } from '.../driver'` without reaching into config internals.
+ *
+ *   Mode A (attach): { mode:'attach', wsUrl?, browserURL?, autodiscover?, targetUrl?, sessionName? }
+ *   Mode B (launch): { mode:'launch', headless?, channel?, userDataDir?, chromeFlags? }
+ *
+ * No mismatch with PLAN.md §3 was found — the config module's shape matches the plan
+ * verbatim, so the driver reuses it directly (no adaptation needed).
+ */
+export type { ConnectConfig } from "../config/types.ts";
+export type { ConnectAttachConfig, ConnectLaunchConfig } from "../config/types.ts";
+
+// ---------------------------------------------------------------------------
+// Driver-local option shapes
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for `Driver.snapshot()`.
+ *  - `roles` — pass-through to browser-pilot's `SnapshotOptions.roles` (filter the AX tree
+ *    to specific roles).
+ *  - `attributes` — REAL as of browser-pilot 0.1.0 (Phase 7 Change 3a). When set, the driver
+ *    passes `{ attributes: true }` to bp's `snapshot()`, so each `interactiveElements[]` gains
+ *    an `attributes?: Record<string,string>` of real DOM attributes
+ *    (`data-testid`/`data-test`/`data-qa`/`id`/`class`/`name`/`type`). Omitted/false keeps the
+ *    lean default snapshot (no attribute enrichment) — behaviour identical to before the bump.
+ */
+export interface SnapshotOpts {
+  roles?: string[];
+  /** Opt-in DOM-attribute enrichment (Phase 7 Change 3a). Default off. */
+  attributes?: boolean;
+}
+
+/**
+ * Options common to single navigating actions. browser-pilot's `ActionOptions` (the type
+ * `click`/`fill`/etc. actually accept) carries ONLY `optional?` and `timeout?` — it has NO
+ * `waitForNavigation` field. The driver still exposes `waitForNavigation` here because the
+ * wrapper forces navigation settling by routing navigating single-actions through a one-step
+ * `batch` whose `Step.waitForNavigation` IS honoured (PLAN.md §3 DRIVER DEFAULT; FINDINGS §5).
+ *  - `waitForNavigation` — default `true` for navigating actions (NOT browser-pilot's
+ *    `'auto'`), to avoid spurious `ambiguous` outcomes. Set `false`/`'auto'` to override.
+ *  - `timeout` — pass-through.
+ *  - `optional` — pass-through (a missing element returns `false` instead of throwing).
+ */
+export interface ActionOpts {
+  waitForNavigation?: boolean | "auto";
+  timeout?: number;
+  optional?: boolean;
+}
+
+/** `fill`-specific options (adds `blur`/`verify` over `ActionOpts`). */
+export interface FillOpts extends ActionOpts {
+  blur?: boolean;
+  verify?: boolean;
+}
+
+/** `type`-specific options (adds `blur`/`delay` over `ActionOpts`). */
+export interface TypeOpts extends ActionOpts {
+  blur?: boolean;
+  delay?: number;
+}
+
+/** `press`-specific options. browser-pilot's `press` takes only `modifiers`. */
+export interface PressOpts {
+  modifiers?: Array<"Control" | "Shift" | "Alt" | "Meta">;
+}
+
+/** `submit`-specific options (`method` + `waitForNavigation`, both real bp `SubmitOptions`). */
+export interface SubmitOpts extends ActionOpts {
+  method?: "enter" | "click" | "enter+click";
+}
+
+/** Options for `Driver.screenshot()`. Returns base64 (FINDINGS §7). */
+export interface ScreenshotOpts {
+  format?: "png" | "jpeg" | "webp";
+  quality?: number;
+  fullPage?: boolean;
+}
+
+/**
+ * Options for {@link Driver.startRecording} — opt-in run video / frame capture (Phase 5,
+ * Unit F; gated by `[browser] record`, default off).
+ *  - `dir` — the directory the driver records into. Against browser-pilot v0.0.18 this is the
+ *    `outputDir` for bp's screenshot-frame `record` mode (per-step frames + a `recording.json`
+ *    manifest land here); a future webm-capable bp would emit the video into this dir too. The
+ *    runner (Unit E) passes the run's `screenshots/` dir (`RunDir.screenshotsDir`) so frames
+ *    live alongside the other run evidence.
+ */
+export interface RecordOpts {
+  dir: string;
+}
+
+/**
+ * Options for `Driver.goto()` — top-level navigation to a URL.
+ *  - `timeout` — pass-through to browser-pilot's `page.goto` `ActionOptions.timeout`.
+ *  - `waitForNavigation` — DRIVER DEFAULT `true`: after `page.goto` resolves, the driver also
+ *    settles any client-side navigation (`page.waitForNavigation`) so the page is quiescent
+ *    before the next step's snapshot/assertion runs (mirrors the navigating-action default,
+ *    PLAN.md §3 DRIVER DEFAULT; FINDINGS §5/§14 "force navigation settling"). Set `false` to
+ *    return as soon as `page.goto` resolves (bp's `goto` already awaits the load event).
+ */
+export interface GotoOpts {
+  timeout?: number;
+  waitForNavigation?: boolean;
+}
+
+/** Options for `captureStateSignature()`. */
+export interface SignatureOpts {
+  /**
+   * Which page signature to capture (Phase 7 Change 4 — now REAL against browser-pilot 0.1.0):
+   *  - `'text'` (default/absent) → bp's text-hash `captureStateSignature` (`"{url}|{hash}"`, a
+   *    hash of the first ~2000 chars of visible text). Behaviour identical to before the bump.
+   *  - `'structure'` → bp's `captureStructureSignature` (`"{urlPath}|{hash}"`, a pure role-tree
+   *    hash that is stable across text/content churn). Selects the structural skeleton.
+   * This is the boundary form of browser-pilot's `stateSignatureChanges` `mode?: 'text'|'structure'`.
+   */
+  mode?: "text" | "structure";
+}
+
+/**
+ * A page handle. The driver returns the live browser-pilot `Page` as an opaque handle typed
+ * via `PageHandle` so callers that only need lifecycle (most of Flightplan) don't couple to
+ * the full `Page` surface, while the ladder — which legitimately needs richer page ops — can
+ * narrow it. We re-export the concrete `Page` type from `./index.ts` for that use; the
+ * interface keeps it abstract.
+ */
+export type PageHandle = unknown;
+
+/** The ref map exported/imported within a single resolution cycle (`{ "e12": <id> }`). */
+export type RefMap = Record<string, number>;
+
+// ---------------------------------------------------------------------------
+// resolveAll — native candidate ranking (Phase 7 Change 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * One ranked candidate from `Driver.resolveAll` — the boundary form of browser-pilot 0.1.0's
+ * native `RankedCandidate`. Its fields are deliberately IDENTICAL to Flightplan's own
+ * `RankedCandidate` (`src/ladder/types.ts`) — `ref?/role/name/selector/strategy/score`, with
+ * `strategy` the shared `Strategy` union (= bp's `CandidateStrategy`) — so a consumer can swap
+ * its Flightplan-computed candidates for `driver.resolveAll(...)` results with NO adaptation
+ * (structural assignability). The `_RankedCandidate*` guards below enforce the 1:1 shape match
+ * against bp so the mapping in `browser-pilot-driver.ts` stays total.
+ *
+ * NOTE: this type is intentionally NOT re-exported from `./index.ts`. Flightplan's root barrel
+ * (`src/index.ts`) `export *`s both the driver and the ladder, and the ladder already owns a
+ * public `RankedCandidate` of the same shape; re-exporting a second one would collide there.
+ * Callers needing the name import it from `./types.ts` (driver) or the ladder — either works.
+ */
+export interface RankedCandidate {
+  ref?: string;
+  role: string;
+  name: string;
+  selector: string;
+  strategy: Strategy;
+  score: number;
+}
+
+// Compile-time guards: the driver's RankedCandidate (and the Strategy union it uses) must stay
+// structurally identical to browser-pilot's native `RankedCandidate` / `CandidateStrategy`, so
+// `resolveAll`'s 1:1 field mapping is total and consumers can switch to the native shape with no
+// adaptation. If browser-pilot widens/renames either, one of these fails typecheck and forces a
+// boundary update (same discipline as `_FailureReasonIsCompatible`).
+type _RankedCandidateMatchesBp = RankedCandidate extends BpRankedCandidate
+  ? BpRankedCandidate extends RankedCandidate
+    ? true
+    : never
+  : never;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _rankedCandidateCheck: _RankedCandidateMatchesBp = true;
+
+type _StrategyMatchesCandidateStrategy = Strategy extends BpCandidateStrategy
+  ? BpCandidateStrategy extends Strategy
+    ? true
+    : never
+  : never;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _strategyCheck: _StrategyMatchesCandidateStrategy = true;
+
+/**
+ * Options for `Driver.resolveAll` — the boundary form of browser-pilot's `page.resolveAll`
+ * opts, passed through 1:1.
+ *  - `action`        — the intended verb (`'click'`/`'fill'`/…), so ranking can prefer
+ *                      actionable candidates.
+ *  - `limit`         — cap on the number of ranked candidates returned.
+ *  - `includeHidden` — include hidden elements in the candidate set (default: only visible).
+ *  - `strategies`    — restrict which candidate strategies are considered (the shared
+ *                      `Strategy` union = bp's `CandidateStrategy`).
+ *  - `minConfidence` — drop candidates scoring below this threshold.
+ *  - `snapshot`      — rank against a pre-captured snapshot instead of taking a fresh one.
+ */
+export interface ResolveAllOpts {
+  action?: string;
+  limit?: number;
+  includeHidden?: boolean;
+  strategies?: Strategy[];
+  minConfidence?: number;
+  snapshot?: PageSnapshot;
+}
+
+// ---------------------------------------------------------------------------
+// The Driver interface
+// ---------------------------------------------------------------------------
+
+/**
+ * The single typed boundary to browser-pilot. `BrowserPilotDriver` (real) and `MockDriver`
+ * (test seam) both implement it. Everything in Flightplan outside `src/driver/*` programs
+ * against THIS interface and never imports browser-pilot.
+ *
+ * Lifecycle contract: `connect(cfg)` MUST be called before any page op; `page()` returns the
+ * live page handle (after connect); `teardown()` releases everything (Mode A: detach-only,
+ * never kills a BYO Chrome; Mode B: detach + kill the launched Chrome).
+ */
+export interface Driver {
+  // --- lifecycle ---
+
+  /** Resolve the connection (Mode A attach / Mode B launch) and acquire a page. */
+  connect(cfg: ConnectConfig): Promise<void>;
+
+  /** The live page handle. Throws if called before `connect()`. */
+  page(): Promise<PageHandle>;
+
+  /** Release the connection. Mode A: detach only (Chrome survives). Mode B: detach + kill. */
+  teardown(): Promise<void>;
+
+  // --- navigation ---
+
+  /**
+   * Navigate the active page to `url` (a `goto` step). Maps to browser-pilot's
+   * `page.goto(url, { timeout? })`; with the driver default `waitForNavigation: true` it then
+   * settles any follow-on client-side navigation before returning, so the page is quiescent for
+   * the next snapshot/assertion (PLAN.md §3 DRIVER DEFAULT). This is the ONE navigation entry
+   * point — the runner's `goto` step dispatches here and never touches browser-pilot directly.
+   */
+  goto(url: string, opts?: GotoOpts): Promise<void>;
+
+  /** The current page URL (browser-pilot `page.url()`). Used for the L0 `match.url_glob` gate
+   * and for run context (`ResolveContext.currentUrl`). Throws if called before `connect()`. */
+  currentUrl(): Promise<string>;
+
+  // --- page operations (thin pass-throughs) ---
+
+  /**
+   * One accessibility snapshot. `opts.roles` filters the AX tree; `opts.attributes` opts into
+   * real DOM-attribute enrichment (browser-pilot 0.1.0 — Phase 7 Change 3a). The returned
+   * `interactiveElements` (role + accessible name + optional state/attributes) are what L1 and
+   * the driver's native `resolveAll` ranking consume.
+   */
+  snapshot(opts?: SnapshotOpts): Promise<PageSnapshot>;
+
+  /**
+   * Execute an ordered batch of browser-pilot steps. Returns a `BatchResult` whose
+   * `steps: StepResult[]` surface `selectorUsed` / `failureReason` / `coveringElement` (the
+   * cheap escalation signals). Navigating steps without an explicit `waitForNavigation` are
+   * defaulted to `true` by the wrapper (PLAN.md §3 DRIVER DEFAULT).
+   */
+  batch(steps: BatchStep[], opts?: BatchOptions): Promise<BatchResult>;
+
+  /**
+   * Rank candidate elements for an NL `intent`, delegating to browser-pilot 0.1.0's native
+   * `page.resolveAll` (Phase 7 Change 3). Returns candidates best-first, each carrying
+   * `ref?/role/name/selector/strategy/score` — the same shape as Flightplan's own
+   * `RankedCandidate`, so a consumer can adopt native ranking without changing its downstream
+   * types. This is ADDITIVE: Flightplan's own fuzzy matcher (`src/ladder/fuzzy.ts`) is untouched
+   * and still the live path; a later wave rewires consumers onto this method.
+   */
+  resolveAll(intent: string, opts?: ResolveAllOpts): Promise<RankedCandidate[]>;
+
+  // --- single actions (each returns whether the action succeeded) ---
+
+  /** Click. Navigating → defaults to `waitForNavigation: true`. */
+  click(sel: string | string[], opts?: ActionOpts): Promise<boolean>;
+  /** Fill an input. */
+  fill(sel: string | string[], value: string, opts?: FillOpts): Promise<boolean>;
+  /** Type text (keypress-by-keypress). */
+  type(sel: string | string[], text: string, opts?: TypeOpts): Promise<boolean>;
+  /** Select an option (or options) in a `<select>`. */
+  select(sel: string | string[], value: string | string[], opts?: ActionOpts): Promise<boolean>;
+  /** Check a checkbox/radio. */
+  check(sel: string | string[], opts?: ActionOpts): Promise<boolean>;
+  /** Hover. */
+  hover(sel: string | string[], opts?: ActionOpts): Promise<boolean>;
+  /** Press a key (with optional modifiers). Defaults to navigation settling. */
+  press(key: string, opts?: PressOpts): Promise<boolean>;
+  /** Submit a form. `sel` optional (submits the focused/ambient form). Navigating → settles. */
+  submit(sel?: string | string[], opts?: SubmitOpts): Promise<boolean>;
+
+  // --- screenshot ---
+
+  /** Capture a screenshot. Returns base64 (FINDINGS §7) — consumed directly by L3 vision. */
+  screenshot(opts?: ScreenshotOpts): Promise<string>;
+
+  // --- video / frame recording (OPT-IN; gated by `[browser] record`, default off) ---
+  //
+  // These three members are OPTIONAL on the interface so the capability is purely additive and
+  // feature-detected (`driver.startRecording?.(...)`). A run with recording disabled (the
+  // default) never calls them and behaves exactly as before — video is inert by default.
+  // Both `BrowserPilotDriver` and `MockDriver` implement them. Lifecycle wiring (start at run
+  // begin, stop + finalize at run end, collect screenshot paths, fill `RunSummary.video_path` /
+  // `screenshot_paths`) is Unit E (runner) — see the design's "Runner lifecycle (Unit E)".
+
+  /**
+   * Begin opt-in recording into `opts.dir`. Never throws — video must never break a run.
+   * Against browser-pilot v0.0.18 this enables bp's screenshot-frame `record` mode on
+   * subsequent `batch()` calls (frames + a `recording.json` manifest land in `opts.dir`); a
+   * single webm is NOT produced (Risk V1 — graceful degrade). Feature-detect before calling.
+   */
+  startRecording?(opts: RecordOpts): Promise<void>;
+
+  /**
+   * Stop recording and return the produced video file path, or `null` when no single video
+   * artifact was produced — the graceful-degrade case for browser-pilot v0.0.18, which captures
+   * frames rather than a webm (Risk V1). Captured frames remain on disk regardless. The runner
+   * puts this return value into `RunSummary.video_path` (null stays null). Feature-detect.
+   */
+  stopRecording?(): Promise<string | null>;
+
+  /**
+   * Persist a single screenshot frame to `path` (creating parent dirs as needed) and return the
+   * written path, or `null` on any failure (never throws). Lets the runner save a per-step /
+   * per-failed-step frame into `RunDir.screenshotsDir` and collect the non-null returns into
+   * `RunSummary.screenshot_paths`. Feature-detect before calling.
+   */
+  saveScreenshot?(path: string, opts?: ScreenshotOpts): Promise<string | null>;
+
+  // --- ref persistence (within one resolution cycle only) ---
+
+  /** Export the current ref map (`{ "e12": <backendNodeId> }`). Never persist across loads. */
+  exportRefMap(): RefMap;
+  /** Import a ref map captured earlier in the SAME cycle. */
+  importRefMap(map: RefMap): void;
+
+  // --- page signature ---
+
+  /**
+   * The page signature. `opts.mode` selects which (Phase 7 Change 4 — both now REAL against
+   * browser-pilot 0.1.0):
+   *  - `'text'` (default/absent) → bp's `captureStateSignature` → `"{url}|{hash}"` (hash of the
+   *    first ~2000 chars of visible text — FINDINGS §5). Unchanged from the baseline.
+   *  - `'structure'` → bp's `captureStructureSignature` → `"{urlPath}|{hash}"` (a pure role-tree
+   *    hash, stable across text churn).
+   */
+  captureStateSignature(opts?: SignatureOpts): Promise<string>;
+}

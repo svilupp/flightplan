@@ -1,0 +1,56 @@
+version = 1
+source = "examples/flows/contexts.toml"
+source_hash = "sha256:5caacd213638332338080d5c5892f4a2ef8490cf4e64e6410129e8ce13ec0ed8"
+description = "Confirm in the iframe and in the open shadow root on the contexts fixture"
+
+[[targets]]
+step = "confirm_in_frame"
+target = "the Confirm in frame button inside the embedded iframe"
+strategy = "testid"
+selector = "[data-testid='shadow-open-btn']"
+green_runs = 1
+last_seen = "2026-07-01T14:05:21.810Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/contexts*"
+sig = "text:http://localhost:3000/contexts|-hejrez;struct:/contexts|jk7opc"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Confirm in shadow\"]"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Unreachable\"]"
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Confirm in shadow\""
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Unreachable\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Confirm in shadow\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Unreachable\""
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Confirm in shadow|"
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Unreachable|"
+
+[[targets.candidates]]
+strategy = "testid"
+selector = "[data-testid=\"shadow-closed-btn\"]"
+
+[[targets.candidates]]
+strategy = "testid"
+selector = "[data-testid=\"shadow-open-btn\"]"

@@ -1,0 +1,9 @@
+# BROKEN: goto step missing its required `url` → steps/required-fields
+version = 1
+kind = "flow"
+id = "broken.missing_required_field"
+description = "goto with no url"
+
+[[steps]]
+id = "open"
+do = "goto"

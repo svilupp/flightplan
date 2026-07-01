@@ -1,0 +1,48 @@
+# Flightplan example flow — the /async fixture (target tier: L1 + polling).
+#
+# Elements render after FIXED delays (700ms banner-on-load, 900ms result-on-click). This flow
+# exercises the assertion engine's implicit-wait POLLING: the `visible`/`text` assertions carry a
+# `timeout_ms` long enough to cover the fixture delays, so they poll until the late element lands.
+# Resolution stays deterministic (L1) — only the assertions wait.
+#
+# Fixture contract: ../fixtures/README.md §02. Lints clean; runnable against the fixture server
+# on http://localhost:3000 (Mode B headless Chrome).
+
+version = 1
+kind = "flow"
+id = "examples.async"
+description = "Trigger the async action and poll for the late-rendered result"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[run]
+max_steps = 20
+assertions = "eager"
+assert_timeout_ms = 5000
+
+[[steps]]
+id = "open_async"
+do = "goto"
+url = "${inputs.base_url}/async"
+
+# The banner renders 700ms after load — poll the page text until it appears (timeout covers the
+# delay). The v0.0.18 AX snapshot surfaces node names + page text, not raw data-testid selectors,
+# so page-text assertions are the reliable oracle for the late-rendered banner.
+[[steps.assert]]
+type = "text"
+text = "Loaded asynchronously"
+timeout_ms = 4000
+
+[[steps]]
+id = "trigger_load"
+do = "click"
+target = "the Load data button"
+hints = ["Load data", "[data-testid='async-load']"]
+intent = "trigger the asynchronous data load"
+
+# The result renders 900ms after the click — poll the page text until the result lands.
+[[steps.assert]]
+type = "text"
+text = "Async action complete"
+timeout_ms = 4000

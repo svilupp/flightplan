@@ -1,0 +1,64 @@
+version = 1
+source = "examples/flows/gauntlet.toml"
+source_hash = "sha256:5e20df27273f1842c0e86cef4bf5382146e175d4e8e593f433be2d7bd03bdbda"
+description = "Resolve and save the billing address among identical Save buttons"
+
+[[targets]]
+step = "save_billing_address"
+target = "the Save button inside the Billing address panel"
+strategy = "role_name"
+selector = "role:button:Save"
+green_runs = 1
+last_seen = "2026-07-01T14:05:47.342Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/gauntlet*"
+sig = "text:http://localhost:3000/gauntlet|xw59zk;struct:/gauntlet|lzcg61"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Save\"]"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Save\"]"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Save\"]"
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Save\""
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Save\""
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Save\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Save\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Save\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Save\""
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Save|"
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Save|"
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Save|"

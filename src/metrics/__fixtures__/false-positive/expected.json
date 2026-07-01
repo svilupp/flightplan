@@ -1,0 +1,47 @@
+{
+  "runId": "false-positive",
+  "flowId": "examples.false-positive",
+  "verdict": "failed",
+  "totalSteps": 2,
+  "tieredSteps": 1,
+  "histogram": {
+    "L0": 0,
+    "L1": 1,
+    "L2": 0,
+    "L3": 0,
+    "L4": 0,
+    "total": 1
+  },
+  "l0HitRate": 0,
+  "l1HitRate": 1,
+  "deterministicShare": 1,
+  "escalationRate": 0,
+  "l2Rate": 0,
+  "l3Rate": 0,
+  "l4Rate": 0,
+  "costUsd": 0,
+  "perRoleCost": {},
+  "driftCount": 0,
+  "healedSteps": [],
+  "driftHealSuccess": false,
+  "stepLatency": {
+    "p50": 60,
+    "p95": 1500,
+    "count": 2
+  },
+  "perTierLatency": {
+    "L0": {
+      "p50": 0,
+      "p95": 0,
+      "count": 1
+    },
+    "L1": {
+      "p50": 22,
+      "p95": 22,
+      "count": 1
+    }
+  },
+  "falsePositiveSteps": [
+    "s_click"
+  ]
+}

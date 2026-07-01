@@ -1,0 +1,28 @@
+version = 1
+source = "examples/flows/vision.toml"
+source_hash = "sha256:49f5e7679b2b1635e0b14fd9da42dda7302d9b5a2e800606812434500b8a0f88"
+description = "Vision-resolve and click the unlabeled trash icon on the vision fixture"
+
+[[targets]]
+step = "delete_item"
+target = "the trash-can / delete icon in the toolbar"
+strategy = "role_name"
+selector = "role:button"
+green_runs = 1
+last_seen = "2026-07-01T14:06:32.384Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/vision/icons*"
+sig = "text:http://localhost:3000/vision/icons|-6yvt2s;struct:/vision/icons|1j7b91j"
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button||"
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button||"
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button||"

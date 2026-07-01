@@ -1,0 +1,30 @@
+{
+  "name": "flightplan",
+  "version": "0.0.1",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "flightplan": "src/cli/index.ts"
+  },
+  "scripts": {
+    "flightplan": "bun run src/cli/index.ts",
+    "fixtures": "bun run examples/fixtures/server.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.86",
+    "@openrouter/ai-sdk-provider": "^2.10.0",
+    "ai": "^6.0.0",
+    "browser-pilot": "file:/Users/jan/Documents/GitHub/browser-pilot",
+    "smol-toml": "^1.4.2",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "chrome-launcher": "1.2.1",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,36 @@
+version = 1
+source = "examples/flows/signature.toml"
+source_hash = "sha256:f84c72a2510781e4ddeea2edf4731e59c93ba6574a563203c3a744cc719596b1"
+description = "Continue past the signature gate and assert the deterministic result"
+
+[[targets]]
+step = "continue_action"
+target = "the Continue button"
+strategy = "testid"
+selector = "[data-testid='signature-action']"
+green_runs = 1
+last_seen = "2026-07-01T14:07:28.701Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/signature*"
+sig = "text:http://localhost:3000/signature?variant=same|5hlpdz;struct:/signature|1sddgns"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Continue\"]"
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Continue\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Continue\""
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Continue|"
+
+[[targets.candidates]]
+strategy = "testid"
+selector = "[data-testid=\"signature-action\"]"

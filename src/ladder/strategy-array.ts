@@ -1,0 +1,204 @@
+// Flightplan — L1 strategy-array construction (the ordered selector ladder).
+//
+// From ONE snapshot element (or an author hint), build the candidate selector strings in the
+// §4 priority order, and derive the durable (re-resolvable) selector + stored `Strategy` for an
+// element. This is the deterministic core of L1: `l1.ts` builds an ordered `StrategyCandidate[]`
+// for the targeted element, passes the `.selector`s to `driver.batch`, and reads `selectorUsed`
+// to learn which rung won.
+//
+// §4 priority (PLAN.md §4 / §5 Phase 2):
+//   1) testid     — real DOM `data-testid`/`data-test`/`data-qa` attribute  → `[data-testid=…]`
+//   2) role_name  — accessible role + accessible name  → `role:Role:Name`
+//   3) label      — `aria-label` / `placeholder` attribute  → `[aria-label=…]` / `[placeholder=…]`
+//   4) scoped_text— visible text, INTERACTIVE-ROLE-ONLY (role verified; risk #8)  → `text:…`
+//   5) structural_fingerprint — a11y-tree structural fingerprint  → `fingerprint:…`
+//
+// The `testid` and `label` rungs read real DOM attributes off `InteractiveElement.attributes`,
+// populated by the enriched `snapshot({ attributes: true })` the ladder now takes (browser-pilot
+// 0.1.0, Phase 7 Change 3a). When an element carries a testid it sorts to the TOP of the ladder;
+// role_name / scoped_text / structural_fingerprint (built from role + accessible name) cover the
+// rest. Author HINTS shaped like a testid still yield a `testid` strategy via `buildHintCandidates`.
+
+import type { InteractiveElement } from "../driver/index.ts";
+import type { Strategy } from "../types.ts";
+import type { BatchActionVerb, StrategyCandidate } from "./types.ts";
+import { isInteractiveRole } from "./fuzzy.ts";
+
+// ---------------------------------------------------------------------------
+// Selector escaping
+// ---------------------------------------------------------------------------
+
+/** Escape a value for a `[attr='…']` selector (single-quote + backslash). */
+function escapeAttrValue(v: string): string {
+  return v.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+// ---------------------------------------------------------------------------
+// Per-strategy selector builders (each returns a durable selector string or undefined)
+// ---------------------------------------------------------------------------
+
+/**
+ * testid selector for an element, derived from its real DOM attributes (enriched snapshot):
+ * `data-testid` → `data-test` → `data-qa`, first present wins → `[data-testid='…']`. Returns
+ * `undefined` when the element carries none (→ the ladder falls to role_name). The synthetic
+ * `[data-backend-node-id=…]` in `el.selector` is NOT a testid and is never consulted here.
+ */
+export function testidSelectorForElement(el: InteractiveElement): string | undefined {
+  const attrs = el.attributes;
+  if (!attrs) return undefined;
+  const testid = attrs["data-testid"] ?? attrs["data-test"] ?? attrs["data-qa"];
+  if (testid && testid.trim().length > 0) {
+    return `[data-testid='${escapeAttrValue(testid)}']`;
+  }
+  return undefined;
+}
+
+/** role_name selector: `role:Role:Name` (browser-pilot's interactive role+name special). */
+export function roleNameSelectorForElement(el: InteractiveElement): string | undefined {
+  if (!el.role) return undefined;
+  if (el.name && el.name.trim().length > 0) {
+    return `role:${el.role}:${el.name}`;
+  }
+  // Role-only is weak but still durable (e.g. a sole `role:button`).
+  return `role:${el.role}`;
+}
+
+/**
+ * label selector: read the real `aria-label` (then `placeholder`) attribute off the enriched
+ * snapshot element and emit `[aria-label='…']` / `[placeholder='…']` (both fold into the `label`
+ * strategy per §4). Returns `undefined` when the element carries neither attribute — we never
+ * fabricate a label from the accessible `name` (that would be a guess).
+ */
+export function labelSelectorForElement(el: InteractiveElement): string | undefined {
+  const attrs = el.attributes;
+  if (!attrs) return undefined;
+  const ariaLabel = attrs["aria-label"];
+  if (ariaLabel && ariaLabel.trim().length > 0) {
+    return `[aria-label='${escapeAttrValue(ariaLabel)}']`;
+  }
+  const placeholder = attrs["placeholder"];
+  if (placeholder && placeholder.trim().length > 0) {
+    return `[placeholder='${escapeAttrValue(placeholder)}']`;
+  }
+  return undefined;
+}
+
+/**
+ * scoped_text selector: `text:Name` — ONLY for INTERACTIVE roles (role verified here; PLAN.md
+ * §8 risk #8 / FINDINGS §8). A bare text match against a non-interactive element (e.g. a `<code>`
+ * snippet) is the documented false-positive, so we refuse to emit one.
+ */
+export function scopedTextSelectorForElement(el: InteractiveElement): string | undefined {
+  if (!el.name || el.name.trim().length === 0) return undefined;
+  if (!isInteractiveRole(el.role)) return undefined; // ROLE VERIFICATION
+  return `text:${el.name}`;
+}
+
+/**
+ * structural_fingerprint selector: a stable structural token derived from role + name, emitted as
+ * a `fingerprint:role=…;name=…` token (the `fingerprint:` prefix is recognised by
+ * `selectorUsedToStrategy` so the mapping stays stable). It is the lowest-priority rung and the
+ * durable-selector token of LAST RESORT for the lock — used only by `durableSelectorForElement`'s
+ * fallback, never added to the live batch array (see `buildStrategyArray`).
+ */
+export function structuralFingerprintForElement(el: InteractiveElement): string {
+  const role = el.role ?? "";
+  const name = el.name ?? "";
+  return `fingerprint:role=${role};name=${name}`;
+}
+
+// ---------------------------------------------------------------------------
+// Per-element derivation: best strategy + best durable selector
+// ---------------------------------------------------------------------------
+
+/**
+ * The best DURABLE (re-resolvable, never `ref:eN`) selector for an element, in §4 priority.
+ * Used to re-derive a stable selector when bp's `selectorUsed` was a bare ref, and to give each
+ * `RankedCandidate` a persistable selector. Falls back to the structural fingerprint token so a
+ * durable selector is ALWAYS derivable (the lock invariant: never persist a ref).
+ */
+export function durableSelectorForElement(el: InteractiveElement): string | undefined {
+  return (
+    testidSelectorForElement(el) ??
+    roleNameSelectorForElement(el) ??
+    labelSelectorForElement(el) ??
+    scopedTextSelectorForElement(el) ??
+    structuralFingerprintForElement(el)
+  );
+}
+
+/** The `Strategy` an element's best durable selector represents (matches `durableSelectorForElement`). */
+export function strategyForElement(el: InteractiveElement): Strategy {
+  if (testidSelectorForElement(el)) return "testid";
+  if (roleNameSelectorForElement(el)) return "role_name";
+  if (labelSelectorForElement(el)) return "label";
+  if (scopedTextSelectorForElement(el)) return "scoped_text";
+  return "structural_fingerprint";
+}
+
+// ---------------------------------------------------------------------------
+// The ordered strategy array for a targeted element
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the ORDERED `StrategyCandidate[]` for a single targeted element, in §4 priority. This is
+ * the array L1 passes (as `.selector`s) to `driver.batch`. Each rung is included only if its
+ * selector is derivable off the (attribute-enriched) element: testid → role_name → label →
+ * scoped_text, with testid/label present whenever the element carries the corresponding attribute.
+ *
+ * The `ref:eN` is prepended FIRST (PLAN.md §7 / FINDINGS §4: refs preempt position and resolve
+ * in ~3ms) so the action lands on exactly the element we matched THIS cycle, while the durable
+ * selectors that follow are what we LEARN the winning strategy from. (If bp resolves via the ref,
+ * `selectorUsed` is `ref:eN` → strategy `null` → we re-derive the durable selector for the lock.)
+ *
+ * The structural-fingerprint rung is intentionally NOT added as a live batch entry (it is a
+ * durable-selector token of last resort — see `structuralFingerprintForElement`).
+ */
+export function buildStrategyArray(
+  el: InteractiveElement,
+  _action: BatchActionVerb,
+): StrategyCandidate[] {
+  const candidates: StrategyCandidate[] = [];
+
+  // ref-first short-circuit (resolves the matched element exactly, this cycle only).
+  if (el.ref) {
+    candidates.push({ selector: `ref:${el.ref}`, strategy: "structural_fingerprint", element: el });
+  }
+
+  const testid = testidSelectorForElement(el);
+  if (testid) candidates.push({ selector: testid, strategy: "testid", element: el });
+
+  const roleName = roleNameSelectorForElement(el);
+  if (roleName) candidates.push({ selector: roleName, strategy: "role_name", element: el });
+
+  const label = labelSelectorForElement(el);
+  if (label) candidates.push({ selector: label, strategy: "label", element: el });
+
+  const text = scopedTextSelectorForElement(el);
+  if (text) candidates.push({ selector: text, strategy: "scoped_text", element: el });
+
+  return candidates;
+}
+
+/**
+ * Build strategy candidates from explicit author HINTS (PLAN.md §4 `Step.hints` — "explicit
+ * selector/text hints tried in L1"). Hints are tried BEFORE derived strategies. A hint's strategy
+ * is inferred from its shape; a testid-shaped hint is the one reliable way to get a `testid`
+ * strategy in v0.0.18. The hint has no associated snapshot element.
+ */
+export function buildHintCandidates(hints: readonly string[]): StrategyCandidate[] {
+  return hints.map((h) => ({ selector: h, strategy: inferHintStrategy(h) }));
+}
+
+/** Infer the `Strategy` a hint string represents (same shape rules as `selectorUsedToStrategy`). */
+function inferHintStrategy(hint: string): Strategy {
+  const s = hint.trim();
+  if (/\[\s*data-(testid|test-id|test|qa)\s*[~|^$*]?=/i.test(s)) return "testid";
+  if (/^role:/i.test(s)) return "role_name";
+  if (/\[\s*role\s*=/i.test(s) && /\[\s*aria-label\s*=/i.test(s)) return "role_name";
+  if (/^label:/i.test(s)) return "label";
+  if (/\[\s*(aria-label|placeholder|name)\s*[~|^$*]?=/i.test(s)) return "label";
+  if (/^text:/i.test(s)) return "scoped_text";
+  if (/^(fingerprint|fp|structure):/i.test(s)) return "structural_fingerprint";
+  return "css";
+}

@@ -1,0 +1,12 @@
+# BROKEN: imports a module that does not exist → imports/resolves
+version = 1
+kind = "flow"
+id = "broken.import_missing"
+description = "Imports a non-existent module"
+
+imports = "./does-not-exist.toml"
+
+[[steps]]
+id = "s1"
+do = "wait"
+ms = 100

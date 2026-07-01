@@ -1,0 +1,14 @@
+# BROKEN: unsupported assertion type → assert/supported-type
+version = 1
+kind = "flow"
+id = "broken.unknown_assert_type"
+description = "Assertion with an unknown type"
+
+[[steps]]
+id = "check"
+do = "click"
+target = "the submit button"
+intent = "submit the form"
+
+[[steps.assert]]
+type = "screenshot_matches"

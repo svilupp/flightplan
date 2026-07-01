@@ -1,0 +1,46 @@
+# Flightplan example flow — the /drift fixture, variant a (target tier: L0/L1).
+#
+# Same logical "create order" CTA across variants; the canonical recipe is authored against
+# variant a (data-testid="create-order"). Demonstrates a valid ai_judge assertion PAIRED with
+# a deterministic one (so it is not ai_judge-only), plus an env-templated variant input.
+#
+# Fixture contract: ../fixtures/README.md §07.
+
+version = 1
+kind = "flow"
+id = "examples.drift"
+description = "Create an order on the drift fixture and assert the deterministic result"
+
+[inputs]
+base_url = "http://localhost:3000"
+variant = "a"
+
+[run]
+max_steps = 10
+assertions = "eager"
+
+[[steps]]
+id = "open_drift"
+do = "goto"
+url = "${inputs.base_url}/drift?variant=${inputs.variant}"
+
+[[steps]]
+id = "create_order"
+do = "click"
+target = "the primary create-order call to action"
+hints = ["Create order", "[data-testid='create-order']"]
+intent = "create a new order using the primary CTA"
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='result']"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-testid='result']"
+text = "Order created"
+
+[[steps.assert]]
+type = "ai_judge"
+inputs = ["screenshot", "text"]
+prompt = "The page clearly confirms that a new order was created successfully."

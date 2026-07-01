@@ -1,0 +1,14 @@
+# BROKEN: a `do = "assert"` step with no assertions → assert/step-needs-assertion
+version = 1
+kind = "flow"
+id = "broken.assert_step_no_assertion"
+description = "Assert step declaring no assertions"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "verify"
+do = "assert"

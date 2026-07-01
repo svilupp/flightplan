@@ -1,0 +1,20 @@
+# BROKEN: ai_judge inputs include an unsupported modality → assert/ai-judge-shape
+version = 1
+kind = "flow"
+id = "broken.ai_judge_bad_input"
+description = "ai_judge with an unsupported input modality"
+
+[[steps]]
+id = "judge"
+do = "click"
+target = "the confirm button"
+intent = "confirm the action"
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='result']"
+
+[[steps.assert]]
+type = "ai_judge"
+prompt = "The confirmation succeeded."
+inputs = ["video"]

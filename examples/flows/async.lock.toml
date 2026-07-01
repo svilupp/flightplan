@@ -1,0 +1,36 @@
+version = 1
+source = "examples/flows/async.toml"
+source_hash = "sha256:01cd636dde350d8ef9885066a21d48a918054e12961f408951b648e8d798452f"
+description = "Trigger the async action and poll for the late-rendered result"
+
+[[targets]]
+step = "trigger_load"
+target = "the Load data button"
+strategy = "testid"
+selector = "[data-testid='async-load']"
+green_runs = 1
+last_seen = "2026-07-01T13:09:45.442Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/async*"
+sig = "text:http://localhost:3000/async|u136a1;struct:/async|11opkbx"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Load data\"]"
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Load data\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Load data\""
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Load data|"
+
+[[targets.candidates]]
+strategy = "testid"
+selector = "[data-testid=\"async-load\"]"

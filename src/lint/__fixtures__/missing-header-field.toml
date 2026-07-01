@@ -1,0 +1,9 @@
+# BROKEN: missing `description` header field → header/required-fields
+version = 1
+kind = "flow"
+id = "broken.missing_header"
+
+[[steps]]
+id = "s1"
+do = "wait"
+ms = 100

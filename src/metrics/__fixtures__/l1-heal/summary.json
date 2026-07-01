@@ -1,0 +1,36 @@
+{
+  "verdict": "passed",
+  "flow_id": "examples.l1-heal",
+  "run_id": "l1-heal",
+  "run_dir": "__fixtures__/l1-heal",
+  "failed_step": null,
+  "failed_assertions": [],
+  "advisory_verdict": null,
+  "healed_steps": [
+    "s_save"
+  ],
+  "drift_count": 1,
+  "screenshot_paths": [],
+  "video_path": null,
+  "trace_path": "__fixtures__/l1-heal/trace.jsonl",
+  "total_cost_usd": 0,
+  "model_usage": [],
+  "proposed_patch_path": null,
+  "steps": [
+    {
+      "stepId": "s_open",
+      "do": "goto",
+      "ok": true,
+      "healed": false,
+      "durationMs": 1500
+    },
+    {
+      "stepId": "s_save",
+      "do": "click",
+      "ok": true,
+      "healed": true,
+      "durationMs": 120,
+      "tier": "L1"
+    }
+  ]
+}

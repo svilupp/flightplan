@@ -1,0 +1,41 @@
+{
+  "verdict": "passed",
+  "flow_id": "examples.l2-escalate",
+  "run_id": "l2-escalate",
+  "run_dir": "__fixtures__/l2-escalate",
+  "failed_step": null,
+  "failed_assertions": [],
+  "advisory_verdict": null,
+  "healed_steps": [],
+  "drift_count": 0,
+  "screenshot_paths": [],
+  "video_path": null,
+  "trace_path": "__fixtures__/l2-escalate/trace.jsonl",
+  "total_cost_usd": 0.00000648,
+  "model_usage": [
+    {
+      "role": "resolver",
+      "model": "deepseek/deepseek-v4-flash",
+      "calls": 1,
+      "cost_usd": 0.00000648
+    }
+  ],
+  "proposed_patch_path": null,
+  "steps": [
+    {
+      "stepId": "s_open",
+      "do": "goto",
+      "ok": true,
+      "healed": false,
+      "durationMs": 1500
+    },
+    {
+      "stepId": "s_pick",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 850,
+      "tier": "L2"
+    }
+  ]
+}

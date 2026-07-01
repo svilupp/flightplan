@@ -1,0 +1,15 @@
+# BROKEN: a raw CSS selector is hard-coded in `target` → steps/no-raw-selector
+version = 1
+kind = "flow"
+id = "broken.raw_selector_target"
+description = "Hard-coded selector in a step target"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "click_next"
+do = "click"
+target = "#wizard-next-1 > button.primary"

@@ -1,0 +1,10 @@
+# BROKEN: invalid `kind` → header/valid-kind
+version = 1
+kind = "workflow"
+id = "broken.invalid_kind"
+description = "kind is not config or flow"
+
+[[steps]]
+id = "s1"
+do = "wait"
+ms = 100

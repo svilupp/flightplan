@@ -1,0 +1,45 @@
+# Flightplan example flow — the /vision/icons fixture (target tier: L3 — vision only).
+#
+# A toolbar of three UNLABELED icon-only buttons (inline SVG glyphs, aria-hidden): no visible text,
+# no aria-label, no title, no data-testid, empty accessible name, generic role "button". L0/L1/L2
+# cannot tell them apart — only a vision model reading the rendered glyph can. So the target is
+# expressed PURELY as intent (no selector/testid hints exist to give), forcing resolution down to
+# L3. The data-action attribute is non-semantic (click-handler only) and surfaces no accessible
+# name — it exists purely so the fixture can prove which icon a vision pick actually clicked.
+#
+# Fixture contract: ../fixtures/README.md §09.
+
+version = 1
+kind = "flow"
+id = "examples.vision"
+description = "Vision-resolve and click the unlabeled trash icon on the vision fixture"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[run]
+max_steps = 10
+assertions = "eager"
+assert_timeout_ms = 5000
+
+[[steps]]
+id = "open_vision"
+do = "goto"
+url = "${inputs.base_url}/vision/icons"
+
+[[steps]]
+id = "delete_item"
+do = "click"
+target = "the trash-can / delete icon in the toolbar"
+intent = "delete the item by clicking the trash-can icon"
+
+# Clicking the trash glyph renders data-testid="result" with text "Clicked: trash" (vs edit/share).
+[[steps.assert]]
+type = "visible"
+text = "Clicked: trash"
+timeout_ms = 4000
+
+[[steps.assert]]
+type = "text"
+text = "Clicked: trash"
+timeout_ms = 4000

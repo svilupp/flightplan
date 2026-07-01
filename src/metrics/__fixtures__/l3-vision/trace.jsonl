@@ -1,0 +1,4 @@
+{"type":"resolution_attempt","ts":1700000031601,"stepId":"s_icon","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700000031602,"stepId":"s_icon","tier":"L1","outcome":"unresolved","durationMs":30}
+{"type":"resolution_attempt","ts":1700000031632,"stepId":"s_icon","tier":"L2","outcome":"screenshot_requested","durationMs":700}
+{"type":"resolution_attempt","ts":1700000032332,"stepId":"s_icon","tier":"L3","outcome":"resolved","durationMs":1100}

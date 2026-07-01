@@ -1,0 +1,44 @@
+# Flightplan example flow — the /gauntlet fixture (target tier: L2).
+#
+# Three visually/semantically identical "Save" buttons; only a text resolver can pick the
+# right one by surrounding context. The flow expresses the target purely as intent (no unique
+# selector exists to hint), then asserts the exact result text so a mis-resolve fails loudly.
+#
+# Fixture contract: ../fixtures/README.md §06.
+
+version = 1
+kind = "flow"
+id = "examples.gauntlet"
+description = "Resolve and save the billing address among identical Save buttons"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[run]
+max_steps = 10
+assertions = "eager"
+assert_timeout_ms = 5000
+
+[[steps]]
+id = "open_gauntlet"
+do = "goto"
+url = "${inputs.base_url}/gauntlet"
+
+[[steps.assert]]
+type = "visible"
+text = "Billing address"
+
+[[steps]]
+id = "save_billing_address"
+do = "click"
+target = "the Save button inside the Billing address panel"
+intent = "save the billing address, not the search filters or the draft message"
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='result']"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-testid='result']"
+text = "Saved billing address"

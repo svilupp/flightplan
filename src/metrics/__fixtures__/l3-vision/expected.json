@@ -1,0 +1,64 @@
+{
+  "runId": "l3-vision",
+  "flowId": "examples.l3-vision",
+  "verdict": "passed",
+  "totalSteps": 2,
+  "tieredSteps": 1,
+  "histogram": {
+    "L0": 0,
+    "L1": 0,
+    "L2": 0,
+    "L3": 1,
+    "L4": 0,
+    "total": 1
+  },
+  "l0HitRate": 0,
+  "l1HitRate": 0,
+  "deterministicShare": 0,
+  "escalationRate": 1,
+  "l2Rate": 0,
+  "l3Rate": 1,
+  "l4Rate": 0,
+  "costUsd": 0.00060594,
+  "perRoleCost": {
+    "resolver": {
+      "calls": 1,
+      "cost_usd": 0.00000594
+    },
+    "vision": {
+      "calls": 1,
+      "cost_usd": 0.0006
+    }
+  },
+  "driftCount": 0,
+  "healedSteps": [],
+  "driftHealSuccess": false,
+  "stepLatency": {
+    "p50": 1500,
+    "p95": 1800,
+    "count": 2
+  },
+  "perTierLatency": {
+    "L0": {
+      "p50": 0,
+      "p95": 0,
+      "count": 1
+    },
+    "L1": {
+      "p50": 30,
+      "p95": 30,
+      "count": 1
+    },
+    "L2": {
+      "p50": 700,
+      "p95": 700,
+      "count": 1
+    },
+    "L3": {
+      "p50": 1100,
+      "p95": 1100,
+      "count": 1
+    }
+  },
+  "falsePositiveSteps": []
+}

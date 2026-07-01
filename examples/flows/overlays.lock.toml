@@ -1,0 +1,88 @@
+version = 1
+source = "examples/flows/overlays.toml"
+source_hash = "sha256:a74d9a8d00aac848a880b966e3f5bdfe16049847ed315519295d56a24336c7b0"
+description = "Dismiss the cookie overlay and place an order on the overlays fixture"
+
+[[targets]]
+step = "dismiss_cookie_banner"
+target = "the Accept cookies button in the cookie consent banner"
+strategy = "testid"
+selector = "[data-testid='cookie-accept']"
+green_runs = 1
+last_seen = "2026-07-01T14:05:13.244Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/overlays*"
+sig = "text:http://localhost:3000/overlays|-1y9r8w;struct:/overlays|1pepbxk"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Accept cookies\"]"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Place order\"]"
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Accept cookies\""
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Place order\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Accept cookies\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Place order\""
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Accept cookies|"
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Place order|"
+
+[[targets.candidates]]
+strategy = "testid"
+selector = "[data-testid=\"cookie-accept\"]"
+
+[[targets.candidates]]
+strategy = "testid"
+selector = "[data-testid=\"overlays-cta\"]"
+
+[[targets]]
+step = "place_order"
+target = "the Place order call to action"
+strategy = "testid"
+selector = "[data-testid='overlays-cta']"
+green_runs = 1
+last_seen = "2026-07-01T14:05:13.422Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/overlays*"
+sig = "text:http://localhost:3000/overlays|qqh5tp;struct:/overlays|1lpu7jl"
+
+[[targets.candidates]]
+strategy = "label"
+selector = "[aria-label=\"Place order\"]"
+
+[[targets.candidates]]
+strategy = "role_name"
+selector = "role:button:\"Place order\""
+
+[[targets.candidates]]
+strategy = "scoped_text"
+selector = "text:\"Place order\""
+
+[[targets.candidates]]
+strategy = "structural_fingerprint"
+selector = "fingerprint:button|Place order|"
+
+[[targets.candidates]]
+strategy = "testid"
+selector = "[data-testid=\"overlays-cta\"]"

@@ -1,0 +1,12 @@
+# BROKEN: forms an import cycle with cycle-b.toml → imports/no-cycle
+version = 1
+kind = "flow"
+id = "broken.cycle_a"
+description = "Cycle A imports B"
+
+imports = "./cycle-b.toml"
+
+[[steps]]
+id = "a1"
+do = "wait"
+ms = 100

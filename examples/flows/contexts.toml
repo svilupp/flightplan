@@ -1,0 +1,57 @@
+# Flightplan example flow — the /contexts fixture (target tier: L1, scoped context traversal).
+#
+# Targets live across context boundaries: a button inside an <iframe> (srcdoc) and a button inside
+# an OPEN shadow root (web component). Each confirm writes a deterministic result. The CLOSED
+# shadow root on the page is intentionally unreachable and is NOT part of the happy path. Exercises
+# scoped a11y resolution across the iframe + shadow boundaries (stays deterministic at L1).
+#
+# Fixture contract: ../fixtures/README.md §05.
+
+version = 1
+kind = "flow"
+id = "examples.contexts"
+description = "Confirm in the iframe and in the open shadow root on the contexts fixture"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[run]
+max_steps = 20
+assertions = "eager"
+assert_timeout_ms = 5000
+
+[[steps]]
+id = "open_contexts"
+do = "goto"
+url = "${inputs.base_url}/contexts"
+
+[[steps]]
+id = "confirm_in_frame"
+do = "click"
+target = "the Confirm in frame button inside the embedded iframe"
+hints = ["Confirm in frame", "[data-testid='iframe-btn']"]
+intent = "confirm inside the embedded iframe"
+
+# confirmFrame() renders data-testid="iframe-result" with text "Frame confirmed" inside the frame.
+[[steps.assert]]
+type = "text"
+text = "Frame confirmed"
+timeout_ms = 4000
+
+[[steps]]
+id = "confirm_in_shadow"
+do = "click"
+target = "the Confirm in shadow button inside the open shadow-root widget"
+hints = ["Confirm in shadow", "[data-testid='shadow-open-btn']"]
+intent = "confirm inside the open shadow root"
+
+# The shadow click bubbles a CustomEvent the host surfaces as data-testid="result" = "Shadow confirmed".
+[[steps.assert]]
+type = "visible"
+text = "Shadow confirmed"
+timeout_ms = 4000
+
+[[steps.assert]]
+type = "text"
+text = "Shadow confirmed"
+timeout_ms = 4000

@@ -1,0 +1,7 @@
+{"type":"run_start","ts":1700000050000,"runId":"false-positive","flowId":"examples.false-positive","inputs":{},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700000050100,"stepId":"s_open","do":"goto"}
+{"type":"step_end","ts":1700000051600,"stepId":"s_open","ok":true,"healed":false,"durationMs":1500}
+{"type":"step_start","ts":1700000051600,"stepId":"s_click","do":"click","intent":"click the Delete button"}
+{"type":"step_end","ts":1700000051660,"stepId":"s_click","ok":true,"healed":false,"durationMs":60,"tier":"L1"}
+{"type":"assertion_result","ts":1700000051760,"stepId":"s_click","assertType":"visible","pass":false,"message":"expected confirmation dialog \"Are you sure?\" but none appeared (wrong element clicked)","durationMs":100}
+{"type":"run_end","ts":1700000051800,"verdict":"failed","totals":{"steps_run":2,"drift_count":0,"total_cost_usd":0,"model_usage":[]},"error":"assertion failed on step s_click"}
