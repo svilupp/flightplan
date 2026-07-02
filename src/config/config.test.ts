@@ -5,6 +5,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Config } from "./index.ts";
 import {
   BUILTIN_DEFAULTS,
   ConfigValidationError,
@@ -15,7 +16,6 @@ import {
   resolveConfigWithDefaults,
   TomlParseError,
 } from "./index.ts";
-import type { Config } from "./index.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "fp-config-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -108,6 +108,40 @@ describe("loadConfigFile", () => {
     );
     await expect(loadConfigFile(p)).rejects.toThrow(ConfigValidationError);
   });
+
+  test("accepts a [cache] block (L0 cache-hit quality — Layer 2)", async () => {
+    const p = writeTmp(
+      "cache.toml",
+      `version = 1
+kind = "config"
+id = "x"
+description = "d"
+
+[cache]
+ignore_regions = ["#live-feed", ".ticker", "[data-live]"]
+signature = "struct-only"
+`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.cache?.signature).toBe("struct-only");
+    expect(config.cache?.ignore_regions).toEqual(["#live-feed", ".ticker", "[data-live]"]);
+  });
+
+  test("rejects an unknown key inside [cache] (strict)", async () => {
+    const p = writeTmp(
+      "cache-bad.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[cache]\nbogus = 1\n`,
+    );
+    await expect(loadConfigFile(p)).rejects.toThrow(ConfigValidationError);
+  });
+
+  test("rejects an invalid [cache] signature value (strict enum)", async () => {
+    const p = writeTmp(
+      "cache-bad2.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[cache]\nsignature = "loose"\n`,
+    );
+    await expect(loadConfigFile(p)).rejects.toThrow(ConfigValidationError);
+  });
 });
 
 describe("resolution-order precedence", () => {
@@ -118,23 +152,13 @@ describe("resolution-order precedence", () => {
     const flow: Config = { ai: { provider: "flow" } };
     const cli: Config = { ai: { provider: "cli" } };
 
-    const resolved = resolveConfig([
-      BUILTIN_DEFAULTS,
-      global,
-      imported,
-      flow,
-      cli,
-    ]);
+    const resolved = resolveConfig([BUILTIN_DEFAULTS, global, imported, flow, cli]);
     expect(resolved.ai?.provider).toBe("cli");
 
     // Drop CLI → flow wins.
-    expect(
-      resolveConfig([BUILTIN_DEFAULTS, global, imported, flow]).ai?.provider,
-    ).toBe("flow");
+    expect(resolveConfig([BUILTIN_DEFAULTS, global, imported, flow]).ai?.provider).toBe("flow");
     // Drop flow → imported wins.
-    expect(
-      resolveConfig([BUILTIN_DEFAULTS, global, imported]).ai?.provider,
-    ).toBe("imported");
+    expect(resolveConfig([BUILTIN_DEFAULTS, global, imported]).ai?.provider).toBe("imported");
     // Drop imported → global wins.
     expect(resolveConfig([BUILTIN_DEFAULTS, global]).ai?.provider).toBe("global");
     // Drop global → built-in default wins.

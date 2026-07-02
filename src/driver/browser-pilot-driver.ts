@@ -8,7 +8,6 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import * as ChromeLauncher from "chrome-launcher";
 // The single allowed `import ... from 'browser-pilot'` in the whole codebase.
 import {
   type BatchOptions,
@@ -23,6 +22,7 @@ import {
   type PageSnapshot,
   type Step,
 } from "browser-pilot";
+import * as ChromeLauncher from "chrome-launcher";
 import type { ConnectConfig } from "../config/types.ts";
 import {
   buildAttachConnectArgs,
@@ -30,10 +30,11 @@ import {
   normalizeBrowserUrl,
   type ResolvedAttachConnectArgs,
 } from "./connect-resolution.ts";
-import { clickStep, pressStep, resolveWaitForNavigation, submitOptions } from "./navigation.ts";
+import { clickStep, pressStep, submitOptions } from "./navigation.ts";
 import type {
   ActionOpts,
   Driver,
+  ElementState,
   FillOpts,
   GotoOpts,
   PageHandle,
@@ -127,7 +128,7 @@ export class BrowserPilotDriver implements Driver {
       this.activePage = await this.browser.newPage();
       const after = await this.listPageNames();
       const opened = after.filter((n) => !before.includes(n));
-      (this.connection as AttachConnection).openedPages.push(...opened);
+      this.connection.openedPages.push(...opened);
     }
     await this.installDialogHandler();
   }
@@ -192,7 +193,7 @@ export class BrowserPilotDriver implements Driver {
         await browser.disconnect(); // drops our CDP socket
       }
       if (conn?.kind === "launch") {
-        await conn.chrome.kill(); // we own the launched Chrome → kill it
+        conn.chrome.kill(); // we own the launched Chrome → kill it (synchronous)
       }
     } finally {
       this.browser = undefined;
@@ -260,6 +261,17 @@ export class BrowserPilotDriver implements Driver {
     }));
   }
 
+  /**
+   * Inspect the live-DOM state of an arbitrary `selector`, delegating straight to
+   * browser-pilot's `Page.elementState`. The returned `ElementState` is the re-exported bp
+   * shape (`exists`/`visible`/`count`/`text`/`boundingBox`), so it passes through 1:1 — the
+   * assertion engine reads it to resolve synthetic/CSS selectors the AX snapshot can't surface.
+   */
+  async elementState(selector: string): Promise<ElementState> {
+    const page = this.requirePage();
+    return page.elementState(selector);
+  }
+
   async batch(steps: Step[], opts?: BatchOptions): Promise<BatchResult> {
     const page = this.requirePage();
     // DRIVER DEFAULT: any navigating step (click/submit/press) that did not set
@@ -288,8 +300,7 @@ export class BrowserPilotDriver implements Driver {
 
   async fill(sel: string | string[], value: string, opts?: FillOpts): Promise<boolean> {
     const page = this.requirePage();
-    const fillOpts: { timeout?: number; optional?: boolean; blur?: boolean; verify?: boolean } =
-      {};
+    const fillOpts: { timeout?: number; optional?: boolean; blur?: boolean; verify?: boolean } = {};
     if (opts?.timeout !== undefined) fillOpts.timeout = opts.timeout;
     if (opts?.optional !== undefined) fillOpts.optional = opts.optional;
     if (opts?.blur !== undefined) fillOpts.blur = opts.blur;
@@ -327,8 +338,10 @@ export class BrowserPilotDriver implements Driver {
     return page.hover(sel, passThroughActionOpts(opts));
   }
 
-  async press(key: string, opts?: { modifiers?: Array<"Control" | "Shift" | "Alt" | "Meta"> }):
-    Promise<boolean> {
+  async press(
+    key: string,
+    opts?: { modifiers?: Array<"Control" | "Shift" | "Alt" | "Meta"> },
+  ): Promise<boolean> {
     // Route through batch so navigation settles (Enter often submits). `page.press` returns
     // void and never settles navigation; the one-step batch gives us both a boolean and the
     // forced `waitForNavigation`. Modifiers (if any) are applied via the direct press first.
@@ -422,7 +435,11 @@ export class BrowserPilotDriver implements Driver {
     //    baseline, byte-identical to before, so default behaviour is unchanged.
     const page = this.requirePage();
     if (opts?.mode === "structure") {
-      return bpCaptureStructureSignature(page);
+      // Layer 2: forward `[cache] ignore_regions` as browser-pilot's structural `maskSelectors`,
+      // so a masked subtree is excluded from the struct hash too (matches the masked-text side).
+      return opts.maskSelectors && opts.maskSelectors.length > 0
+        ? bpCaptureStructureSignature(page, { maskSelectors: opts.maskSelectors })
+        : bpCaptureStructureSignature(page);
     }
     return bpCaptureStateSignature(page);
   }

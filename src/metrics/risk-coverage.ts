@@ -100,7 +100,8 @@ export const RISK_COVERAGE: RiskCoverageEntry[] = [
   },
   {
     riskId: "matrix-07-drift",
-    description: "07-drift variants a:L0/L1 · b:L1 heal · c:L2 (staleness → L1 heal; hard drift → model).",
+    description:
+      "07-drift variants a:L0/L1 · b:L1 heal · c:L2 (staleness → L1 heal; hard drift → model).",
     coveredBy: ["src/metrics/aggregate.test.ts", "src/metrics/cost-model.test.ts"],
     liveValidationRequired: true,
     fixture: "07-drift",

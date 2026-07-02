@@ -11,23 +11,28 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { ConfigFileSchema, parseToml, TomlParseError, formatIssues } from "../config/index.ts";
+import { ConfigFileSchema, formatIssues, parseToml, TomlParseError } from "../config/index.ts";
+import type { LoadedFlow } from "../flow/index.ts";
 import {
+  collectImportScope,
   computeSourceHash,
+  expandForEachInDoc,
   FlowFileSchema,
+  ForEachError,
+  ImportCycleError,
+  isRunFlowPath,
   parseFlowFile,
   resolveImports,
-  ImportCycleError,
 } from "../flow/index.ts";
-import type { LoadedFlow } from "../flow/index.ts";
 import { FILE_KINDS } from "../types.ts";
 import {
+  diag,
   type ImportLintInfo,
+  type ImportScopeModule,
   type LintContext,
   type LockLintInfo,
   type RawDoc,
   type ResolvedRef,
-  diag,
 } from "./context.ts";
 import { RULES } from "./rules.ts";
 import type { Diagnostic, LintResult, MultiLintResult } from "./types.ts";
@@ -49,17 +54,14 @@ function tally(file: string, diagnostics: Diagnostic[]): LintResult {
 /** Read the sidecar lock at `<flow>.lock.toml`, returning only its `source_hash`. */
 function readLock(flowPath: string): LockLintInfo | null {
   // Convention: collocated lock named `<basename>.lock.toml` next to the flow.
-  const candidates = [
-    flowPath.replace(/\.toml$/i, ".lock.toml"),
-    `${flowPath}.lock.toml`,
-  ];
+  const candidates = [flowPath.replace(/\.toml$/i, ".lock.toml"), `${flowPath}.lock.toml`];
   for (const lockPath of candidates) {
     if (lockPath === flowPath) continue;
     if (!existsSync(lockPath)) continue;
     try {
       const text = readFileSync(lockPath, "utf8");
       const parsed = parseToml(text, lockPath);
-      const sh = isRecord(parsed) ? parsed["source_hash"] : undefined;
+      const sh = isRecord(parsed) ? parsed.source_hash : undefined;
       return { path: lockPath, sourceHash: typeof sh === "string" ? sh : null };
     } catch {
       // A malformed lock is not the flow's fault; surface nothing (lock manager validates it).
@@ -69,17 +71,24 @@ function readLock(flowPath: string): LockLintInfo | null {
   return null;
 }
 
-/** Resolve a flow's imports (existence + cycle), pre-baked for the pure rules. */
+/**
+ * Resolve a flow's imports + path-form `run` references (existence + cycle over the combined
+ * DAG, PLAN_v002 v002-6) and the file's library scope, pre-baked for the pure rules.
+ */
 async function resolveImportInfo(loaded: LoadedFlow): Promise<ImportLintInfo | null> {
   const flow = loaded.flow;
-  const hasImports =
-    flow.imports !== undefined || flow.setup !== undefined || flow.teardown !== undefined;
-  if (!hasImports) return null;
+  const runSteps = flow.steps.filter((s) => s.do === "run");
+  const hasRefs =
+    flow.imports !== undefined ||
+    flow.setup !== undefined ||
+    flow.teardown !== undefined ||
+    runSteps.length > 0;
+  if (!hasRefs) return null;
 
   const baseDir = dirname(loaded.path);
   const refs: ResolvedRef[] = [];
 
-  // Direct refs (existence check on each declared module/setup/teardown).
+  // Direct refs (existence check on each declared module/setup/teardown/run path).
   const addRef = (raw: string, relation: ResolvedRef["relation"]): void => {
     const resolved = isAbsolute(raw) ? raw : resolve(baseDir, raw);
     refs.push({ raw, resolved, exists: existsSync(resolved), relation });
@@ -88,19 +97,37 @@ async function resolveImportInfo(loaded: LoadedFlow): Promise<ImportLintInfo | n
   const imports = flow.imports;
   if (typeof imports === "string") addRef(imports, "import");
   else if (Array.isArray(imports)) {
-    for (const entry of imports) {
-      if (typeof entry === "string") addRef(entry, "import");
-      else addRef(entry.module, "import");
-    }
+    for (const entry of imports) addRef(entry, "import");
   }
   if (flow.setup) addRef(flow.setup, "setup");
   if (flow.teardown) addRef(flow.teardown, "teardown");
+  const seenRunPaths = new Set<string>();
+  for (const step of runSteps) {
+    if (step.do !== "run" || !isRunFlowPath(step.flow) || seenRunPaths.has(step.flow)) continue;
+    seenRunPaths.add(step.flow);
+    addRef(step.flow, "run");
+  }
 
-  // Cycle detection: only meaningful when all direct refs exist (resolveImports loads them).
+  // Cycle detection + scope: only meaningful when all direct refs exist (resolveImports
+  // loads them, including transitive imports and path-form run references).
   let cycle: string[] | null = null;
+  let scope: ImportScopeModule[] | null = null;
   if (refs.every((r) => r.exists)) {
     try {
-      await resolveImports(loaded);
+      const graph = await resolveImports(loaded);
+      // Annotate every direct ref with the referenced module's flow id + declared inputs.
+      for (const ref of refs) {
+        const node = graph.nodes.get(ref.resolved);
+        if (node) {
+          ref.flowId = node.loaded.flow.id;
+          ref.inputNames = Object.keys(node.loaded.flow.inputs ?? {});
+        }
+      }
+      scope = [...collectImportScope(loaded, graph).values()].flat().map((m) => ({
+        id: m.flow.id,
+        path: m.path,
+        inputNames: Object.keys(m.flow.inputs ?? {}),
+      }));
     } catch (err) {
       if (err instanceof ImportCycleError) cycle = err.chain;
       // Other resolution errors (a malformed transitive import) are reported by linting that
@@ -108,7 +135,7 @@ async function resolveImportInfo(loaded: LoadedFlow): Promise<ImportLintInfo | n
     }
   }
 
-  return { refs, cycle };
+  return { refs, cycle, scope };
 }
 
 /** Options for {@link lintFile}. */
@@ -154,7 +181,11 @@ export async function lintFile(path: string, opts?: LintFileOptions): Promise<Li
     doc = isRecord(parsed) ? parsed : {};
   } catch (err) {
     const detail =
-      err instanceof TomlParseError ? err.message : err instanceof Error ? err.message : String(err);
+      err instanceof TomlParseError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : String(err);
     return tally(file, [
       {
         ruleId: "parse/toml-syntax",
@@ -165,7 +196,26 @@ export async function lintFile(path: string, opts?: LintFileOptions): Promise<Li
     ]);
   }
 
-  const declaredKind = typeof doc["kind"] === "string" ? (doc["kind"] as string) : null;
+  // 2.5. Expand `for_each` steps on the RAW doc so every per-step rule sees concrete steps
+  // (matching the loader). A malformed `for_each` / misused loop token becomes a
+  // `flow/for-each` diagnostic; linting then continues against the un-expanded doc (best-effort).
+  let forEachDiag: Diagnostic | null = null;
+  try {
+    doc = expandForEachInDoc(doc, file);
+  } catch (err) {
+    if (err instanceof ForEachError) {
+      forEachDiag = {
+        ruleId: "flow/for-each",
+        severity: "error",
+        message: err.message,
+        file,
+      };
+    } else {
+      throw err;
+    }
+  }
+
+  const declaredKind = typeof doc.kind === "string" ? doc.kind : null;
 
   // 3. Schema-validate (best effort) to get a narrowed object + a catch-all schema diagnostic.
   const ctx: LintContext = {
@@ -205,7 +255,7 @@ export async function lintFile(path: string, opts?: LintFileOptions): Promise<Li
     // config
     const result = ConfigFileSchema.safeParse(doc);
     if (result.success) {
-      ctx.config = result.data as LintContext["config"];
+      ctx.config = result.data;
     } else {
       schemaDiag = diag(
         ctx,
@@ -219,6 +269,7 @@ export async function lintFile(path: string, opts?: LintFileOptions): Promise<Li
 
   // 4. Run every rule.
   const diagnostics: Diagnostic[] = [];
+  if (forEachDiag !== null) diagnostics.push(forEachDiag);
   for (const rule of RULES) {
     try {
       diagnostics.push(...rule.run(ctx));

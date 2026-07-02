@@ -19,8 +19,6 @@
 
 import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-
-import { RUN_FILES } from "../artifacts/index.ts";
 import type {
   AiCallEvent,
   AssertionResultEvent,
@@ -31,10 +29,9 @@ import type {
   RunEvent,
   RunStartEvent,
   RunSummary,
-  StepEndEvent,
-  StepStartEvent,
   TraceEvent,
 } from "../artifacts/index.ts";
+import { RUN_FILES } from "../artifacts/index.ts";
 import type { AdvisoryVerdictKind, AssertType, RunVerdict } from "../types.ts";
 import type { ParsedArgs } from "./index.ts";
 
@@ -357,8 +354,7 @@ function deriveDiagnosis(loaded: LoadedRun): Diagnosis {
     summary?.healed_steps !== undefined && summary.healed_steps.length > 0
       ? summary.healed_steps
       : healedFromEvents;
-  const driftCount =
-    runEnd?.totals.drift_count ?? summary?.drift_count ?? healedSteps.length;
+  const driftCount = runEnd?.totals.drift_count ?? summary?.drift_count ?? healedSteps.length;
 
   // --- cost / AI ---
   const totals = runEnd?.totals;

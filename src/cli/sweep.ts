@@ -19,12 +19,11 @@
 // least one run did not pass (failed/error/inconclusive) or threw, 2 on a usage error (no input).
 
 import { isAbsolute, join, resolve } from "node:path";
-
-import { resolveConfigWithDefaults } from "../config/index.ts";
 import type { Config, ResolvedConfig } from "../config/index.ts";
+import { resolveConfigWithDefaults } from "../config/index.ts";
 import { loadFlowFile } from "../flow/index.ts";
 import { expandPaths } from "../lint/index.ts";
-import { runFlow, type RunOptions } from "../runner/index.ts";
+import { type RunOptions, runFlow } from "../runner/index.ts";
 import type { ParsedArgs } from "./index.ts";
 
 /** The two arms a sweep can run each flow under. */
@@ -49,7 +48,10 @@ export interface SweepUnitResult extends SweepUnit {
 }
 
 /** The directory a given sweep unit's run artifacts are written to: `<campaign>/<flowId>/<arm>`. */
-export function sweepUnitOutDir(campaignDir: string, unit: Pick<SweepUnit, "flowId" | "arm">): string {
+export function sweepUnitOutDir(
+  campaignDir: string,
+  unit: Pick<SweepUnit, "flowId" | "arm">,
+): string {
   return join(campaignDir, unit.flowId, unit.arm);
 }
 
@@ -166,8 +168,11 @@ export async function runSweep(
     }
   }
 
-  const campaignDir = args.out !== null ? args.out : join(".flightplan-runs", `sweep-${Date.now()}`);
-  const absCampaignDir = isAbsolute(campaignDir) ? campaignDir : resolve(process.cwd(), campaignDir);
+  const campaignDir =
+    args.out !== null ? args.out : join(".flightplan-runs", `sweep-${Date.now()}`);
+  const absCampaignDir = isAbsolute(campaignDir)
+    ? campaignDir
+    : resolve(process.cwd(), campaignDir);
 
   const units = planSweep(flowPaths, flowIds, trials, args.compareBaseline);
   const results: SweepUnitResult[] = [];
@@ -185,7 +190,9 @@ export async function runSweep(
   const passCount = results.filter((r) => r.ok).length;
   const failCount = results.length - passCount;
   console.log("");
-  console.log(`Sweep complete: ${passCount} passed, ${failCount} not-passed of ${results.length} runs.`);
+  console.log(
+    `Sweep complete: ${passCount} passed, ${failCount} not-passed of ${results.length} runs.`,
+  );
   console.log(`Campaign dir: ${absCampaignDir}`);
   console.log(`Run \`flightplan report ${absCampaignDir}\` to aggregate the results.`);
 

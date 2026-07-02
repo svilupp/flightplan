@@ -44,9 +44,9 @@ import type {
 } from "./types.ts";
 import { TELEMETRY_SPAN_NAMES } from "./types.ts";
 
-export * from "./types.ts";
 export * from "./attrs.ts";
 export { DEFAULT_LOGFIRE_ENDPOINT, LogfireSink, toKeyValues, toOtlpPayload } from "./otlp.ts";
+export * from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Clock + id helpers
@@ -187,8 +187,8 @@ class LiveSpan implements SpanHandle {
       this.#degrade(err);
       return;
     }
-    if (result && typeof (result as Promise<void>).then === "function") {
-      (result as Promise<void>).then(undefined, (err) => this.#degrade(err));
+    if (result && typeof result.then === "function") {
+      result.then(undefined, (err) => this.#degrade(err));
     }
   }
 
@@ -345,7 +345,7 @@ export interface CreateTelemetryOptions {
  * throws and NEVER makes a network call here (the first POST is on the first span `end`).
  */
 export function createTelemetry(opts: CreateTelemetryOptions): Telemetry {
-  const env = opts.env ?? (process.env as Record<string, string | undefined>);
+  const env = opts.env ?? process.env;
   const onError = opts.onError ?? (() => {});
   let gating: TelemetryGating;
   try {

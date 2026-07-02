@@ -13,19 +13,19 @@
 // redacted by the caller before reaching `emitAiCall` (see events.ts REDACTION CONTRACT and
 // PLAN.md §5 Phase 5).
 
-import {
-  type AiCallEvent,
-  type AssertionResultEvent,
-  type BrowserActionEvent,
-  type ResolutionAttemptEvent,
-  type RunEndEvent,
-  type RunEvent,
-  type RunStartEvent,
-  type RunSummary,
-  type StepEndEvent,
-  type StepStartEvent,
-  type TraceEvent,
-  type AiEvent,
+import type {
+  AiCallEvent,
+  AiEvent,
+  AssertionResultEvent,
+  BrowserActionEvent,
+  ResolutionAttemptEvent,
+  RunEndEvent,
+  RunEvent,
+  RunStartEvent,
+  RunSummary,
+  StepEndEvent,
+  StepStartEvent,
+  TraceEvent,
 } from "./events.ts";
 import { JsonlWriter } from "./jsonl.ts";
 import type { RunDir } from "./run-dir.ts";

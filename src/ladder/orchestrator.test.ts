@@ -5,19 +5,23 @@
 import { describe, expect, test } from "bun:test";
 import {
   MockDriver,
+  makeFailureBatch,
   makeInteractiveElement,
   makeRankedCandidate,
   makeSnapshot,
   makeSuccessBatch,
-  makeFailureBatch,
 } from "../driver/index.ts";
 import type { ClickStep, Step } from "../flow/types.ts";
 import { computeMatchSignature } from "../lock/signature.ts";
-import { resolveStep, createLadder } from "./orchestrator.ts";
+import { createLadder, resolveStep } from "./orchestrator.ts";
 import type { AiHooks, CachedRecipe, ResolveContext, StepExecution } from "./types.ts";
 
-const clickStep = (over: Partial<ClickStep> = {}): Step =>
-  ({ id: "s1", do: "click", target: "Create order", ...over }) as ClickStep;
+const clickStep = (over: Partial<ClickStep> = {}): Step => ({
+  id: "s1",
+  do: "click",
+  target: "Create order",
+  ...over,
+});
 
 function snapshotWith(name: string) {
   return makeSnapshot({
@@ -90,12 +94,11 @@ describe("orchestrator — ONE shared snapshot cross-cut (Phase 7)", () => {
     const STRUCT = "/|s";
     const snap = makeSnapshot({
       url: URL,
-      interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Create order" })],
+      interactiveElements: [
+        makeInteractiveElement({ ref: "e1", role: "button", name: "Create order" }),
+      ],
     });
-    const d = new MockDriver()
-      .setSnapshot(snap)
-      .setSignature(TEXT)
-      .setStructureSignature(STRUCT);
+    const d = new MockDriver().setSnapshot(snap).setSignature(TEXT).setStructureSignature(STRUCT);
     ranksTo(d, "Create order");
     // L0 replay is the first batch (fails); L1's batch (second) succeeds.
     d.enqueueBatchResult(makeFailureBatch("missing"));
@@ -237,7 +240,12 @@ describe("orchestrator — auto-repair (Phase 5, Unit D) wires between L1 and th
     const ai: AiHooks = {
       resolveL2: async () => {
         l2Called = true;
-        return { ok: true, tier: "L2", escalate: false, durableSelector: "role:button:Create order" };
+        return {
+          ok: true,
+          tier: "L2",
+          escalate: false,
+          durableSelector: "role:button:Create order",
+        };
       },
     };
     const { execution, attempts } = await resolveStep(clickStep(), {
@@ -283,6 +291,105 @@ describe("orchestrator — auto-repair (Phase 5, Unit D) wires between L1 and th
     expect(attempts.map((a) => a.tier)).toEqual(["L0", "L1"]);
     expect(attempts.some((a) => a.note?.startsWith("repair:"))).toBe(false);
     expect(d.callsTo("press")).toHaveLength(0);
+  });
+});
+
+describe("orchestrator — single-step `tier_hint: 'vision'` routing (pillar c)", () => {
+  // A lone vision-hinted step still runs the free/deterministic L0+L1 tiers, but when it must
+  // escalate it SKIPS the L2 text tier and climbs STRAIGHT to L3 (vision). L3→L4 is unchanged.
+  test("L1 escalation on a vision-hinted step goes to L3, NOT L2", async () => {
+    const d = ranksTo(new MockDriver(), "Star icon");
+    d.setSnapshot(snapshotWith("Star icon"));
+    d.setBatchResult(makeFailureBatch("hidden")); // L1 escalates (non-repairable)
+
+    let l2Called = false;
+    let l3Called = false;
+    let l3Prior: StepExecution | undefined;
+    const ai: AiHooks = {
+      resolveL2: async () => {
+        l2Called = true;
+        return { ok: true, tier: "L2", escalate: false };
+      },
+      resolveL3: async (_step, prior) => {
+        l3Called = true;
+        l3Prior = prior;
+        return { ok: true, tier: "L3", strategy: "role_name", escalate: false };
+      },
+    };
+    const step = clickStep({ target: "Star icon", tier_hint: "vision" });
+    const { execution, attempts } = await resolveStep(step, { driver: d, now: () => 0, ai });
+
+    expect(l2Called).toBe(false); // the text tier is skipped for a vision hint
+    expect(l3Called).toBe(true);
+    expect(l3Prior?.tier).toBe("L1"); // L3 receives the failed L1 exec directly
+    expect(execution.tier).toBe("L3");
+    expect(execution.ok).toBe(true);
+    // L0 + L1 still ran ahead of the vision hop → only L2 is skipped in the recorded walk.
+    expect(attempts.map((a) => a.tier)).toEqual(["L0", "L1", "L3"]);
+  });
+
+  test("vision-hinted L3 escalation still climbs to L4 (L3→L4 unchanged)", async () => {
+    const d = ranksTo(new MockDriver(), "Star icon");
+    d.setSnapshot(snapshotWith("Star icon"));
+    d.setBatchResult(makeFailureBatch("hidden"));
+
+    const ai: AiHooks = {
+      resolveL2: async () => {
+        throw new Error("L2 must not be called for a vision-hinted step");
+      },
+      resolveL3: async () => ({ ok: false, tier: "L3", escalate: true }),
+      classifyL4: async () => ({ ok: false, tier: "L4", escalate: false, error: "bug" }),
+    };
+    const step = clickStep({ target: "Star icon", tier_hint: "vision" });
+    const { execution, attempts } = await resolveStep(step, { driver: d, now: () => 0, ai });
+
+    expect(attempts.map((a) => a.tier)).toEqual(["L0", "L1", "L3", "L4"]);
+    expect(execution.tier).toBe("L4");
+    expect(execution.escalate).toBe(false);
+  });
+
+  test("a NON-hinted step still climbs through L2 normally (control)", async () => {
+    const d = ranksTo(new MockDriver(), "Create order");
+    d.setSnapshot(snapshotWith("Create order"));
+    d.setBatchResult(makeFailureBatch("hidden"));
+
+    let l2Called = false;
+    const ai: AiHooks = {
+      resolveL2: async () => {
+        l2Called = true;
+        return { ok: true, tier: "L2", escalate: false };
+      },
+      resolveL3: async () => {
+        throw new Error("L3 must not be reached before L2 for a non-hinted step");
+      },
+    };
+    const { execution, attempts } = await resolveStep(clickStep(), { driver: d, now: () => 0, ai });
+
+    expect(l2Called).toBe(true);
+    expect(execution.tier).toBe("L2");
+    expect(attempts.map((a) => a.tier)).toEqual(["L0", "L1", "L2"]);
+  });
+
+  test("vision-hinted with only an L2 hook wired falls back to L2 (no L3 available)", async () => {
+    // Defensive: if the AI runtime has no vision hook, the hinted step must not dead-end — it
+    // degrades to the text tier rather than escalating past every hook.
+    const d = ranksTo(new MockDriver(), "Star icon");
+    d.setSnapshot(snapshotWith("Star icon"));
+    d.setBatchResult(makeFailureBatch("hidden"));
+
+    let l2Called = false;
+    const ai: AiHooks = {
+      resolveL2: async () => {
+        l2Called = true;
+        return { ok: true, tier: "L2", escalate: false };
+      },
+    };
+    const step = clickStep({ target: "Star icon", tier_hint: "vision" });
+    const { execution, attempts } = await resolveStep(step, { driver: d, now: () => 0, ai });
+
+    expect(l2Called).toBe(true);
+    expect(execution.tier).toBe("L2");
+    expect(attempts.map((a) => a.tier)).toEqual(["L0", "L1", "L2"]);
   });
 });
 

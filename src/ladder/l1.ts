@@ -19,21 +19,10 @@
 //   6. Surface `failureReason`/`coveringElement` as escalation signals; set `escalate:true` when
 //      L1 can't resolve OR the match is ambiguous (→ orchestrator hands off to L2 in Phase 4).
 
-import type { Step } from "../flow/types.ts";
+import type { BatchStep, InteractiveElement, PageSnapshot, StepResult } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
-import type {
-  BatchStep,
-  InteractiveElement,
-  PageSnapshot,
-  StepResult,
-} from "../driver/index.ts";
-import type {
-  BatchActionVerb,
-  RankedCandidate,
-  ResolveContext,
-  StepExecution,
-  StrategyCandidate,
-} from "./types.ts";
+import { normalizeTarget } from "../flow/normalize-target.ts";
+import type { Step } from "../flow/types.ts";
 import { buildHandoff, isAmbiguous } from "./fuzzy.ts";
 import { capturePageSignature } from "./page-signature.ts";
 import {
@@ -42,6 +31,13 @@ import {
   durableSelectorForElement,
   strategyForElement,
 } from "./strategy-array.ts";
+import type {
+  BatchActionVerb,
+  RankedCandidate,
+  ResolveContext,
+  StepExecution,
+  StrategyCandidate,
+} from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Step → action verb
@@ -67,16 +63,16 @@ export function actionVerbForStep(step: Step): BatchActionVerb | undefined {
   }
 }
 
-/** The intent/target text used for fuzzy matching: prefer `intent`, then `target`, then id. */
+/** The NL query text used for fuzzy matching: the target list's `nl` entry, else the step id. */
 function queryTextForStep(step: Step): string {
-  if ("intent" in step && step.intent) return step.intent;
-  if ("target" in step && step.target) return step.target;
-  return step.id;
+  const target = "target" in step ? step.target : undefined;
+  return normalizeTarget(target).nl ?? step.id;
 }
 
-/** A step's explicit author hints (empty when none / not a targeting step). */
+/** A step's explicit author selector entries (empty when none / not a targeting step). */
 function hintsForStep(step: Step): readonly string[] {
-  return "hints" in step && Array.isArray(step.hints) ? step.hints : [];
+  const target = "target" in step ? step.target : undefined;
+  return normalizeTarget(target).selectors;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +136,11 @@ function learnFromResult(
   result: StepResult,
   candidates: StrategyCandidate[],
   matchedElement: InteractiveElement | undefined,
-): { selectorUsed?: string; strategy: ReturnType<typeof selectorUsedToStrategy>; durableSelector?: string } {
+): {
+  selectorUsed?: string;
+  strategy: ReturnType<typeof selectorUsedToStrategy>;
+  durableSelector?: string;
+} {
   const selectorUsed = result.selectorUsed;
 
   if (selectorUsed) {
@@ -226,7 +226,7 @@ export async function resolveL1(
   // Capture the PRE-ACTION page-signature basis (composite match.sig + url) so a successful
   // resolution can be written back to the lock against the page it was learned on (Phase 3).
   // Computed here, before the batch acts, because a navigating action would mutate the page.
-  const signatureBasis = await capturePageSignature(ctx.driver, snap);
+  const signatureBasis = await capturePageSignature(ctx.driver, snap, ctx.cache);
 
   // (2) Native ranking: the driver's `resolveAll` runs browser-pilot's L1 race against the SAME
   // snapshot and executes nothing. `minConfidence:0` returns all candidates; L1's own `minScore`
@@ -317,7 +317,9 @@ export async function resolveL1(
       intent: intentText,
       action,
       ranked,
-      ...(stepResult.failureReason !== undefined ? { failureReason: stepResult.failureReason } : {}),
+      ...(stepResult.failureReason !== undefined
+        ? { failureReason: stepResult.failureReason }
+        : {}),
       ...(stepResult.coveringElement !== undefined
         ? { coveringElement: stepResult.coveringElement }
         : {}),

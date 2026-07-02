@@ -13,9 +13,9 @@ import { MockDriver } from "../driver/index.ts";
 import type { ClickStep, Step } from "../flow/types.ts";
 import type { ResolveContext, StepExecution } from "../ladder/index.ts";
 import type { Strategy } from "../types.ts";
-import { emptyLock, loadLockFile } from "./parse.ts";
-import { computeMatchSignature, deriveUrlGlob } from "./signature.ts";
+import { emptyLock, LockParseError, loadLockFile } from "./parse.ts";
 import { openLockSession } from "./session.ts";
+import { computeMatchSignature, deriveUrlGlob } from "./signature.ts";
 import type { LockFile } from "./types.ts";
 import { writeLockFile } from "./write.ts";
 
@@ -35,8 +35,12 @@ async function tmp(): Promise<string> {
   return dir;
 }
 
-const clickStep = (over: Partial<ClickStep> = {}): Step =>
-  ({ id: "s1", do: "click", target: "the button", ...over }) as ClickStep;
+const clickStep = (over: Partial<ClickStep> = {}): Step => ({
+  id: "s1",
+  do: "click",
+  target: "the button",
+  ...over,
+});
 
 /** A successful L1 resolution carrying its pre-action signature basis. */
 function exec(selector: string): StepExecution {
@@ -56,11 +60,14 @@ function lockWith(source: string, selector: string): LockFile {
     step: "s1",
     target: "the button",
     match: { url_glob: deriveUrlGlob(URL), sig: SIG },
-    selector,
-    strategy: "role_name",
-    green_runs: 3,
+    strategies: [{ kind: "role_name", selector, greens: 3, last_ok: "1970-01-01T00:00:00.000Z" }],
   });
   return lock;
+}
+
+/** The winner selector of a target's portfolio. */
+function onDiskWinner(lock: LockFile): string | undefined {
+  return lock.targets[0]?.strategies?.[0]?.selector;
 }
 
 describe("LockSession — first learn (auto)", () => {
@@ -82,10 +89,10 @@ describe("LockSession — first learn (auto)", () => {
     const written = await session.flush();
     expect(written).toEqual([lockPath]);
 
-    const onDisk = await loadLockFile(lockPath);
+    const onDisk = await loadLockFile(lockPath, undefined, NOW);
     expect(onDisk.targets).toHaveLength(1);
-    expect(onDisk.targets[0]?.selector).toBe("role:button:Go");
-    expect(onDisk.targets[0]?.green_runs).toBe(1);
+    expect(onDiskWinner(onDisk)).toBe("role:button:Go");
+    expect(onDisk.targets[0]?.strategies?.[0]?.greens).toBe(1);
   });
 });
 
@@ -110,9 +117,10 @@ describe("LockSession — auto heal (drift)", () => {
     expect(rec.fail).toBe(false);
     await session.flush();
 
-    const onDisk = await loadLockFile(lockPath);
-    expect(onDisk.targets[0]?.selector).toBe("role:button:New");
-    expect(onDisk.targets[0]?.candidates?.some((c) => c.selector === "role:button:Old")).toBe(true);
+    const onDisk = await loadLockFile(lockPath, undefined, NOW);
+    expect(onDiskWinner(onDisk)).toBe("role:button:New");
+    // The prior winner is demoted but still present in the portfolio (drift resets confidence).
+    expect(onDisk.targets[0]?.strategies?.some((s) => s.selector === "role:button:Old")).toBe(true);
   });
 });
 
@@ -138,9 +146,73 @@ describe("LockSession — frozen (CI)", () => {
     const written = await session.flush();
     expect(written).toEqual([]);
 
-    // The committed lock is unchanged (still the old selector).
-    const onDisk = await loadLockFile(lockPath);
-    expect(onDisk.targets[0]?.selector).toBe("role:button:Old");
+    // The committed lock is unchanged (still the old winner).
+    const onDisk = await loadLockFile(lockPath, undefined, NOW);
+    expect(onDiskWinner(onDisk)).toBe("role:button:Old");
+  });
+});
+
+describe("LockSession — malformed lock by mode (B4)", () => {
+  const MALFORMED = "this is = = not valid toml";
+
+  test("frozen: a malformed committed lock FAILS FAST (rethrows LockParseError)", async () => {
+    const dir = await tmp();
+    const lockPath = join(dir, "flow.lock.toml");
+    await Bun.write(lockPath, MALFORMED);
+
+    // Frozen's contract: the committed lock is authoritative — a corrupt one must not silently
+    // downgrade to empty (which would let the run re-resolve fresh and pass with drift_count=0).
+    let threw: unknown;
+    try {
+      await openLockSession({
+        lockPath,
+        source: "flow.toml",
+        sourceHash: "sha256:x",
+        mode: "frozen",
+        inferStrategy,
+        now: NOW,
+      });
+    } catch (err) {
+      threw = err;
+    }
+    expect(threw).toBeInstanceOf(LockParseError);
+  });
+
+  test("auto: a malformed lock downgrades to empty + warns (auto-heal default preserved)", async () => {
+    const dir = await tmp();
+    const lockPath = join(dir, "flow.lock.toml");
+    await Bun.write(lockPath, MALFORMED);
+
+    const warnings: string[] = [];
+    const session = await openLockSession({
+      lockPath,
+      source: "flow.toml",
+      sourceHash: "sha256:x",
+      mode: "auto",
+      inferStrategy,
+      now: NOW,
+      onWarn: (m) => warnings.push(m),
+    });
+    // No throw; the composed view is empty (fresh) and a warning was surfaced.
+    expect(session.collisions).toEqual([]);
+    expect(warnings.some((w) => w.includes("malformed lock"))).toBe(true);
+  });
+
+  test("no-write: a malformed lock also downgrades to empty (never fails)", async () => {
+    const dir = await tmp();
+    const lockPath = join(dir, "flow.lock.toml");
+    await Bun.write(lockPath, MALFORMED);
+
+    const session = await openLockSession({
+      lockPath,
+      source: "flow.toml",
+      sourceHash: "sha256:x",
+      mode: "no-write",
+      inferStrategy,
+      now: NOW,
+      onWarn: () => {},
+    });
+    expect(session.collisions).toEqual([]);
   });
 });
 
@@ -165,8 +237,8 @@ describe("LockSession — no-write", () => {
     expect(rec.fail).toBe(false);
     expect(await session.flush()).toEqual([]);
 
-    const onDisk = await loadLockFile(lockPath);
-    expect(onDisk.targets[0]?.selector).toBe("role:button:Old");
+    const onDisk = await loadLockFile(lockPath, undefined, NOW);
+    expect(onDiskWinner(onDisk)).toBe("role:button:Old");
   });
 });
 
@@ -185,7 +257,9 @@ describe("LockSession — imported-module composition", () => {
       mode: "auto",
       inferStrategy,
       now: NOW,
-      imported: [{ lockPath: modPath, source: "mod.toml", sourceHash: "sha256:m", namespace: "mod" }],
+      imported: [
+        { lockPath: modPath, source: "mod.toml", sourceHash: "sha256:m", namespace: "mod" },
+      ],
       hookOptions: { namespaceFor: () => "mod" },
     });
 

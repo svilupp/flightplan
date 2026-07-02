@@ -18,6 +18,7 @@
 //   d.setSignature("https://x|abc123")       // string from captureStateSignature() (text mode)
 //   d.setStructureSignature("x|struct")       // string from captureStateSignature({mode:'structure'})
 //   d.setResolveAll([cand1, cand2])           // RankedCandidate[] returned by resolveAll()
+//   d.setElementState({exists,visible,count,text,boundingBox}) // ElementState from elementState()
 //   d.setScreenshot("<base64>")               // string returned by screenshot()
 //   d.setActionOutcome(true|false)            // boolean returned by every single action
 //   d.setActionOutcome(false, "click")        // ...or scope the default to one action verb
@@ -28,6 +29,7 @@
 //   d.enqueueSignature("u|h")                       // captureStateSignature() (text) one-shot
 //   d.enqueueStructureSignature("u|s")              // captureStateSignature({mode:'structure'}) one-shot
 //   d.enqueueResolveAll([cand])                     // resolveAll() one-shot
+//   d.enqueueElementState(state)                    // elementState() one-shot
 //   d.enqueueScreenshot("b64")                      // screenshot() one-shot
 //   d.enqueueActionOutcome(true, "click")           // next click() returns true (verb optional)
 //
@@ -39,6 +41,7 @@
 //   d.onBatch((steps, opts, callIndex) => BatchResult)    // compute a BatchResult per call
 //   d.onSnapshot((opts, callIndex) => PageSnapshot)
 //   d.onResolveAll((intent, opts, callIndex) => RankedCandidate[])
+//   d.onElementState((selector, callIndex) => ElementState)  // compute per selector per call
 //   A function provider takes precedence over queues and defaults.
 //
 // CALL LOG (assert what happened):
@@ -61,6 +64,7 @@ import type {
   BatchResult,
   BatchStep,
   Driver,
+  ElementState,
   FillOpts,
   GotoOpts,
   PageHandle,
@@ -88,6 +92,7 @@ export interface DriverCall {
     | "snapshot"
     | "batch"
     | "resolveAll"
+    | "elementState"
     | "click"
     | "fill"
     | "type"
@@ -122,6 +127,11 @@ export interface MockDriverDefaults {
   screenshot?: string;
   /** Default returned by `resolveAll()` (Phase 7 Change 3). Defaults to `[]`. */
   resolveAll?: RankedCandidate[];
+  /**
+   * Default returned by `elementState()`. Defaults to the "no such element" state
+   * `{ exists:false, visible:false, count:0, text:"", boundingBox:null }`.
+   */
+  elementState?: ElementState;
   /** Default boolean for every single action. Defaults to `true`. */
   actionOutcome?: boolean;
 }
@@ -144,6 +154,16 @@ const EMPTY_BATCH_RESULT: BatchResult = {
   totalDurationMs: 0,
 };
 
+/** The "no such element" default `elementState()` returns when nothing is scripted. */
+const ABSENT_ELEMENT_STATE: ElementState = {
+  exists: false,
+  visible: false,
+  count: 0,
+  text: "",
+  value: null,
+  boundingBox: null,
+};
+
 /**
  * A fully-scriptable, dependency-free `Driver` for unit tests. See the file header for the
  * complete scripting API.
@@ -164,6 +184,7 @@ export class MockDriver implements Driver {
   private defaultStructureSignature: string;
   private defaultScreenshot: string;
   private defaultResolveAll: RankedCandidate[];
+  private defaultElementState: ElementState;
   private defaultActionOutcome: boolean;
   private defaultActionOutcomeByVerb = new Map<ActionVerb, boolean>();
 
@@ -174,6 +195,7 @@ export class MockDriver implements Driver {
   private structureSignatureQueue: string[] = [];
   private screenshotQueue: string[] = [];
   private resolveAllQueue: RankedCandidate[][] = [];
+  private elementStateQueue: ElementState[] = [];
   private actionQueue: Array<{ verb?: ActionVerb; outcome: boolean }> = [];
 
   // --- by-selector outcomes ---
@@ -197,6 +219,7 @@ export class MockDriver implements Driver {
     opts: ResolveAllOpts | undefined,
     callIndex: number,
   ) => RankedCandidate[];
+  private elementStateProvider?: (selector: string, callIndex: number) => ElementState;
 
   // --- ref map (round-trips through export/import) ---
   private refMap: RefMap = {};
@@ -217,6 +240,7 @@ export class MockDriver implements Driver {
     this.defaultStructureSignature = defaults.structureSignature ?? "about:blank|struct0";
     this.defaultScreenshot = defaults.screenshot ?? "";
     this.defaultResolveAll = defaults.resolveAll ?? [];
+    this.defaultElementState = defaults.elementState ?? structuredClone(ABSENT_ELEMENT_STATE);
     this.defaultActionOutcome = defaults.actionOutcome ?? true;
   }
 
@@ -251,6 +275,11 @@ export class MockDriver implements Driver {
   /** Set the default ranked-candidate list returned by `resolveAll()` (Phase 7 Change 3). */
   setResolveAll(candidates: RankedCandidate[]): this {
     this.defaultResolveAll = candidates;
+    return this;
+  }
+  /** Set the default {@link ElementState} returned by `elementState()`. */
+  setElementState(state: ElementState): this {
+    this.defaultElementState = state;
     return this;
   }
   /**
@@ -316,6 +345,11 @@ export class MockDriver implements Driver {
     this.resolveAllQueue.push(...results);
     return this;
   }
+  /** Queue one-shot `elementState()` results (FIFO, consumed before the default). */
+  enqueueElementState(...states: ElementState[]): this {
+    this.elementStateQueue.push(...states);
+    return this;
+  }
   /** Queue one-shot URLs returned by `currentUrl()` (FIFO, before the default). */
   enqueueCurrentUrl(...urls: string[]): this {
     this.currentUrlQueue.push(...urls);
@@ -354,6 +388,14 @@ export class MockDriver implements Driver {
     this.resolveAllProvider = fn;
     return this;
   }
+  /**
+   * Provide a function that computes the `elementState()` return per call (keyed on the queried
+   * `selector`). Highest precedence — takes priority over the queue and the default.
+   */
+  onElementState(fn: (selector: string, callIndex: number) => ElementState): this {
+    this.elementStateProvider = fn;
+    return this;
+  }
 
   // =========================================================================
   // call-log helpers
@@ -379,12 +421,14 @@ export class MockDriver implements Driver {
     this.structureSignatureQueue = [];
     this.screenshotQueue = [];
     this.resolveAllQueue = [];
+    this.elementStateQueue = [];
     this.actionQueue = [];
     this.currentUrlQueue = [];
     this.outcomeBySelector.clear();
     this.snapshotProvider = undefined;
     this.batchProvider = undefined;
     this.resolveAllProvider = undefined;
+    this.elementStateProvider = undefined;
     this.recordingDir = undefined;
     return this;
   }
@@ -457,6 +501,15 @@ export class MockDriver implements Driver {
     if (this.resolveAllProvider) return this.resolveAllProvider(intent, opts, callIndex);
     const queued = this.resolveAllQueue.shift();
     return queued ?? this.defaultResolveAll;
+  }
+
+  async elementState(selector: string): Promise<ElementState> {
+    const callIndex = this.callCounter;
+    this.record("elementState", [selector]);
+    // Precedence mirrors resolveAll/snapshot: dynamic provider → one-shot queue → default.
+    if (this.elementStateProvider) return this.elementStateProvider(selector, callIndex);
+    const queued = this.elementStateQueue.shift();
+    return queued ?? this.defaultElementState;
   }
 
   // =========================================================================

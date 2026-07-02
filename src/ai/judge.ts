@@ -7,14 +7,14 @@
 // event uses `role:'judge'` while cost is attributed to the underlying model role (vision/resolver)
 // so the run summary's `model_usage` rows stay within the narrow role union.
 
-import type { AiJudgeAssertion } from "../flow/types.ts";
 import type { AiJudgeOptions, AssertionResult } from "../assert/types.ts";
 import type { PageSnapshot } from "../driver/types.ts";
+import type { AiJudgeAssertion } from "../flow/types.ts";
 import { isBudgetExceeded } from "./budget.ts";
-import { aiCall } from "./call.ts";
 import type { AiCallRuntime } from "./call.ts";
-import { JudgeSchema } from "./schemas.ts";
+import { aiCall } from "./call.ts";
 import { AI_MIN_OUTPUT_TOKENS } from "./resolver-l2.ts";
+import { JudgeSchema } from "./schemas.ts";
 import type { AiMessage } from "./types.ts";
 
 /** Default modalities when an `ai_judge` omits `inputs` (PROPOSAL: extracted text). */

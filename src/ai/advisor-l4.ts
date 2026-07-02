@@ -10,11 +10,11 @@ import type { Step } from "../flow/types.ts";
 import type { ResolveContext, StepExecution } from "../ladder/index.ts";
 import type { AdvisoryVerdict } from "../types.ts";
 import { isBudgetExceeded } from "./budget.ts";
-import { aiCall } from "./call.ts";
 import type { AiCallRuntime } from "./call.ts";
-import { AdvisorVerdictSchema } from "./schemas.ts";
-import { AI_MIN_OUTPUT_TOKENS } from "./resolver-l2.ts";
+import { aiCall } from "./call.ts";
 import { intentTextForStep } from "./resolve-common.ts";
+import { AI_MIN_OUTPUT_TOKENS } from "./resolver-l2.ts";
+import { AdvisorVerdictSchema } from "./schemas.ts";
 
 /** A one-line human summary of a verdict (the `StepExecution.error` / log note). */
 export function summarizeVerdict(v: AdvisoryVerdict): string {
@@ -63,7 +63,7 @@ export async function classifyL4(
   prior: StepExecution,
   _ctx: ResolveContext,
 ): Promise<StepExecution> {
-  let res;
+  let res: Awaited<ReturnType<typeof aiCall<typeof AdvisorVerdictSchema>>>;
   try {
     res = await aiCall(rt, {
       modelRole: "advisor",

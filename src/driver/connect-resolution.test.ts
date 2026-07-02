@@ -10,12 +10,7 @@ import {
   DEFAULT_CHROME_FLAGS,
   normalizeBrowserUrl,
 } from "./connect-resolution.ts";
-import {
-  clickStep,
-  pressStep,
-  resolveWaitForNavigation,
-  submitOptions,
-} from "./navigation.ts";
+import { clickStep, pressStep, resolveWaitForNavigation, submitOptions } from "./navigation.ts";
 
 describe("connectMode", () => {
   test("derives attach vs launch from the discriminant", () => {
@@ -41,9 +36,9 @@ describe("attachWsResolutionSource — precedence", () => {
   });
   test("autodiscover is the fallback", () => {
     expect(attachWsResolutionSource({ mode: "attach" })).toBe("autodiscover");
-    expect(
-      attachWsResolutionSource({ mode: "attach", autodiscover: { channel: "stable" } }),
-    ).toBe("autodiscover");
+    expect(attachWsResolutionSource({ mode: "attach", autodiscover: { channel: "stable" } })).toBe(
+      "autodiscover",
+    );
   });
 });
 

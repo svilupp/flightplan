@@ -1,0 +1,14 @@
+# BROKEN: click step with no target at all → steps/target-present
+version = 1
+kind = "flow"
+id = "broken.missing_target"
+description = "Click step without a target"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "click_next"
+do = "click"

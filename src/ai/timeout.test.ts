@@ -14,11 +14,11 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import type { AiCallEvent } from "../artifacts/events.ts";
-import { aiCall, DEFAULT_TIMEOUT_MS_BY_ROLE } from "./call.ts";
-import type { AiCallRuntime } from "./call.ts";
-import { resolveRegistry } from "./registry.ts";
 import { BudgetTracker, resolveBudgetLimits } from "./budget.ts";
+import type { AiCallRuntime } from "./call.ts";
+import { aiCall, DEFAULT_TIMEOUT_MS_BY_ROLE } from "./call.ts";
 import { CostAccumulator } from "./cost.ts";
+import { resolveRegistry } from "./registry.ts";
 import type { AiCallContext, AiCallSink, GenerateFn } from "./types.ts";
 
 class RecordingSink implements AiCallSink {
@@ -46,7 +46,10 @@ function hangingGenerate(): GenerateFn {
     });
 }
 
-function makeRt(generate: GenerateFn, timeoutMsByRole: AiCallRuntime["timeoutMsByRole"]): {
+function makeRt(
+  generate: GenerateFn,
+  timeoutMsByRole: AiCallRuntime["timeoutMsByRole"],
+): {
   rt: AiCallRuntime;
   sink: RecordingSink;
 } {
@@ -99,7 +102,8 @@ describe("aiCall — timeout circuit breaker (P6 §2)", () => {
       err.name = "TimeoutError";
       return Promise.reject(err);
     };
-    const noOutputFn: GenerateFn = () => Promise.reject(new Error("AI_NoOutputGeneratedError: No output generated."));
+    const noOutputFn: GenerateFn = () =>
+      Promise.reject(new Error("AI_NoOutputGeneratedError: No output generated."));
     const genericErrFn: GenerateFn = () => Promise.reject(new Error("rate limited"));
 
     const ctx: AiCallContext<typeof schema> = {
@@ -125,7 +129,11 @@ describe("aiCall — timeout circuit breaker (P6 §2)", () => {
     let seenTimeoutMs: number | undefined;
     const captureFn: GenerateFn = async (req) => {
       seenTimeoutMs = req.timeoutMs;
-      return { output: { answer: "ok" }, model: req.models[0]!, usage: { inputTokens: 1, outputTokens: 1 } };
+      return {
+        output: { answer: "ok" },
+        model: req.models[0]!,
+        usage: { inputTokens: 1, outputTokens: 1 },
+      };
     };
     const { rt } = makeRt(captureFn, undefined);
     const ctx: AiCallContext<typeof schema> = {

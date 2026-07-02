@@ -144,6 +144,12 @@ export interface BrowserActionEvent {
   selectorUsed?: string;
   /** The L1 strategy that won, when known. */
   strategy?: Strategy;
+  /**
+   * L0 PORTFOLIO health (DESIGN §3.4): the agreement count of the strategy race that resolved the
+   * step, `"<agreeing>/<parseable>"` (e.g. `"3/4"`). Present only on an L0 portfolio-race hit; lets
+   * `report`/`explain` show how many remembered strategies corroborate the winner. Absent at L1+.
+   */
+  agreement?: string;
   ok: boolean;
   /** browser-pilot `failureReason`, when the action failed. */
   failureReason?: string;
@@ -175,11 +181,13 @@ export type TraceEvent = BrowserActionEvent | ResolutionAttemptEvent;
 // ---------------------------------------------------------------------------
 
 /**
- * The role of a model call. Wider than ModelRoleName: a `judge` (ai_judge assertion) routes
- * to a text or vision model but is logged distinctly from the resolver/advisor/vision tiers.
+ * The role of a model call. Wider than ModelRoleName in one direction (a `judge` routes to a text
+ * or vision model but is logged distinctly) and narrower in another (a `planner_capable` escalation
+ * is still logged as `planner`). An L5 path-repair planner call (PLAN_v003 v003-6) is logged as
+ * `planner` regardless of which arm — cheap or capable — produced it.
  */
-export type AiCallRole = "resolver" | "advisor" | "vision" | "judge";
-export const AI_CALL_ROLES = ["resolver", "advisor", "vision", "judge"] as const;
+export type AiCallRole = "resolver" | "advisor" | "vision" | "judge" | "planner";
+export const AI_CALL_ROLES = ["resolver", "advisor", "vision", "judge", "planner"] as const;
 
 /**
  * A single model call.
@@ -254,6 +262,13 @@ export interface RunSummary {
   model_usage: ModelUsage[];
   /** Set on an `intent_changed` advisory verdict. */
   proposed_patch_path: string | null;
+  /**
+   * L5 path-repair accounting (PLAN_v003 v003-6): how many divergences the planner repaired this
+   * run, and the ids of the synthetic repair steps it spliced in + executed. `0` / `[]` when the
+   * planner never fired (the overwhelming common case — no divergence, or no AI runtime).
+   */
+  replan_count: number;
+  repaired_steps: string[];
   /** Per-step rollup (the addition over the wire RunSummary; consumed by `explain`). */
   steps: StepSummary[];
 }

@@ -1,416 +1,214 @@
-version = 1
+version = 2
 source = "examples/flows/wizard.toml"
-source_hash = "sha256:9fa4d4bdd3ee88384dd7988a341e4f39cdf605119d7e49c240f6703d4b9fe87c"
+source_hash = "sha256:d9bb65708cba178064146a7611c53b471cf79d8e7fa40a40629fd2695d70fcb5"
 description = "Complete the multi-step wizard and assert the welcome result"
 
 [[targets]]
 step = "advance_to_plan"
 target = "the Next button"
-strategy = "testid"
-selector = "[data-testid='wizard-next-1']"
-green_runs = 1
-last_seen = "2026-07-01T13:09:28.477Z"
+last_seen = "2026-07-01T22:01:11.094Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
-sig = "text:http://localhost:3000/wizard|-v777t2;struct:/wizard|1rt5jrj"
+sig = "text:http://localhost:3000/wizard|hmpxif;struct:/wizard|1rt5jrj"
 
-[[targets.candidates]]
-strategy = "css"
-selector = "#fullname"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-next-1']"
+greens = 4
+last_ok = "2026-07-01T22:01:11.094Z"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Full name\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Next\"]"
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Next\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:textbox:\"Full name\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Full name\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Next\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Next|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:textbox|Full name||id=fullname|name=fullname"
-
-[[targets.candidates]]
-strategy = "testid"
-selector = "[data-testid=\"wizard-name\"]"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-next-1\"]"
+greens = 3
+last_ok = "2026-07-01T22:01:11.094Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-name\"]"
+greens = 0
+last_drift = "2026-07-01T22:01:11.094Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Next\""
+greens = 0
+last_drift = "2026-07-01T22:01:11.094Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:textbox:\"Full name\""
+greens = 0
+last_drift = "2026-07-01T22:01:11.094Z"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Full name\"]"
+greens = 0
+last_drift = "2026-07-01T22:01:11.094Z"
 
 [[targets]]
 step = "advance_to_review"
 target = "the Next button"
-strategy = "testid"
-selector = "[data-testid='wizard-next-2']"
-green_runs = 1
 last_seen = "2026-07-01T13:09:28.844Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
 sig = "text:http://localhost:3000/wizard|uc13cs;struct:/wizard|1h9uakk"
 
-[[targets.candidates]]
-strategy = "css"
-selector = "#plan"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-next-2']"
+greens = 1
+last_ok = "2026-07-01T13:09:28.844Z"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Back\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Enterprise\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Free\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Next\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Plan\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Pro\"]"
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Back\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Next\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:combobox:\"Plan\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:option:\"Enterprise\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:option:\"Free\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:option:\"Pro\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Back\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Enterprise\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Free\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Next\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Plan\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Pro\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Back|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Next|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:combobox|Plan||id=plan|name=plan"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:option|Enterprise|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:option|Free|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:option|Pro|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-back-2\"]"
+greens = 0
 
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-next-2\"]"
+greens = 0
 
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-plan\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Back\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Next\""
+greens = 0
 
 [[targets]]
 step = "choose_plan"
 target = "the plan dropdown"
-strategy = "testid"
-selector = "[data-testid='wizard-plan']"
-green_runs = 1
 last_seen = "2026-07-01T13:09:28.655Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
 sig = "text:http://localhost:3000/wizard|uc13cs;struct:/wizard|1h9uakk"
 
-[[targets.candidates]]
-strategy = "css"
-selector = "#plan"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-plan']"
+greens = 1
+last_ok = "2026-07-01T13:09:28.655Z"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Back\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Enterprise\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Free\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Next\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Plan\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Pro\"]"
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Back\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Next\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:combobox:\"Plan\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:option:\"Enterprise\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:option:\"Free\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:option:\"Pro\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Back\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Enterprise\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Free\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Next\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Plan\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Pro\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Back|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Next|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:combobox|Plan||id=plan|name=plan"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:option|Enterprise|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:option|Free|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:option|Pro|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-back-2\"]"
+greens = 0
 
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-next-2\"]"
+greens = 0
 
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-plan\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Back\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Next\""
+greens = 0
 
 [[targets]]
 step = "enter_name"
 target = "the full name field"
-strategy = "testid"
-selector = "[data-testid='wizard-name']"
-green_runs = 1
-last_seen = "2026-07-01T13:09:28.293Z"
+last_seen = "2026-07-01T22:01:10.856Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
-sig = "text:http://localhost:3000/wizard|-v777t2;struct:/wizard|1fafles"
+sig = "text:http://localhost:3000/wizard|pxsorp;struct:/wizard|1fafles"
 
-[[targets.candidates]]
-strategy = "css"
-selector = "#fullname"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-name']"
+greens = 4
+last_ok = "2026-07-01T22:01:10.856Z"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Full name\"]"
-
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Next\"]"
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Next\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:textbox:\"Full name\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Full name\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Next\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Next|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:textbox|Full name||id=fullname|name=fullname"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-name\"]"
+greens = 3
+last_ok = "2026-07-01T22:01:10.856Z"
 
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Full name\"]"
+greens = 3
+last_ok = "2026-07-01T22:01:10.856Z"
+
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-next-1\"]"
+greens = 0
+last_drift = "2026-07-01T22:01:10.856Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Next\""
+greens = 0
+last_drift = "2026-07-01T22:01:10.856Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:textbox:\"Full name\""
+greens = 0
+last_drift = "2026-07-01T22:01:10.856Z"
 
 [[targets]]
 step = "submit_wizard"
 target = "the Submit button"
-strategy = "testid"
-selector = "[data-testid='wizard-submit']"
-green_runs = 1
 last_seen = "2026-07-01T13:09:29.028Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
 sig = "text:http://localhost:3000/wizard|c2xtca;struct:/wizard|79da2d"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Back\"]"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-submit']"
+greens = 1
+last_ok = "2026-07-01T13:09:29.028Z"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Submit\"]"
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Back\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Submit\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Back\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Submit\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Back|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Submit|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-back-3\"]"
+greens = 0
 
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"wizard-submit\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Back\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Submit\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Back\"]"
+greens = 0

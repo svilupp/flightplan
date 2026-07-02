@@ -64,7 +64,7 @@ export function collectRefs(value: string): TemplateRef[] {
  * (e.g. `${steps.x}`, deferred to v1) throw as well — they are not valid in v0.
  */
 export function applyTemplating(value: string, ctx: TemplateContext): string {
-  const env = ctx.env ?? (process.env as Record<string, string | undefined>);
+  const env = ctx.env ?? process.env;
   return value.replace(TOKEN_RE, (raw, source: string, name: string) => {
     if (source === "inputs") {
       const v = ctx.inputs[name];
@@ -91,6 +91,136 @@ export function applyTemplating(value: string, ctx: TemplateContext): string {
         `v0 supports only \${inputs.*} and \${env.*}.`,
     );
   });
+}
+
+// ---------------------------------------------------------------------------
+// for_each loop templating (`${item}`, `${item.key}`, `${loop.index}`, `${loop.index1}`).
+//
+// This is SCOPED: it runs ONLY while expanding a `for_each` step at load-time, and resolves
+// exactly the loop tokens for the current iteration. It intentionally does NOT touch
+// `${inputs.*}` / `${env.*}` (those are resolved later by applyTemplating with the run's inputs),
+// so a loop token can never mask a missing input and vice-versa. Unknown loop tokens (e.g.
+// `${item.missing}`, `${loop.bogus}`) throw {@link TemplateError} so a typo fails loud rather
+// than silently expanding to nothing.
+// ---------------------------------------------------------------------------
+
+/** The per-iteration loop scope for a `for_each` expansion. */
+export interface LoopContext {
+  /** The current item — a bare string, or a record (array-of-tables entry) exposing `${item.key}`. */
+  item: string | Record<string, string>;
+  /** 0-based iteration index (`${loop.index}`). */
+  index: number;
+}
+
+// `${ item }`, `${ item.key }`, `${ loop.index }`, `${ loop.index1 }`. Whitespace tolerated.
+const LOOP_TOKEN_RE = /\$\{\s*(item|loop)(?:\s*\.\s*([a-zA-Z_][\w.-]*))?\s*\}/g;
+
+/**
+ * Substitute the loop tokens (`${item}`, `${item.key}`, `${loop.index}`, `${loop.index1}`) in a
+ * single string against `loop`. Leaves `${inputs.*}` / `${env.*}` and everything else untouched.
+ */
+export function applyLoopTemplating(value: string, loop: LoopContext): string {
+  return value.replace(LOOP_TOKEN_RE, (raw, source: string, key: string | undefined) => {
+    if (source === "item") {
+      if (key === undefined) {
+        if (typeof loop.item !== "string") {
+          throw new TemplateError(
+            `\`${raw}\` refers to the whole item, but this \`for_each\` item is a table — ` +
+              `use \`\${item.<key>}\` to reference one of its fields.`,
+          );
+        }
+        return loop.item;
+      }
+      if (typeof loop.item === "string") {
+        throw new TemplateError(
+          `\`${raw}\` references field \`${key}\`, but this \`for_each\` item is a plain string. ` +
+            `Use \`\${item}\` for a string item, or make the item a table with a \`${key}\` key.`,
+        );
+      }
+      const v = loop.item[key];
+      if (v === undefined) {
+        throw new TemplateError(
+          `\`${raw}\` references unknown item field \`${key}\` ` +
+            `(available: ${Object.keys(loop.item).join(", ") || "<none>"}).`,
+        );
+      }
+      return v;
+    }
+    // source === "loop"
+    if (key === "index") return String(loop.index);
+    if (key === "index1") return String(loop.index + 1);
+    throw new TemplateError(
+      `Unknown loop token \`${raw}\`. Supported: \${loop.index} (0-based), \${loop.index1} (1-based).`,
+    );
+  });
+}
+
+/**
+ * Recursively apply loop templating to every string leaf (objects, arrays, scalars). Mirrors
+ * {@link applyTemplatingDeep} but for the `for_each` loop scope. Returns a new structure.
+ */
+export function applyLoopTemplatingDeep<T>(value: T, loop: LoopContext): T {
+  if (typeof value === "string") {
+    return applyLoopTemplating(value, loop) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => applyLoopTemplatingDeep(v, loop)) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = applyLoopTemplatingDeep(v, loop);
+    }
+    return out as T;
+  }
+  return value;
+}
+
+/** True if the string contains any `${item}` / `${item.*}` / `${loop.*}` token. */
+export function hasLoopToken(value: string): boolean {
+  LOOP_TOKEN_RE.lastIndex = 0;
+  return LOOP_TOKEN_RE.test(value);
+}
+
+// `${ inputs.<name> }` only — used by the `run` flatten pass (./run.ts), which resolves a
+// child's `${inputs.*}` against its effective (with-overridden) inputs at LOAD time while
+// deliberately leaving `${env.*}` for the runner's normal templating pass.
+const INPUTS_TOKEN_RE = /\$\{\s*inputs\s*\.\s*([a-zA-Z_][\w.-]*)\s*\}/g;
+
+/**
+ * Substitute ONLY `${inputs.*}` tokens against `inputs`, leaving `${env.*}` (and anything
+ * else) untouched. Throws {@link TemplateError} for an undeclared input — a child step must
+ * not carry an unresolvable input reference past the flatten pass.
+ */
+export function applyInputsTemplating(value: string, inputs: Record<string, string>): string {
+  return value.replace(INPUTS_TOKEN_RE, (raw, name: string) => {
+    const v = inputs[name];
+    if (v === undefined) {
+      throw new TemplateError(
+        `Undeclared input \`${name}\` referenced by \`${raw}\`. ` +
+          `Declare it under the flow's [inputs] or pass it via the \`run\` step's \`with\`.`,
+      );
+    }
+    return v;
+  });
+}
+
+/** Recursively apply {@link applyInputsTemplating} to every string leaf. Returns a new structure. */
+export function applyInputsTemplatingDeep<T>(value: T, inputs: Record<string, string>): T {
+  if (typeof value === "string") {
+    return applyInputsTemplating(value, inputs) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => applyInputsTemplatingDeep(v, inputs)) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = applyInputsTemplatingDeep(v, inputs);
+    }
+    return out as T;
+  }
+  return value;
 }
 
 /**
@@ -131,7 +261,7 @@ export function resolveInputs(
   parentInputs?: Record<string, string>,
 ): Record<string, string> {
   const resolved: Record<string, string> = {};
-  const baseEnv = env ?? (process.env as Record<string, string | undefined>);
+  const baseEnv = env ?? process.env;
 
   // First resolve `with` overrides against the parent's scope (env + parent inputs).
   const resolvedWith: Record<string, string> = {};

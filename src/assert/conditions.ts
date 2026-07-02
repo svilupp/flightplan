@@ -6,9 +6,9 @@
 // effective `timeout_ms` and dispatches here.
 //
 // ---------------------------------------------------------------------------------------
-// Why the existing Driver surface is sufficient (no Driver method was added)
+// Which Driver primitive answers each condition
 // ---------------------------------------------------------------------------------------
-// All six conditions are answerable from a single `snapshot()`:
+// Most conditions are answerable from a single `snapshot()`:
 //   - visible/hidden → does an element matching the target exist + render in
 //     `snapshot.interactiveElements` / `accessibilityTree` (and, for `hidden`, NOT).
 //   - text           → does the scoped element's text (or the whole `snapshot.text`) contain
@@ -16,12 +16,19 @@
 //   - url            → does `snapshot.url` match the pattern.
 //   - value          → does the matched input element's `value` equal the expected string.
 //   - count          → how many elements match the target.
-// `snapshot()` already exposes `url`, `text`, `interactiveElements` (role + name + selector +
-// value + disabled/checked) and `accessibilityTree`. browser-pilot's outcome `Condition`s
+// `snapshot()` exposes `url`, `text`, `interactiveElements` (role + name + selector + value +
+// disabled/checked) and `accessibilityTree`. browser-pilot's outcome `Condition`s
 // (`elementVisible`/`textAppears`/`urlMatches`/...) cover the same ground but are evaluated as a
 // side effect of an ACTION (`batch`/click) — assertions need to evaluate WITHOUT acting and to
-// poll on their own schedule, so reading snapshots is the right primitive. Hence NO change to
-// `src/driver/*` was required (per the Phase 2 ownership note's "preferred" path).
+// poll on their own schedule, so reading snapshots is the right primitive.
+//
+// BUT the AX snapshot only enumerates INTERACTIVE roles: a synthetic/CSS target
+// (`[data-testid='toolbar']`, `.row`, `#total`) selecting a non-interactive element never appears
+// there. For those, visible/hidden/text/count DELEGATE to the driver's live-DOM primitive
+// `driver.elementState(selector)` (browser-pilot's `Page.elementState`) via `resolveTargetState`.
+// It is feature-detected (optional on `Driver`): when absent, synthetic targets fall back to the
+// snapshot path and behave exactly as before. The DOM matching lives in browser-pilot; this module
+// only reads the returned `ElementState`.
 //
 // ---------------------------------------------------------------------------------------
 // Match semantics (documented; chosen deliberately)
@@ -43,10 +50,10 @@
 // match is: a `*`-glob if the pattern contains `*`, else a case-sensitive SUBSTRING match
 // (so `/checkout` matches `https://x/checkout?ok=1`). VALUE match is EXACT string equality.
 
-import type { Assertion } from "../flow/types.ts";
 import type { InteractiveElement, PageSnapshot, SnapshotNode } from "../driver/types.ts";
-import type { AssertionResult, ConditionOpts } from "./types.ts";
+import type { Assertion } from "../flow/types.ts";
 import type { AssertType } from "../types.ts";
+import type { AssertionResult, ConditionOpts } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // The polling loop
@@ -74,7 +81,7 @@ async function poll(
   type: AssertType,
   selectorOrTarget: string | undefined,
   opts: ConditionOpts,
-  probe: (snapshot: PageSnapshot) => Probe,
+  probe: (snapshot: PageSnapshot) => Probe | Promise<Probe>,
 ): Promise<AssertionResult> {
   const { driver, timeoutMs, pollIntervalMs, clock } = opts;
   const start = clock.now();
@@ -82,14 +89,16 @@ async function poll(
 
   let last: Probe = { pass: false, message: "not evaluated" };
 
-  // First, immediate attempt (so timeoutMs=0 still checks once).
-  last = probe(await driver.snapshot());
+  // First, immediate attempt (so timeoutMs=0 still checks once). The probe MAY be async —
+  // synthetic/CSS targets resolve via `driver.elementState` inside it (see `resolveTargetState`).
+  // TODO(perf): skip the snapshot fetch for pure-synthetic targets (they only need elementState).
+  last = await probe(await driver.snapshot());
   if (last.pass) return done(true);
 
   while (clock.now() < deadline) {
     const remaining = deadline - clock.now();
     await clock.sleep(Math.min(pollIntervalMs, remaining));
-    last = probe(await driver.snapshot());
+    last = await probe(await driver.snapshot());
     if (last.pass) return done(true);
   }
 
@@ -129,7 +138,7 @@ function flattenTree(nodes: readonly SnapshotNode[]): SnapshotNode[] {
   return out;
 }
 
-/** Parse a `role:button:Name` / `role:button` / `text:Foo` prefixed target into parts. */
+/** Parse a `role:button:Name` / `role:button` / `text:Foo` / `css:…` prefixed target into parts. */
 interface ParsedTarget {
   kind: "ref" | "role" | "text" | "synthetic" | "plain";
   role?: string;
@@ -144,7 +153,14 @@ function parseTarget(target: string): ParsedTarget {
     if (sep === -1) return { kind: "role", role: rest, raw: target };
     return { kind: "role", role: rest.slice(0, sep), name: rest.slice(sep + 1), raw: target };
   }
-  if (target.startsWith("text:")) return { kind: "text", name: target.slice("text:".length), raw: target };
+  if (target.startsWith("text:"))
+    return { kind: "text", name: target.slice("text:".length), raw: target };
+  // Explicit `css:` escape hatch for bare CSS (e.g. `css:tr`, `css:div.card`) — mirror
+  // `flow/normalize-target.ts`: STRIP the prefix and treat it as synthetic so it resolves via
+  // `driver.elementState` (real DOM) rather than being name-matched against the AX snapshot.
+  if (target.startsWith("css:")) {
+    return { kind: "synthetic", raw: target.slice("css:".length).trim() };
+  }
   if (target.startsWith("[") || target.startsWith(".") || target.startsWith("#")) {
     return { kind: "synthetic", raw: target };
   }
@@ -188,13 +204,69 @@ function targetVisible(snapshot: PageSnapshot, target: string): boolean {
   return flattenTree(snapshot.accessibilityTree).some((node) => {
     if (parsed.kind === "role") {
       if (node.role !== parsed.role) return false;
-      return parsed.name === undefined || (node.name !== undefined && containsCI(node.name, parsed.name));
+      return (
+        parsed.name === undefined || (node.name !== undefined && containsCI(node.name, parsed.name))
+      );
     }
     // text/plain → match by accessible name
     return node.name !== undefined && parsed.name !== undefined
       ? containsCI(node.name, parsed.name)
       : node.name !== undefined && containsCI(node.name, parsed.raw);
   });
+}
+
+/**
+ * The resolved presence/visibility/count/text/value of a target, from whichever source can answer
+ * it. The fields are the union of everything the visible/hidden/count/text/value evaluators need.
+ * `value` is the form-control value (`<input>`/`<select>`/`<textarea>`), or `null` when the target
+ * has none / no element matched.
+ */
+interface TargetState {
+  present: boolean;
+  visible: boolean;
+  count: number;
+  text: string;
+  value: string | null;
+}
+
+/**
+ * Resolve a target's live state via the RIGHT source:
+ *  - SYNTHETIC / raw-CSS targets (`[data-testid=…]`, `.class`, `#id`) are NOT in the AX snapshot
+ *    (which only enumerates interactive roles), so — when the driver exposes the live-DOM
+ *    primitive — we DELEGATE to `driver.elementState(rawSelector)`. This is how flightplan can now
+ *    verify presence/visibility/text/count of arbitrary, incl. non-interactive, DOM elements. The
+ *    DOM work lives in browser-pilot; flightplan just reads the returned `ElementState`.
+ *  - SEMANTIC targets (`role:`/`text:`/`plain`) and `ref:` — or ANY target when `elementState` is
+ *    unavailable (feature-detected) — keep the EXACT snapshot-based behaviour: presence/visibility
+ *    from {@link targetVisible}, count from {@link matchingElements}, text derived from matched
+ *    element names/values (with the same AX-tree fallback `text()` uses). This guarantees no
+ *    regression for the AX-resolvable targets every existing test exercises.
+ */
+async function resolveTargetState(
+  target: string,
+  snapshot: PageSnapshot,
+  opts: ConditionOpts,
+): Promise<TargetState> {
+  const parsed = parseTarget(target);
+  if (parsed.kind === "synthetic" && opts.driver.elementState) {
+    const s = await opts.driver.elementState(parsed.raw);
+    return { present: s.exists, visible: s.visible, count: s.count, text: s.text, value: s.value };
+  }
+  // Snapshot path (semantic targets, or `elementState` unavailable → no behaviour change).
+  const els = matchingElements(snapshot, target);
+  const present = targetVisible(snapshot, target);
+  let text: string;
+  if (els.length > 0) {
+    text = els.map((el) => `${el.name} ${el.value ?? ""}`).join(" ");
+  } else {
+    // Mirror text()'s fallback: derive scoped text from matching AX-tree node names.
+    text = flattenTree(snapshot.accessibilityTree)
+      .filter((n) => matchesNodeTarget(n, target))
+      .map((n) => `${n.name ?? ""} ${n.value ?? ""}`)
+      .join(" ");
+  }
+  // `value` mirrors the current `value` evaluator: the first matching element's value (or null).
+  return { present, visible: present, count: els.length, text, value: els[0]?.value ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -218,24 +290,53 @@ export function urlMatchesPattern(actual: string, pattern: string): boolean {
 // The six evaluators
 // ---------------------------------------------------------------------------
 
-/** `visible` — the target element is present + rendered. */
-export function visible(target: string, opts: ConditionOpts): Promise<AssertionResult> {
-  return poll("visible", target, opts, (snap) => {
-    const ok = targetVisible(snap, target);
-    return {
-      pass: ok,
-      message: ok ? `"${target}" is visible` : `"${target}" not visible (no matching element in snapshot)`,
-    };
+/**
+ * `visible` — the target element is present + rendered, AND (when `expectedText` is given — i.e.
+ * the assertion supplied BOTH a `selector` and a `text`) its text CONTAINS `expectedText`
+ * (case-insensitive). Honouring `expectedText` here is the fix for the silent-ignore bug where a
+ * `{ selector, text }` visible/hidden assertion dropped the text check entirely.
+ */
+export function visible(
+  target: string,
+  opts: ConditionOpts,
+  expectedText?: string,
+): Promise<AssertionResult> {
+  return poll("visible", target, opts, async (snap) => {
+    const state = await resolveTargetState(target, snap, opts);
+    const textOk = expectedText === undefined || containsCI(state.text, expectedText);
+    const ok = state.visible && textOk;
+    let message: string;
+    if (ok) {
+      message =
+        expectedText === undefined
+          ? `"${target}" is visible`
+          : `"${target}" is visible and contains "${expectedText}"`;
+    } else if (!state.visible) {
+      message = `"${target}" not visible (no matching element in snapshot)`;
+    } else {
+      message = `"${target}" is visible but does not contain "${expectedText}"`;
+    }
+    return { pass: ok, message };
   });
 }
 
-/** `hidden` — the target element is absent or not rendered. */
-export function hidden(target: string, opts: ConditionOpts): Promise<AssertionResult> {
-  return poll("hidden", target, opts, (snap) => {
-    const present = targetVisible(snap, target);
+/**
+ * `hidden` — the NEGATION of `visible`: the target is not (visible AND, when `expectedText` is
+ * given, containing that text). So `{ selector, text }` passes when either the element is not
+ * rendered OR its text does not contain the expected substring.
+ */
+export function hidden(
+  target: string,
+  opts: ConditionOpts,
+  expectedText?: string,
+): Promise<AssertionResult> {
+  return poll("hidden", target, opts, async (snap) => {
+    const state = await resolveTargetState(target, snap, opts);
+    const textOk = expectedText === undefined || containsCI(state.text, expectedText);
+    const consideredVisible = state.visible && textOk;
     return {
-      pass: !present,
-      message: present ? `"${target}" is still visible` : `"${target}" is hidden`,
+      pass: !consideredVisible,
+      message: consideredVisible ? `"${target}" is still visible` : `"${target}" is hidden`,
     };
   });
 }
@@ -250,7 +351,24 @@ export function text(
   expected: string,
   opts: ConditionOpts,
 ): Promise<AssertionResult> {
-  return poll("text", target ?? expected, opts, (snap) => {
+  return poll("text", target ?? expected, opts, async (snap) => {
+    // Synthetic/CSS target with a live-DOM primitive → read the element's text directly (the AX
+    // snapshot never surfaces non-interactive containers). Semantic targets + whole-page text
+    // keep the existing snapshot-based behaviour below.
+    if (
+      target !== undefined &&
+      opts.driver.elementState &&
+      parseTarget(target).kind === "synthetic"
+    ) {
+      const state = await resolveTargetState(target, snap, opts);
+      const ok = containsCI(state.text, expected);
+      return {
+        pass: ok,
+        message: ok
+          ? `element "${target}" contains "${expected}"`
+          : `element "${target}" does not contain "${expected}"`,
+      };
+    }
     let haystack: string;
     let scope: string;
     if (target !== undefined) {
@@ -289,32 +407,42 @@ export function url(pattern: string, opts: ConditionOpts): Promise<AssertionResu
   });
 }
 
-/** `value` — the matched input element's `value` EXACTLY equals `expected`. */
+/**
+ * `value` — the matched form control's `value` EXACTLY equals `expected`. For synthetic/CSS targets
+ * the value comes from `driver.elementState` (`<input>`/`<select>`/`<textarea>` value), so a
+ * `[data-testid=…]` input the AX snapshot never surfaces is now readable; semantic targets keep the
+ * existing snapshot behaviour. In both cases a missing element fails with a clear message.
+ */
 export function value(
   target: string,
   expected: string,
   opts: ConditionOpts,
 ): Promise<AssertionResult> {
-  return poll("value", target, opts, (snap) => {
-    const els = matchingElements(snap, target);
-    if (els.length === 0) {
+  return poll("value", target, opts, async (snap) => {
+    const state = await resolveTargetState(target, snap, opts);
+    if (state.count === 0) {
       return { pass: false, message: `no element matched "${target}" to read its value` };
     }
-    const observed = els[0]?.value;
+    const observed = state.value;
     const ok = observed === expected;
     return {
       pass: ok,
       message: ok
         ? `"${target}" value === "${expected}"`
-        : `"${target}" value is ${observed === undefined ? "(unset)" : `"${observed}"`}, expected "${expected}"`,
+        : `"${target}" value is ${observed === null ? "(unset)" : `"${observed}"`}, expected "${expected}"`,
     };
   });
 }
 
-/** `count` — the number of elements matching the target EQUALS `n`. */
+/**
+ * `count` — the number of elements matching the target EQUALS `n`. For synthetic/CSS targets the
+ * count comes from `driver.elementState` (so non-interactive rows the AX snapshot omits are
+ * counted correctly); semantic targets keep counting matching interactive snapshot elements.
+ */
 export function count(target: string, n: number, opts: ConditionOpts): Promise<AssertionResult> {
-  return poll("count", target, opts, (snap) => {
-    const observed = matchingElements(snap, target).length;
+  return poll("count", target, opts, async (snap) => {
+    const state = await resolveTargetState(target, snap, opts);
+    const observed = state.count;
     const ok = observed === n;
     return {
       pass: ok,
@@ -333,13 +461,19 @@ function matchesNodeTarget(node: SnapshotNode, target: string): boolean {
       return node.ref === parsed.raw || node.ref === `e${parsed.raw}`;
     case "role":
       if (node.role !== parsed.role) return false;
-      return parsed.name === undefined || (node.name !== undefined && containsCI(node.name, parsed.name));
+      return (
+        parsed.name === undefined || (node.name !== undefined && containsCI(node.name, parsed.name))
+      );
     case "text":
-      return node.name !== undefined && parsed.name !== undefined && containsCI(node.name, parsed.name);
+      return (
+        node.name !== undefined && parsed.name !== undefined && containsCI(node.name, parsed.name)
+      );
     case "synthetic":
       return false;
     case "plain":
-      return node.ref === parsed.raw || (node.name !== undefined && containsCI(node.name, parsed.raw));
+      return (
+        node.ref === parsed.raw || (node.name !== undefined && containsCI(node.name, parsed.raw))
+      );
   }
 }
 
@@ -362,19 +496,26 @@ export function evaluateDeterministic(
 ): Promise<AssertionResult> {
   switch (assertion.type) {
     case "visible": {
-      // visible may scope by `selector` OR assert page-text presence via `text`.
-      const target = assertion.selector ?? (assertion.text !== undefined ? `text:${assertion.text}` : undefined);
+      // visible may scope by `selector` OR assert page-text presence via `text`. When BOTH are
+      // given, the element at `selector` must be visible AND its text must contain `text` — the
+      // `text` is passed through as an extra substring check (fixes the silent-ignore bug where
+      // supplying both dropped the text check entirely).
+      const target =
+        assertion.selector ?? (assertion.text !== undefined ? `text:${assertion.text}` : undefined);
       if (target === undefined) {
         throw new Error("`visible` assertion requires a `selector` or `text`");
       }
-      return visible(target, opts);
+      const expectedText = assertion.selector !== undefined ? assertion.text : undefined;
+      return visible(target, opts, expectedText);
     }
     case "hidden": {
-      const target = assertion.selector ?? (assertion.text !== undefined ? `text:${assertion.text}` : undefined);
+      const target =
+        assertion.selector ?? (assertion.text !== undefined ? `text:${assertion.text}` : undefined);
       if (target === undefined) {
         throw new Error("`hidden` assertion requires a `selector` or `text`");
       }
-      return hidden(target, opts);
+      const expectedText = assertion.selector !== undefined ? assertion.text : undefined;
+      return hidden(target, opts, expectedText);
     }
     case "text":
       return text(assertion.selector, assertion.text, opts);
@@ -393,6 +534,8 @@ export function evaluateDeterministic(
       return count(assertion.selector, assertion.count, opts);
     }
     case "ai_judge":
-      throw new Error("ai_judge is not a deterministic assertion (route via the engine to the Phase-4 stub)");
+      throw new Error(
+        "ai_judge is not a deterministic assertion (route via the engine to the Phase-4 stub)",
+      );
   }
 }

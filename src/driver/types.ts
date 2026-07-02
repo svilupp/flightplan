@@ -26,6 +26,7 @@ import type {
   BatchOptions as BpBatchOptions,
   BatchResult as BpBatchResult,
   CandidateStrategy as BpCandidateStrategy,
+  ElementState as BpElementState,
   InteractiveElement as BpInteractiveElement,
   PageSnapshot as BpPageSnapshot,
   RankedCandidate as BpRankedCandidate,
@@ -48,6 +49,21 @@ import type { Strategy } from "../types.ts";
  * cycle, never persist it (PLAN.md §3 gotchas / FINDINGS §3).
  */
 export type PageSnapshot = BpPageSnapshot;
+
+/**
+ * The live-DOM state of an arbitrary selector, from browser-pilot's `Page.elementState`. Unlike
+ * {@link PageSnapshot} (which is built from the ACCESSIBILITY tree and therefore only surfaces
+ * interactive roles), this resolves ANY element — including non-interactive containers like a
+ * `<div data-testid="toolbar">` — by plain CSS/attribute selector (`[data-testid='x']`, `#id`,
+ * `.class`, descendant combinators) or browser-pilot special selector (`text:`/`role:`, whose
+ * `count` is 0 or 1). It pierces shadow roots and honours the current iframe context.
+ *  - `exists`      — at least one match in the DOM.
+ *  - `visible`     — the first match is visibly rendered (display/visibility/opacity + non-zero box).
+ *  - `count`       — number of matches.
+ *  - `text`        — first match's trimmed innerText (fallback textContent); `""` if none.
+ *  - `boundingBox` — first match's box, or `null` when there is no rendered match.
+ */
+export type ElementState = BpElementState;
 
 /**
  * A single interactive element from a snapshot. Exposes role + accessible name (+ optional
@@ -114,11 +130,8 @@ export type FailureReason =
 // Compile-time guard: our re-declared FailureReason must remain assignable to whatever
 // browser-pilot actually types `StepResult.failureReason` as. If browser-pilot widens or
 // renames the union, this line fails typecheck and forces us to update the boundary.
-type _FailureReasonIsCompatible = FailureReason extends NonNullable<
-  BpStepResult["failureReason"]
->
-  ? true
-  : never;
+type _FailureReasonIsCompatible =
+  FailureReason extends NonNullable<BpStepResult["failureReason"]> ? true : never;
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _failureReasonCheck: _FailureReasonIsCompatible = true;
 
@@ -140,8 +153,7 @@ export type CoveringElement = NonNullable<BpStepResult["coveringElement"]>;
  * No mismatch with PLAN.md §3 was found — the config module's shape matches the plan
  * verbatim, so the driver reuses it directly (no adaptation needed).
  */
-export type { ConnectConfig } from "../config/types.ts";
-export type { ConnectAttachConfig, ConnectLaunchConfig } from "../config/types.ts";
+export type { ConnectAttachConfig, ConnectConfig, ConnectLaunchConfig } from "../config/types.ts";
 
 // ---------------------------------------------------------------------------
 // Driver-local option shapes
@@ -247,6 +259,14 @@ export interface SignatureOpts {
    * This is the boundary form of browser-pilot's `stateSignatureChanges` `mode?: 'text'|'structure'`.
    */
   mode?: "text" | "structure";
+  /**
+   * Structural masking selectors, forwarded to browser-pilot's `captureStructureSignature`
+   * `maskSelectors` (L0 cache-hit quality — Layer 2 `[cache] ignore_regions`). Only meaningful for
+   * `mode: 'structure'`; each entry prunes a node (and its subtree) matched by role/name/ref/
+   * role-name from the structural hash, so an `ignore_regions` subtree is excluded from the struct
+   * component just as it is from the masked-text component. Omitted → the default structural hash.
+   */
+  maskSelectors?: string[];
 }
 
 /**
@@ -397,6 +417,22 @@ export interface Driver {
    * and still the live path; a later wave rewires consumers onto this method.
    */
   resolveAll(intent: string, opts?: ResolveAllOpts): Promise<RankedCandidate[]>;
+
+  /**
+   * Inspect the live-DOM {@link ElementState} of an arbitrary `selector`, delegating to
+   * browser-pilot's `Page.elementState`. This resolves ARBITRARY DOM — including
+   * non-interactive elements (a `<div data-testid="toolbar">`, a table row, a heading) — by
+   * plain CSS/attribute selector (`[data-testid='x']`, `#id`, `.class`) or special selector
+   * (`text:`/`role:`), UNLIKE {@link snapshot} which is accessibility-tree-only and therefore
+   * enumerates just interactive roles. The assertion engine uses it to verify
+   * presence/visibility/text/count of synthetic/CSS-selected elements that never appear in the
+   * AX snapshot.
+   *
+   * OPTIONAL so a driver that predates the primitive degrades gracefully: callers MUST
+   * feature-detect (`driver.elementState?.(...)`) and fall back to the snapshot path when it is
+   * undefined (no regression for AX-resolvable `role:`/`text:`/`plain` targets).
+   */
+  elementState?(selector: string): Promise<ElementState>;
 
   // --- single actions (each returns whether the action succeeded) ---
 

@@ -36,9 +36,7 @@ text = "generation: 1"
 [[steps]]
 id = "refresh_widget"
 do = "click"
-target = "the Refresh widget button"
-hints = ["Refresh widget", "[data-testid='rerender-trigger']"]
-intent = "refresh the widget so its subtree is re-rendered"
+target = ["[data-testid='rerender-trigger']", "the Refresh widget button"]
 
 # Bridge the fixed 600ms node-replacement delay before acting on the fresh subtree.
 [[steps]]
@@ -55,9 +53,7 @@ timeout_ms = 4000
 [[steps]]
 id = "confirm_action"
 do = "click"
-target = "the Confirm button in the refreshed widget"
-hints = ["Confirm", "[data-testid='rerender-action']"]
-intent = "confirm the action on the re-rendered widget"
+target = ["[data-testid='rerender-action']", "the Confirm button in the refreshed widget"]
 
 [[steps.assert]]
 type = "text"

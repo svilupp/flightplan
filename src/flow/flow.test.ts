@@ -2,11 +2,7 @@
 // threshold), discriminated-union narrowing, source_hash.
 
 import { describe, expect, test } from "bun:test";
-import {
-  computeSourceHash,
-  FlowValidationError,
-  parseFlowFile,
-} from "./index.ts";
+import { computeSourceHash, FlowValidationError, parseFlowFile } from "./index.ts";
 
 const VALID_FLOW = `
 version = 1
@@ -33,8 +29,7 @@ text = "Orders"
 [[steps]]
 id = "new_order"
 do = "click"
-target = "button to create a new order"
-hints = ["Create order", "[data-testid='create-order']"]
+target = ["[data-testid='create-order']", "button to create a new order"]
 
 [[steps.assert]]
 type = "visible"
@@ -50,8 +45,7 @@ secret = true
 [[steps]]
 id = "pick_product"
 do = "ai_pick"
-target = "product row"
-intent = "Choose any in-stock product"
+target = "any in-stock product row"
 
 [[steps.assert]]
 type = "ai_judge"
@@ -102,7 +96,7 @@ describe("loadFlowFile / parseFlowFile", () => {
     expect(aiPick.do).toBe("ai_pick");
 
     // ai_judge assertion on the ai_pick step
-    const judgeAssert = aiPick.assert?.[0]!;
+    const judgeAssert = aiPick.assert![0]!;
     expect(judgeAssert.type).toBe("ai_judge");
     if (judgeAssert.type === "ai_judge") {
       expect(judgeAssert.prompt).toBe("The chosen product row is visibly selected.");
@@ -214,5 +208,68 @@ id = "x"
 description = "d"
 `;
     expect(() => parseFlowFile(bad, "bad.toml")).toThrow(FlowValidationError);
+  });
+});
+
+// tier_hint (PLAN_v003 §4 v003-3): the vision-batch opt-in on targeting steps.
+describe("tier_hint = vision on targeting steps", () => {
+  function flowWith(stepToml: string): string {
+    return `
+version = 1
+kind = "flow"
+id = "x"
+description = "d"
+[[steps]]
+${stepToml}
+`;
+  }
+
+  test.each(["click", "ai_pick"])("accepts tier_hint = vision on a %s step", (verb) => {
+    const { flow } = parseFlowFile(
+      flowWith(`id = "s1"\ndo = "${verb}"\ntarget = "trash icon"\ntier_hint = "vision"`),
+      "ok.toml",
+    );
+    const step = flow.steps[0]!;
+    // The field is present on the narrowed step (types derive from the schema via z.infer).
+    expect("tier_hint" in step && step.tier_hint).toBe("vision");
+  });
+
+  test("accepts tier_hint = vision on fill / select (alongside value)", () => {
+    const fill = parseFlowFile(
+      flowWith(`id = "s1"\ndo = "fill"\ntarget = "field"\nvalue = "x"\ntier_hint = "vision"`),
+      "ok.toml",
+    ).flow.steps[0]!;
+    const select = parseFlowFile(
+      flowWith(`id = "s1"\ndo = "select"\ntarget = "menu"\nvalue = "x"\ntier_hint = "vision"`),
+      "ok.toml",
+    ).flow.steps[0]!;
+    expect("tier_hint" in fill && fill.tier_hint).toBe("vision");
+    expect("tier_hint" in select && select.tier_hint).toBe("vision");
+  });
+
+  test("omitting tier_hint leaves it undefined (normal cheap-first ladder)", () => {
+    const { flow } = parseFlowFile(flowWith(`id = "s1"\ndo = "click"\ntarget = "btn"`), "ok.toml");
+    const step = flow.steps[0]!;
+    expect(step.do).toBe("click");
+    // Narrow to the click variant so `tier_hint` is a typed (optional) field, absent here.
+    if (step.do === "click") expect(step.tier_hint).toBeUndefined();
+  });
+
+  test("rejects an invalid tier_hint value (only 'vision' is allowed)", () => {
+    expect(() =>
+      parseFlowFile(
+        flowWith(`id = "s1"\ndo = "click"\ntarget = "btn"\ntier_hint = "text"`),
+        "bad.toml",
+      ),
+    ).toThrow(FlowValidationError);
+  });
+
+  test("rejects tier_hint on a non-targeting step (goto is strict)", () => {
+    expect(() =>
+      parseFlowFile(
+        flowWith(`id = "s1"\ndo = "goto"\nurl = "http://x"\ntier_hint = "vision"`),
+        "bad.toml",
+      ),
+    ).toThrow(FlowValidationError);
   });
 });

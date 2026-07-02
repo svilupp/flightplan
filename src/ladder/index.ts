@@ -13,10 +13,12 @@ export type {
   AiHooks,
   BatchActionVerb,
   CachedRecipe,
+  L2Handoff,
   Ladder,
   LadderResult,
   LockHook,
-  L2Handoff,
+  PortfolioExecOutcome,
+  PortfolioVerdict,
   RankedCandidate,
   Resolution,
   ResolutionAttempt,
@@ -25,25 +27,10 @@ export type {
   StepExecution,
   StrategyCandidate,
 } from "./types.ts";
+
 // NOTE: `LadderTier` / `LADDER_TIERS` are intentionally NOT re-exported here — they are owned by
 // `artifacts/` (the cross-agent trace contract) and already reach the root via its `export *`.
 // Re-exporting them from the ladder too would collide under `src/index.ts`'s `export *`.
-
-// --- the orchestrator (resolveStep / createLadder) ---
-export { createLadder, type OrchestratorOptions, resolveStep } from "./orchestrator.ts";
-
-// --- auto-repair (Unit D — Phase 5: covered/disabled/missing pre-model recovery) ---
-export {
-  attemptRepair,
-  mapFailureReason,
-  type RepairKind,
-  type RepairOptions,
-  type RepairResult,
-} from "./repair.ts";
-
-// --- the tier resolvers ---
-export { resolveL0 } from "./l0.ts";
-export { actionVerbForStep, type L1Options, resolveL1 } from "./l1.ts";
 
 // --- L1 building blocks (role guard + ambiguity + handoff policy; strategy-array construction) ---
 export {
@@ -52,6 +39,34 @@ export {
   isAmbiguous,
   isInteractiveRole,
 } from "./fuzzy.ts";
+// --- the tier resolvers ---
+export { resolveL0 } from "./l0.ts";
+export { actionVerbForStep, type L1Options, resolveL1 } from "./l1.ts";
+// --- the orchestrator (resolveStep / createLadder) + vision batching (v003-3) ---
+export {
+  type BatchVisionResolve,
+  createLadder,
+  type OrchestratorOptions,
+  resolveStep,
+  resolveVisionBatch,
+} from "./orchestrator.ts";
+// --- auto-repair (Unit D — Phase 5: covered/disabled/missing pre-model recovery) ---
+export {
+  attemptRepair,
+  mapFailureReason,
+  type RepairKind,
+  type RepairOptions,
+  type RepairResult,
+} from "./repair.ts";
+// --- the portfolio race (DESIGN §3.2) + its Layer-3 revalidation adapter ---
+export {
+  type PortfolioRaceResult,
+  parseDurableSelector,
+  type RevalidateResult,
+  racePortfolio,
+  revalidateCachedTarget,
+  type StrategyVerdict,
+} from "./revalidate.ts";
 export {
   buildHintCandidates,
   buildStrategyArray,

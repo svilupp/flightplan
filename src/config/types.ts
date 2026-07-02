@@ -12,6 +12,7 @@ import type {
   ArtifactsConfigSchema,
   AssertionsConfigSchema,
   BrowserConfigSchema,
+  CacheConfigSchema,
   ConfigFileSchema,
   ConfigSchema,
   ConnectAttachSchema,
@@ -21,6 +22,7 @@ import type {
   ModelPricingSchema,
   ModelRegistrySchema,
   ModelRoleSchema,
+  PlanConfigSchema,
   RedactionConfigSchema,
   RunLimitsSchema,
   TelemetryConfigSchema,
@@ -40,6 +42,8 @@ export type LogfireConfig = z.infer<typeof LogfireConfigSchema>;
 export type TelemetryConfig = z.infer<typeof TelemetryConfigSchema>;
 export type RedactionConfig = z.infer<typeof RedactionConfigSchema>;
 export type ArtifactsConfig = z.infer<typeof ArtifactsConfigSchema>;
+export type CacheConfig = z.infer<typeof CacheConfigSchema>;
+export type PlanConfig = z.infer<typeof PlanConfigSchema>;
 
 // ---- Connect config (discriminated union, PLAN.md §3) ----
 export type ConnectAttachConfig = z.infer<typeof ConnectAttachSchema>;
@@ -59,4 +63,11 @@ export type ConfigFile = z.infer<typeof ConfigFileSchema>;
 export interface ResolvedConfig extends Config {
   run: RunLimits; // always populated from DEFAULT_RUN_LIMITS merged with layers
   redaction: RedactionConfig; // mask_text/redact_media always have a default
+  /**
+   * The L5 path-repair planner policy (PLAN_v003 v003-6), always present in a resolved config with
+   * `enabled` defaulted to TRUE (the planner is enabled-by-default for a prod field test). Inert at
+   * runtime unless an AI runtime is present AND a divergence has a recorded expectation, so a
+   * deterministic run stays byte-identical regardless of this flag.
+   */
+  plan: PlanConfig & { enabled: boolean };
 }

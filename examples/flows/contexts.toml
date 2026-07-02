@@ -28,9 +28,7 @@ url = "${inputs.base_url}/contexts"
 [[steps]]
 id = "confirm_in_frame"
 do = "click"
-target = "the Confirm in frame button inside the embedded iframe"
-hints = ["Confirm in frame", "[data-testid='iframe-btn']"]
-intent = "confirm inside the embedded iframe"
+target = ["[data-testid='iframe-btn']", "the Confirm in frame button inside the embedded iframe"]
 
 # confirmFrame() renders data-testid="iframe-result" with text "Frame confirmed" inside the frame.
 [[steps.assert]]
@@ -41,9 +39,7 @@ timeout_ms = 4000
 [[steps]]
 id = "confirm_in_shadow"
 do = "click"
-target = "the Confirm in shadow button inside the open shadow-root widget"
-hints = ["Confirm in shadow", "[data-testid='shadow-open-btn']"]
-intent = "confirm inside the open shadow root"
+target = ["[data-testid='shadow-open-btn']", "the Confirm in shadow button inside the open shadow-root widget"]
 
 # The shadow click bubbles a CustomEvent the host surfaces as data-testid="result" = "Shadow confirmed".
 [[steps.assert]]

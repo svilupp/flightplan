@@ -22,9 +22,7 @@
   "costUsd": 0,
   "perRoleCost": {},
   "driftCount": 1,
-  "healedSteps": [
-    "s_save"
-  ],
+  "healedSteps": ["s_save"],
   "driftHealSuccess": true,
   "stepLatency": {
     "p50": 120,

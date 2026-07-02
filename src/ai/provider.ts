@@ -10,10 +10,10 @@
 // raw OpenRouter HTTP remain documented fallbacks ONLY (not wired in v1) and, if ever needed,
 // would also live here behind this boundary.
 
-import { generateText, Output } from "ai";
-import type { LanguageModel, ModelMessage } from "ai";
-import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { OpenRouterProvider } from "@openrouter/ai-sdk-provider";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import type { LanguageModel, ModelMessage } from "ai";
+import { generateText, Output } from "ai";
 import type { GenerateFn, GenerateRequest, RawUsage } from "./types.ts";
 
 /** Options for {@link createProvider}. */
@@ -56,7 +56,9 @@ function readProviderCost(result: unknown): number | undefined {
 }
 
 /** Project a `generateText` result's usage into our SDK-free {@link RawUsage}. */
-function extractRawUsage(result: { usage?: { inputTokens?: number; outputTokens?: number } }): RawUsage {
+function extractRawUsage(result: {
+  usage?: { inputTokens?: number; outputTokens?: number };
+}): RawUsage {
   const inputTokens = Number.isFinite(result.usage?.inputTokens)
     ? (result.usage!.inputTokens as number)
     : 0;
@@ -79,6 +81,36 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 export interface DefaultGenerateOptions {
   /** Map a model id → a `LanguageModel`. Real = `provider(id)`; tests inject a mock model. */
   resolveModel: (modelId: string) => LanguageModel;
+}
+
+/**
+ * Build the SDK message list for a prompt-cached text call (PLAN_v003 v003-6). The STABLE PREFIX
+ * (goal + planner instructions) becomes its own text part carrying an OpenRouter/Anthropic-style
+ * `cacheControl: { type: 'ephemeral' }` breakpoint, so the provider caches it and REUSES it across
+ * replans in a run (uncached measured 3.85× the cost). The VOLATILE remainder (`prompt` — the
+ * current page) follows as a normal, uncached text part.
+ *
+ * The `cache.key` (the flow goal) is deliberately NOT sent to the provider: OpenRouter/Anthropic key
+ * their cache off the exact cached CONTENT (the prefix bytes), so a stable prefix ⇒ a cache hit and
+ * a changed goal ⇒ different prefix bytes ⇒ automatic invalidation — page nav (which only changes the
+ * uncached suffix) never invalidates it. The key rides along on `GenerateRequest.cache` purely for
+ * the caller's own byte-stability assertions. This SDK-specific shaping stays inside `provider.ts`.
+ */
+function cachedPromptMessages(prompt: string, prefix: string): ModelMessage[] {
+  const cacheControl = { type: "ephemeral" as const };
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: prefix,
+          providerOptions: { openrouter: { cacheControl }, anthropic: { cacheControl } },
+        },
+        { type: "text", text: prompt },
+      ],
+    },
+  ];
 }
 
 /**
@@ -107,10 +139,22 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
           providerOptions: { openrouter: { usage: { include: true } } },
           abortSignal: AbortSignal.timeout(timeoutMs),
         };
-        const result =
-          req.messages !== undefined
-            ? await generateText({ ...common, messages: req.messages as ModelMessage[] })
-            : await generateText({ ...common, prompt: req.prompt ?? "" });
+        // Three shapes, all a strict XOR in the SDK `Prompt`:
+        //   1. multimodal `messages` (vision tiers) — passed through as-is;
+        //   2. a prompt-cached text call (PLAN_v003 v003-6) — the stable prefix is marked cacheable
+        //      via a two-part user message (`cachedPromptMessages`);
+        //   3. a plain text `prompt` (resolver/advisor/uncached planner).
+        let result: Awaited<ReturnType<typeof generateText>>;
+        if (req.messages !== undefined) {
+          result = await generateText({ ...common, messages: req.messages });
+        } else if (req.cache !== undefined) {
+          result = await generateText({
+            ...common,
+            messages: cachedPromptMessages(req.prompt ?? "", req.cache.prefix),
+          });
+        } else {
+          result = await generateText({ ...common, prompt: req.prompt ?? "" });
+        }
         return { output: result.output, model: modelId, usage: extractRawUsage(result) };
       } catch (err) {
         // Any error (incl. AI_NoOutputGeneratedError from a tight Gemini cap, or a rotated id) is

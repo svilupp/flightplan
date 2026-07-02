@@ -17,7 +17,12 @@ describe("lock-stability", () => {
   });
 
   test("identical bytes ⇒ stable, no contract violation", () => {
-    const r = checkLockStability({ before: LOCK_A, after: LOCK_A, driftCount: 0, verdict: "passed" });
+    const r = checkLockStability({
+      before: LOCK_A,
+      after: LOCK_A,
+      driftCount: 0,
+      verdict: "passed",
+    });
     expect(r.stable).toBe(true);
     expect(r.beforeHash).toBe(r.afterHash);
     expect(r.expectedNoWrite).toBe(true);
@@ -25,7 +30,12 @@ describe("lock-stability", () => {
   });
 
   test("one-byte diff on a clean green run ⇒ churn flagged as a contract violation", () => {
-    const r = checkLockStability({ before: LOCK_A, after: LOCK_B, driftCount: 0, verdict: "passed" });
+    const r = checkLockStability({
+      before: LOCK_A,
+      after: LOCK_B,
+      driftCount: 0,
+      verdict: "passed",
+    });
     expect(r.stable).toBe(false);
     expect(r.beforeHash).not.toBe(r.afterHash);
     expect(r.expectedNoWrite).toBe(true);
@@ -33,7 +43,12 @@ describe("lock-stability", () => {
   });
 
   test("a legitimate heal write (drift ≥ 1) churns but is NOT a contract violation", () => {
-    const r = checkLockStability({ before: LOCK_A, after: LOCK_B, driftCount: 1, verdict: "passed" });
+    const r = checkLockStability({
+      before: LOCK_A,
+      after: LOCK_B,
+      driftCount: 1,
+      verdict: "passed",
+    });
     expect(r.stable).toBe(false);
     expect(r.expectedNoWrite).toBe(false); // drift > 0 → a write was expected
     expect(r.contractViolation).toBe(false);

@@ -37,9 +37,7 @@ timeout_ms = 4000
 [[steps]]
 id = "trigger_load"
 do = "click"
-target = "the Load data button"
-hints = ["Load data", "[data-testid='async-load']"]
-intent = "trigger the asynchronous data load"
+target = ["[data-testid='async-load']", "the Load data button"]
 
 # The result renders 900ms after the click — poll the page text until the result lands.
 [[steps.assert]]

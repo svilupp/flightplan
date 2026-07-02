@@ -30,8 +30,8 @@
 // All delays go through `ctx.sleep` (injectable → fake clock in tests; defaults to a real timer).
 // An exhausted repair simply escalates to the AI tiers exactly as today.
 
-import type { Step } from "../flow/types.ts";
 import type { CoveringElement, InteractiveElement } from "../driver/index.ts";
+import type { Step } from "../flow/types.ts";
 import { type L1Options, resolveL1 } from "./l1.ts";
 import type { ResolutionAttempt, ResolveContext, StepExecution } from "./types.ts";
 

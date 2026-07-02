@@ -10,11 +10,11 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import type { AiCallEvent } from "../artifacts/events.ts";
 import { createRedactor, REDACTED } from "../redaction/index.ts";
-import { aiCall } from "./call.ts";
-import type { AiCallRuntime } from "./call.ts";
-import { resolveRegistry } from "./registry.ts";
 import { BudgetTracker, resolveBudgetLimits } from "./budget.ts";
+import type { AiCallRuntime } from "./call.ts";
+import { aiCall } from "./call.ts";
 import { CostAccumulator } from "./cost.ts";
+import { resolveRegistry } from "./registry.ts";
 import type { AiCallContext, AiCallSink, GenerateFn, GenerateRequest } from "./types.ts";
 
 class RecordingSink implements AiCallSink {

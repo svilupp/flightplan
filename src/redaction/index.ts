@@ -73,7 +73,7 @@ export interface Redactor {
  * `maskText:false` the redactor is the identity function.
  */
 export function createRedactor(opts: RedactorOptions): Redactor {
-  const maskText = opts.maskText === true;
+  const maskText = opts.maskText;
 
   // Dedupe + drop empties, then sort longest-first so overlapping secrets mask the longest match.
   const secretList = [...new Set(opts.secrets ?? [])].filter(
@@ -140,12 +140,17 @@ export function createRedactor(opts: RedactorOptions): Redactor {
 }
 
 /**
- * Collect every secret value to mask for a run: each `do:'fill', secret:true` step's
- * (post-templating) `value`, PLUS any input value that BACKS such a fill (i.e. appears inside a
- * secret fill value), so `${inputs.PASSWORD}` is masked even where the bare literal appears
- * elsewhere. Generalizes the runner's prior `redactSecretInputs`.
+ * Collect every secret value to mask for a run: for EACH `secret:true` step, its (post-templating)
+ * templated payload — the `value` a `fill`/`select` types, or the `url` a `goto` navigates — PLUS
+ * any input value that BACKS such a secret (i.e. appears inside a secret payload), so
+ * `${inputs.TOKEN}` is masked even where the bare literal appears elsewhere. Generalizes the
+ * runner's prior `redactSecretInputs`.
  *
- * Call this AFTER templating so `step.value` is the resolved literal.
+ * Previously this scanned ONLY `fill` steps, so a `secret:true` value used in a `select` or embedded
+ * in a `goto` URL leaked into artifacts (run.jsonl / ai.jsonl / trace) in cleartext (B7). It now
+ * honors `secret:true` on any step verb carrying a templated `value`/`url`.
+ *
+ * Call this AFTER templating so `step.value` / `step.url` is the resolved literal.
  */
 export function gatherSecretValues(
   steps: readonly Step[],
@@ -153,9 +158,16 @@ export function gatherSecretValues(
 ): Set<string> {
   const secrets = new Set<string>();
   for (const step of steps) {
-    if (step.do === "fill" && step.secret === true && typeof step.value === "string" && step.value.length > 0) {
-      secrets.add(step.value);
-    }
+    // `secret` is declared on the fill step in the schema, but honor it on ANY verb that carries a
+    // templated payload (fill/select `value`, goto `url`) so a secret used outside `fill` is masked.
+    if ((step as { secret?: unknown }).secret !== true) continue;
+    const payload =
+      "value" in step && typeof step.value === "string"
+        ? step.value
+        : "url" in step && typeof step.url === "string"
+          ? step.url
+          : undefined;
+    if (typeof payload === "string" && payload.length > 0) secrets.add(payload);
   }
   if (secrets.size > 0) {
     // Snapshot the fill-derived secrets before mutating the set during the scan.

@@ -6,9 +6,7 @@
   "failed_step": null,
   "failed_assertions": [],
   "advisory_verdict": null,
-  "healed_steps": [
-    "s_save"
-  ],
+  "healed_steps": ["s_save"],
   "drift_count": 1,
   "screenshot_paths": [],
   "video_path": null,

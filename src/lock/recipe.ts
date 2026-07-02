@@ -18,10 +18,18 @@
 // Canonical references: PLAN.md §4 (Recipe/LockTarget, the never-ref invariant), §5 Phase 3
 // (recipe model, green_runs/last_seen), §7 (candidate ranking feeds lock candidates 1:1).
 
-import type { CachedRecipe } from "../ladder/index.ts";
-import type { RankedCandidate, StepExecution } from "../ladder/index.ts";
+import type { CachedRecipe, RankedCandidate, StepExecution } from "../ladder/index.ts";
 import type { Strategy } from "../types.ts";
-import type { LockCandidate, LockMatch, LockTarget } from "./types.ts";
+import {
+  activeNote,
+  applyOutcome,
+  dedupeEntries,
+  type PortfolioOutcome,
+  portfolioToCandidates,
+  portfolioWinner,
+  rankPortfolio,
+} from "./portfolio.ts";
+import type { LockCandidate, LockMatch, LockTarget, StrategyEntry, TargetMemory } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // The ref:eN invariant
@@ -93,20 +101,34 @@ export function rankLockCandidates(candidates: LockCandidate[]): LockCandidate[]
 
 /**
  * Convert an on-disk {@link LockTarget} into the ladder's in-memory {@link CachedRecipe} that L0
- * replays. The winning `selector`/`strategy` become the recipe head; `candidates` (ranked
- * most-proven first) become the recipe's `candidates[]`; `match` is carried through so L0 can
- * validate `url_glob` + `sig` before trusting the recipe.
+ * replays. Targets are normalized to the v2 portfolio on load, so the recipe is built from
+ * `strategies`: the ranked WINNER (top entry) becomes the recipe head, the rest become the
+ * recipe's `candidates[]` (the ordered replay batch), the FULL portfolio is carried on
+ * `strategies` so L0 can RACE it (agreement/track-record logic), and `match` is carried so L0
+ * validates `url_glob` + `sig` before trusting the recipe.
  *
- * For an `ai_pick` target the `pinned_choice` is treated as the winning recipe when no explicit
- * `selector`/`strategy` is present (Phase 4 owns the richer pin/replay; here we just make the pin
- * replayable as a recipe). Returns `undefined` when the target has no replayable recipe at all
- * (neither a winning selector nor a pin) — L0 then treats it as a miss.
+ * For an `ai_pick` target with an empty portfolio, the `pinned_choice` seeds the head (Phase 4
+ * owns the richer pin/replay). Returns `undefined` when the target has no replayable recipe at all
+ * (empty portfolio and no pin) — L0 then treats it as a miss.
+ *
+ * The target's FRESH advisory `note` (non-stale relative to `now`, DESIGN §4) is carried on the
+ * recipe so an AI tier can read it as prompt context; a decayed/absent note is omitted. `now`
+ * (defaulting to `Date.now`) drives that staleness check and is injectable for deterministic tests.
  */
-export function lockTargetToRecipe(target: LockTarget): CachedRecipe | undefined {
-  const head = resolveHeadRecipe(target);
+export function lockTargetToRecipe(
+  target: LockTarget,
+  now: number = Date.now(),
+): CachedRecipe | undefined {
+  const winner = portfolioWinner(target);
+  const head: { selector: string; strategy: Strategy } | undefined = winner
+    ? { selector: winner.selector, strategy: winner.kind }
+    : target.pinned_choice
+      ? { selector: target.pinned_choice.selector, strategy: target.pinned_choice.strategy }
+      : undefined;
   if (!head) return undefined;
 
-  const candidates = (target.candidates ? rankLockCandidates(target.candidates) : []).map(
+  const strategies = target.strategies ?? [];
+  const candidates = portfolioToCandidates(strategies).map(
     (c): CachedRecipe => ({ selector: c.selector, strategy: c.strategy }),
   );
 
@@ -116,20 +138,10 @@ export function lockTargetToRecipe(target: LockTarget): CachedRecipe | undefined
     match: { url_glob: target.match.url_glob, sig: target.match.sig },
   };
   if (candidates.length > 0) recipe.candidates = candidates;
+  if (strategies.length > 0) recipe.strategies = strategies;
+  const note = activeNote(target, now);
+  if (note !== undefined) recipe.note = note;
   return recipe;
-}
-
-/** The winning recipe head for a target: explicit `selector`/`strategy`, else the pin. */
-function resolveHeadRecipe(
-  target: LockTarget,
-): { selector: string; strategy: Strategy } | undefined {
-  if (target.selector !== undefined && target.strategy !== undefined) {
-    return { selector: target.selector, strategy: target.strategy };
-  }
-  if (target.pinned_choice) {
-    return { selector: target.pinned_choice.selector, strategy: target.pinned_choice.strategy };
-  }
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,14 +164,13 @@ function winningRecipeFromExecution(
   const durable = execution.durableSelector;
   if (durable === undefined) {
     throw new NonDurableSelectorError(
-      String(execution.selectorUsed ?? ""),
+      execution.selectorUsed ?? "",
       `${context}: execution has no durableSelector`,
     );
   }
   const selector = assertDurableSelector(durable, context);
   // Prefer the learned strategy when it is concrete; null/undefined → infer from the selector.
-  const strategy: Strategy =
-    execution.strategy ?? inferStrategy(selector) ?? "css";
+  const strategy: Strategy = execution.strategy ?? inferStrategy(selector) ?? "css";
   return { selector, strategy };
 }
 
@@ -170,26 +181,20 @@ function rankedToLockCandidate(rc: RankedCandidate): LockCandidate | undefined {
 }
 
 /**
- * Build a persistable {@link LockTarget} from a freshly-resolved {@link StepExecution}.
+ * Build a persistable {@link LockTarget} PORTFOLIO from a freshly-resolved {@link StepExecution}
+ * (the FIRST-LEARN write path, DESIGN §3).
  *
  *  - `step`/`target` — identity from the flow step (`step.id`, `step.target`).
- *  - `match`         — the `{ url_glob, sig }` gate the caller computed for THIS page (the runner
- *                      builds it from `urlGlobMatches`/`computeMatchSignature` inputs).
- *  - winning recipe  — from `execution.durableSelector` (NEVER `selectorUsed` when that is a ref);
- *                      `assertDurableSelector` guards it.
- *  - `candidates`    — `execution.candidates` projected to durable {@link LockCandidate}s
- *                      (ref-only candidates dropped), ranked most-proven first; the winner is NOT
- *                      duplicated into candidates.
- *  - `green_runs`    — initialised to 1 (this is its first recorded green).
+ *  - `match`         — the `{ url_glob, sig }` gate the caller computed for THIS page.
+ *  - `strategies`    — a fresh portfolio: the winning strategy (from `execution.durableSelector` —
+ *                      NEVER a ref; `assertDurableSelector` guards it) at `greens:1, last_ok:now`,
+ *                      then every observed candidate (ref-only dropped) as a further strategy at
+ *                      `greens:0`. Ranked so the winner leads. When L0 raced a portfolio, the
+ *                      `execution.portfolio.agreed` strategies are all credited a green too.
  *  - `last_seen`     — ISO timestamp from the INJECTED clock (deterministic in tests).
- *  - `kind`/`pinned_choice` — set when `opts.kind === 'ai_pick'`; the pin defaults to the winning
- *                      recipe (Phase 4 may override with the explicit AI choice + label).
- *
- * @param step    `{ id, target? }` identity from the flow step.
- * @param execution the successful resolution+action result.
- * @param match   the precomputed match gate for the current page.
- * @param opts    `inferStrategy` (required — inject `selectorUsedToStrategy`), `now` (clock,
- *                defaults to `Date.now`), `kind`, and optional `pinnedLabel`.
+ *  - `memory`        — the advisory note block, set when `opts.note` is a non-empty string (already
+ *                      REDACTED by the caller) with `note_updated` = now (DESIGN §4).
+ *  - `kind`/`pinned_choice` — set when `opts.kind === 'ai_pick'`; the pin defaults to the winner.
  */
 export function recipeFromExecution(
   step: { id: string; target?: string },
@@ -200,30 +205,38 @@ export function recipeFromExecution(
     now?: () => number;
     kind?: "ai_pick";
     pinnedLabel?: string;
+    /** The AI-emitted note-to-future-self, ALREADY REDACTED (secrets/PII masked). */
+    note?: string;
   },
 ): LockTarget {
   const ctx = `step "${step.id}"`;
   const now = opts.now ?? Date.now;
+  const nowMs = now();
   const winner = winningRecipeFromExecution(execution, opts.inferStrategy, ctx);
+  const nowIso = new Date(nowMs).toISOString();
 
-  const candidates = rankLockCandidates(
-    (execution.candidates ?? [])
-      .map(rankedToLockCandidate)
-      .filter((c): c is LockCandidate => c !== undefined)
-      // The winner is the head recipe, not a fallback — don't duplicate it.
-      .filter((c) => !(c.selector === winner.selector && c.strategy === winner.strategy)),
-  );
+  const seedCandidates = (execution.candidates ?? [])
+    .map(rankedToLockCandidate)
+    .filter((c): c is LockCandidate => c !== undefined);
+
+  const seeded: StrategyEntry[] = [
+    { kind: winner.strategy, selector: winner.selector, greens: 1, last_ok: nowIso },
+    ...seedCandidates.map(
+      (c): StrategyEntry => ({ kind: c.strategy, selector: c.selector, greens: 0 }),
+    ),
+  ];
+  const strategies = rankPortfolio(dedupeEntries(seeded), nowMs);
 
   const target: LockTarget = {
     step: step.id,
     target: step.target ?? "",
     match: { url_glob: match.url_glob, sig: match.sig },
-    selector: winner.selector,
-    strategy: winner.strategy,
-    green_runs: 1,
-    last_seen: new Date(now()).toISOString(),
+    strategies,
+    last_seen: nowIso,
   };
-  if (candidates.length > 0) target.candidates = candidates;
+
+  const memory = buildMemory(opts.note, nowIso);
+  if (memory !== undefined) target.memory = memory;
 
   if (opts.kind === "ai_pick") {
     target.kind = "ai_pick";
@@ -237,24 +250,61 @@ export function recipeFromExecution(
 }
 
 // ---------------------------------------------------------------------------
-// Merge a freshly-learned winner into an existing target (the heal path)
+// Advisory memory (the note-to-future-self, DESIGN §4)
 // ---------------------------------------------------------------------------
 
 /**
- * Fold a freshly-resolved {@link StepExecution} into an EXISTING {@link LockTarget} (the auto-heal
- * write path). Semantics:
+ * Build the advisory {@link TargetMemory} for a write, given a freshly-emitted (ALREADY REDACTED)
+ * `note` and the current ISO timestamp. Returns `undefined` for an absent/empty note so no empty
+ * memory block is stored. `existing` is the target's prior memory, PRESERVED when no new note was
+ * emitted this run — so a note persists across green runs until the model overwrites it (or it
+ * decays out on load).
+ */
+export function buildMemory(
+  note: string | undefined,
+  nowIso: string,
+  existing?: TargetMemory,
+): TargetMemory | undefined {
+  const trimmed = note?.trim();
+  if (trimmed) return { note: trimmed, note_updated: nowIso };
+  // No new note this run: keep the prior note (if any) unchanged.
+  if (existing?.note) {
+    const out: TargetMemory = { note: existing.note };
+    if (existing.note_updated !== undefined) out.note_updated = existing.note_updated;
+    return out;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Merge an execution into an existing portfolio target (the track-record path)
+// ---------------------------------------------------------------------------
+
+/** The result of folding an execution into an existing portfolio target. */
+export interface MergeResult {
+  /** The new target (portfolio re-ranked). Does not mutate the input. */
+  target: LockTarget;
+  /** True when the top-ranked WINNER strategy CHANGED vs the prior portfolio (drives heal/drift). */
+  winnerChanged: boolean;
+}
+
+/**
+ * Fold a freshly-resolved {@link StepExecution} into an EXISTING {@link LockTarget} portfolio
+ * (DESIGN §3 track-record update + re-rank). Builds a {@link PortfolioOutcome} from the execution
+ * and applies it (`applyOutcome`):
  *
- *  - REPEAT GREEN (the new winner equals the existing winning recipe): bump `green_runs` by 1,
- *    refresh `match` + `last_seen`, keep candidates as-is. The lock is stable across repeated
- *    green runs (no churn except the counter + timestamp).
- *  - NEW WINNER (a heal — the recipe drifted): PROMOTE the new winner to `selector`/`strategy`,
- *    DEMOTE the prior winner into `candidates` (carrying its accumulated `green_runs`), merge in
- *    the execution's fresh candidates, drop the new winner from candidates, re-rank, refresh
- *    `match` + `last_seen`, and reset the head `green_runs` to 1 (its first green AS the winner).
- *    If the new winner already exists among the prior candidates, its accumulated `green_runs` is
- *    carried up (+1) rather than reset.
+ *  - When L0 RACED the portfolio (`execution.portfolio` present), the race's `agreed`/`drifted`
+ *    verdicts ARE the outcome: agreeing strategies get `greens`+1/`last_ok`, disagreeing/stale
+ *    ones get `last_drift`. The winning selector is credited and floats to the top.
+ *  - Otherwise (an L1 re-resolve after a clean miss), the durable winner is credited a green
+ *    (learned if new) and the freshly-observed candidates are seeded (greens:0) — the classic
+ *    "learn the resolved selector" path, now expressed as a portfolio update.
  *
- * Returns a NEW target (does not mutate `existing`). `last_seen` uses the injected clock.
+ * `winnerChanged` reports whether the TOP strategy differs from the prior top — that (and only
+ * that) is a heal/drift for the write policy, matching the v1 "winner drifted" semantics. Repeated
+ * green runs (winner unchanged) are NOT heals even though track records tick over.
+ *
+ * Returns a NEW target (does not mutate `existing`). Timestamps use the injected clock.
  */
 export function mergeWinningRecipe(
   existing: LockTarget,
@@ -264,93 +314,83 @@ export function mergeWinningRecipe(
   opts: {
     inferStrategy: (selector: string) => Strategy | null;
     now?: () => number;
+    /** A freshly-emitted note-to-future-self, ALREADY REDACTED. Overwrites the prior note when set. */
+    note?: string;
   },
-): LockTarget {
+): MergeResult {
   const ctx = `step "${step.id}" (merge)`;
   const now = opts.now ?? Date.now;
+  const nowMs = now();
+  const lastSeen = new Date(nowMs).toISOString();
   const winner = winningRecipeFromExecution(execution, opts.inferStrategy, ctx);
-  const lastSeen = new Date(now()).toISOString();
 
-  const isRepeat =
-    existing.selector === winner.selector && existing.strategy === winner.strategy;
+  const priorWinner = portfolioWinner(existing);
+  const existingStrategies = existing.strategies ?? [];
 
-  if (isRepeat) {
-    return {
-      ...existing,
-      target: step.target ?? existing.target,
-      match: { url_glob: match.url_glob, sig: match.sig },
-      green_runs: (existing.green_runs ?? 0) + 1,
-      last_seen: lastSeen,
-    };
-  }
+  // Build the per-strategy outcome. Prefer the L0 race verdicts when present; else derive from the
+  // durable winner + freshly-observed candidates (the L1-rebuild-after-miss path).
+  //
+  // On the L1-rebuild path we reached L1 BECAUSE L0 missed — the prior portfolio failed to carry
+  // the step (its winner's sig gate failed or its selector no longer resolved). If L1 then resolved
+  // a DIFFERENT winning selector, the prior winner DRIFTED: stamp it so it demotes below the fresh
+  // winner (matching the v1 "winner drifted → promote new, demote old" heal semantics). A repeat of
+  // the same selector is just a green (no drift).
+  const l1DriftedPrior =
+    !execution.portfolio &&
+    priorWinner &&
+    !(priorWinner.kind === winner.strategy && priorWinner.selector === winner.selector)
+      ? [{ kind: priorWinner.kind, selector: priorWinner.selector }]
+      : [];
 
-  // ---- New winner (a heal) ----
-  // Start the candidate pool from the existing candidates.
-  const pool: LockCandidate[] = existing.candidates ? [...existing.candidates] : [];
-
-  // Demote the prior winner into the pool (carrying its green_runs), if there was one.
-  if (existing.selector !== undefined && existing.strategy !== undefined) {
-    pool.push({
-      strategy: existing.strategy,
-      selector: existing.selector,
-      ...(existing.green_runs !== undefined ? { green_runs: existing.green_runs } : {}),
-    });
-  }
-
-  // Fold in the execution's freshly-observed candidates.
-  for (const rc of execution.candidates ?? []) {
-    const lc = rankedToLockCandidate(rc);
-    if (lc) pool.push(lc);
-  }
-
-  // Did the new winner previously live in the pool? Carry its green_runs up (+1).
-  let promotedGreenRuns = 1;
-  const dedupedPool: LockCandidate[] = [];
-  const seen = new Set<string>();
-  for (const c of pool) {
-    if (c.selector === winner.selector && c.strategy === winner.strategy) {
-      promotedGreenRuns = (c.green_runs ?? 0) + 1;
-      continue; // the winner becomes the head, not a candidate
-    }
-    const key = `${c.strategy} ${c.selector}`;
-    if (seen.has(key)) {
-      // Merge duplicate candidates by taking the max green_runs.
-      const idx = dedupedPool.findIndex((d) => `${d.strategy} ${d.selector}` === key);
-      const prev = dedupedPool[idx];
-      if (prev) {
-        dedupedPool[idx] = {
-          ...prev,
-          green_runs: Math.max(prev.green_runs ?? 0, c.green_runs ?? 0) || undefined,
-        };
+  const outcome: PortfolioOutcome = execution.portfolio
+    ? {
+        agreed: execution.portfolio.agreed.map((v) => ({ kind: v.kind, selector: v.selector })),
+        drifted: execution.portfolio.drifted.map((v) => ({ kind: v.kind, selector: v.selector })),
+        learned: [{ kind: winner.strategy, selector: winner.selector }],
       }
-      continue;
-    }
-    seen.add(key);
-    dedupedPool.push(c);
-  }
+    : {
+        agreed: [{ kind: winner.strategy, selector: winner.selector }],
+        drifted: l1DriftedPrior,
+        learned: [
+          { kind: winner.strategy, selector: winner.selector },
+          ...(execution.candidates ?? [])
+            .map(rankedToLockCandidate)
+            .filter((c): c is LockCandidate => c !== undefined)
+            .map((c) => ({ kind: c.strategy, selector: c.selector })),
+        ],
+      };
+
+  const strategies = applyOutcome(existingStrategies, outcome, nowMs);
+  const newWinner = strategies[0];
+  const winnerChanged =
+    !priorWinner ||
+    !newWinner ||
+    priorWinner.kind !== newWinner.kind ||
+    priorWinner.selector !== newWinner.selector;
 
   const merged: LockTarget = {
-    ...existing,
+    step: existing.step,
     target: step.target ?? existing.target,
     match: { url_glob: match.url_glob, sig: match.sig },
-    selector: winner.selector,
-    strategy: winner.strategy,
-    green_runs: promotedGreenRuns,
+    strategies,
     last_seen: lastSeen,
   };
-  const ranked = rankLockCandidates(dedupedPool);
-  if (ranked.length > 0) merged.candidates = ranked;
-  else delete merged.candidates;
+  if (existing.kind !== undefined) merged.kind = existing.kind;
 
-  // For an ai_pick target, re-pin to the new winner (Phase 4 may refine).
-  if (existing.kind === "ai_pick") {
+  // Advisory memory: a freshly-emitted note overwrites; otherwise the prior note is preserved
+  // (decay is applied on the next LOAD via `normalizeTarget`, so a stale note self-drops there).
+  const memory = buildMemory(opts.note, lastSeen, existing.memory);
+  if (memory !== undefined) merged.memory = memory;
+
+  // For an ai_pick target, re-pin to the (possibly new) top winner (Phase 4 may refine).
+  if (existing.kind === "ai_pick" && newWinner) {
     merged.pinned_choice = {
-      strategy: winner.strategy,
-      selector: winner.selector,
+      strategy: newWinner.kind,
+      selector: newWinner.selector,
       ...(existing.pinned_choice?.label !== undefined
         ? { label: existing.pinned_choice.label }
         : {}),
     };
   }
-  return merged;
+  return { target: merged, winnerChanged };
 }

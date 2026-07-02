@@ -12,10 +12,10 @@
 // Canonical references: PLAN.md §4 (RunSummary / RunLimits / connect), §5 Phase 2 (runner is
 // the capstone that integrates flow/config/driver/ladder/assert/artifacts).
 
-import type { ResolvedConfig, ConnectConfig } from "../config/types.ts";
-import type { Driver } from "../driver/index.ts";
-import type { RunSummary } from "../artifacts/index.ts";
 import type { AiRuntime, AiRuntimeDeps } from "../ai/index.ts";
+import type { RunSummary } from "../artifacts/index.ts";
+import type { ConnectConfig, ResolvedConfig } from "../config/types.ts";
+import type { Driver } from "../driver/index.ts";
 import type { TelemetrySink } from "../telemetry/index.ts";
 
 /**
@@ -72,6 +72,12 @@ export interface RunOptions {
   lockPath?: string;
   /** Resume the run starting at this step id (CLI `--from`); earlier steps are skipped. */
   fromStep?: string;
+  /**
+   * Stop the run after this step id, inclusive (CLI `--to`); the named step still runs, later
+   * steps are skipped. Combinable with `fromStep` to run a debugging slice; `fromStep` must
+   * resolve to an index at or before `toStep`'s.
+   */
+  toStep?: string;
   /** Machine-readable output mode (the caller prints the summary JSON). */
   json?: boolean;
   /**
@@ -119,6 +125,11 @@ export interface RunOptions {
    * straight to `createRun`.
    */
   runId?: string;
+  /**
+   * Where run-time diagnostics (e.g. import step-id collision warnings) are emitted. Defaults to
+   * `console.error` (stderr). Tests inject a collector to assert on the warning text.
+   */
+  onWarn?: (message: string) => void;
 }
 
 /**

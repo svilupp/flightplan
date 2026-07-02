@@ -1,6 +1,8 @@
 // Aggregator tests (Unit A). Three layers:
-//   1. The 4 REAL committed run dirs in .flightplan-runs/ → the P6 green-campaign invariants
-//      (L1 hit-rate 100%, zero escalation, zero cost, zero drift, lock-stable).
+//   1. The committed green-campaign fixture (4 run dirs under src/cli/__fixtures__/green-campaign/,
+//      tracked text-only goldens — two wizard runs + async + rerender) → the P6 green-campaign
+//      invariants (L1 hit-rate 100%, zero escalation, zero cost, zero drift, lock-stable). This is
+//      HERMETIC: it does NOT depend on the gitignored `.flightplan-runs/` dir.
 //   2. Each synthetic golden in __fixtures__/ → exact PerRunMetrics match against its committed
 //      expected.json (the goldens were hand-verified against independent calculation).
 //   3. The false-positive / false-negative detectors + the cost-honesty invariant.
@@ -8,14 +10,14 @@
 // All offline: no Chrome, no network, no SDK. Canonical reference: PLAN.md §6/§7.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { extractUsageCost } from "../ai/cost.ts";
 import { resolveRegistry } from "../ai/registry.ts";
-import type { ModelRoleName } from "../types.ts";
 import { loadRun } from "../cli/explain.ts";
+import type { ModelRoleName } from "../types.ts";
 import { aggregateCampaign, aggregateRun } from "./aggregate.ts";
 import { CAMPAIGN_EXPECTED_TIERS } from "./cost-model.ts";
 import { checkLockStability } from "./lock-stability.ts";
@@ -23,29 +25,37 @@ import type { ExpectedTierEntry, PerRunMetrics } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(here, "__fixtures__");
-const repoRoot = resolve(here, "..", "..");
-const realRunsDir = join(repoRoot, ".flightplan-runs");
+// The committed, tracked green-campaign fixture (4 run dirs), replacing the old dependency on the
+// gitignored `.flightplan-runs/` dir so this suite is hermetic in a fresh clone / CI.
+const campaignDir = join(here, "..", "cli", "__fixtures__", "green-campaign");
 
-const SYNTHETIC = ["l0-hit", "l1-heal", "l2-escalate", "l3-vision", "budget-inconclusive", "false-positive"];
+const SYNTHETIC = [
+  "l0-hit",
+  "l1-heal",
+  "l2-escalate",
+  "l3-vision",
+  "budget-inconclusive",
+  "false-positive",
+];
 
-function realRunDirs(): string[] {
-  return readdirSync(realRunsDir, { withFileTypes: true })
+function campaignRunDirs(): string[] {
+  return readdirSync(campaignDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
-    .map((d) => join(realRunsDir, d.name))
+    .map((d) => join(campaignDir, d.name))
     .sort();
 }
 
 // ---------------------------------------------------------------------------
-// 1. The 4 REAL committed run dirs — the green-campaign exit invariants.
+// 1. The committed green-campaign fixture (4 run dirs) — the green-campaign exit invariants.
 // ---------------------------------------------------------------------------
 
-describe("aggregate: the 4 real .flightplan-runs dirs (green campaign)", () => {
-  test("there are exactly 4 real run dirs, all loadable", () => {
-    expect(realRunDirs().length).toBe(4);
+describe("aggregate: the committed green-campaign fixture (4 run dirs)", () => {
+  test("there are exactly 4 campaign run dirs, all loadable", () => {
+    expect(campaignRunDirs().length).toBe(4);
   });
 
   test("campaign invariants: 100% L1, zero escalation, zero cost, zero drift", async () => {
-    const loaded = await Promise.all(realRunDirs().map((d) => loadRun(d)));
+    const loaded = await Promise.all(campaignRunDirs().map((d) => loadRun(d)));
     const campaign = aggregateCampaign(loaded);
 
     expect(campaign.runCount).toBe(4);
@@ -78,7 +88,7 @@ describe("aggregate: the 4 real .flightplan-runs dirs (green campaign)", () => {
 
   test("per-run: goto steps carry no tier and are excluded from the denominator", async () => {
     // examples.wizard run: 6 step_end events but only 5 carry a tier (goto excluded).
-    const dirs = realRunDirs();
+    const dirs = campaignRunDirs();
     const loaded = await loadRun(dirs[0] as string);
     const m = aggregateRun(loaded);
     expect(m.totalSteps).toBeGreaterThan(m.tieredSteps); // goto excluded
@@ -87,7 +97,7 @@ describe("aggregate: the 4 real .flightplan-runs dirs (green campaign)", () => {
   });
 
   test("lock byte-stability cross-check: clean green runs expect no lock write", async () => {
-    const loaded = await Promise.all(realRunDirs().map((d) => loadRun(d)));
+    const loaded = await Promise.all(campaignRunDirs().map((d) => loadRun(d)));
     for (const run of loaded) {
       const m = aggregateRun(run);
       // Simulate an unchanged lock around the run (identical bytes before/after).
@@ -104,8 +114,8 @@ describe("aggregate: the 4 real .flightplan-runs dirs (green campaign)", () => {
     }
   });
 
-  test("per-fixture matrix coverage maps real flows to their expected tiers", async () => {
-    const loaded = await Promise.all(realRunDirs().map((d) => loadRun(d)));
+  test("per-fixture matrix coverage maps campaign flows to their expected tiers", async () => {
+    const loaded = await Promise.all(campaignRunDirs().map((d) => loadRun(d)));
     const campaign = aggregateCampaign(loaded, { expectedTiers: CAMPAIGN_EXPECTED_TIERS });
     // wizard / async / rerender appear; each is L1 and its expected set includes L1.
     const flows = new Set(campaign.perFixture.map((f) => f.flowId));

@@ -16,25 +16,23 @@
 //   - cost totals (run_end + summary = fake tokens × registry pricing)
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import type { GenerateFn, GenerateRequest } from "../ai/index.ts";
+import { createAiRuntime } from "../ai/index.ts";
 import { FakeClock } from "../assert/clock.ts";
+import type { ConnectConfig, ResolvedConfig } from "../config/index.ts";
+import { resolveConfigWithDefaults } from "../config/index.ts";
 import {
   MockDriver,
-  makeSnapshot,
+  makeFailureBatch,
   makeInteractiveElement,
   makeRankedCandidate,
+  makeSnapshot,
   makeSuccessBatch,
-  makeFailureBatch,
 } from "../driver/index.ts";
-import type { ConnectConfig } from "../config/index.ts";
-import { resolveConfigWithDefaults } from "../config/index.ts";
-import type { ResolvedConfig } from "../config/index.ts";
 import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
-import { createAiRuntime } from "../ai/index.ts";
-import type { GenerateFn, GenerateRequest } from "../ai/index.ts";
 import type { AdvisoryVerdict } from "../types.ts";
 import { runFlow } from "./runner.ts";
 import type { AiRuntimeFactory, RunOptions } from "./types.ts";
@@ -132,6 +130,9 @@ function optsFor(
 
 /** A single-target click flow (id `act`) reused by several scenarios. */
 function clickFlow(id: string, target: string, intent?: string): string {
+  const targetToml = intent
+    ? `target = [${JSON.stringify(target)}, ${JSON.stringify(intent)}]`
+    : `target = ${JSON.stringify(target)}`;
   return `
 version = 1
 kind = "flow"
@@ -141,8 +142,7 @@ description = "${id}"
 [[steps]]
 id = "act"
 do = "click"
-target = "${target}"
-${intent ? `intent = "${intent}"` : ""}
+${targetToml}
 `;
 }
 
@@ -152,7 +152,9 @@ const ORDER_URL = "http://localhost:3000/order";
 function orderSnapshot() {
   return makeSnapshot({
     url: ORDER_URL,
-    interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Create order" })],
+    interactiveElements: [
+      makeInteractiveElement({ ref: "e1", role: "button", name: "Create order" }),
+    ],
   });
 }
 
@@ -218,10 +220,12 @@ describe("runFlow AI — L1→L2 resolve + lock heal", () => {
     expect(aiCalls[0]!.purpose).toBe("resolve:act");
     expect(aiCalls[0]!.outcome).toBe("ok");
 
-    // The lock was rewritten: new winner promoted, the stale one demoted into candidates.
+    // The lock was rewritten: new winner promoted to the top of the portfolio, the stale one demoted.
     const healed = await loadLockFile(lockPath);
-    expect(healed.targets[0]?.selector).toBe("role:button:Create order");
-    expect(healed.targets[0]?.candidates?.some((c) => c.selector === "role:button:OldOrder")).toBe(true);
+    expect(healed.targets[0]?.strategies?.[0]?.selector).toBe("role:button:Create order");
+    expect(healed.targets[0]?.strategies?.some((s) => s.selector === "role:button:OldOrder")).toBe(
+      true,
+    );
   });
 });
 
@@ -239,10 +243,14 @@ describe("runFlow AI — L2→L3 vision", () => {
     d.setSnapshot(
       makeSnapshot({
         url: "http://localhost:3000/icons",
-        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Delete" })],
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "button", name: "Delete" }),
+        ],
       }),
     );
-    d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Delete", score: 0.3 })]);
+    d.setResolveAll([
+      makeRankedCandidate({ ref: "e1", role: "button", name: "Delete", score: 0.3 }),
+    ]);
     d.setSignature("http://localhost:3000/icons|sig");
     d.enqueueScreenshot("BASE64JPEGDATA"); // L3 screenshot
     d.enqueueBatchResult(makeSuccessBatch("role:button:Delete")); // L3 acts on the vision pick
@@ -296,7 +304,9 @@ inputs = [${inputsToml}]
     const d = new MockDriver();
     d.setSnapshot(makeSnapshot({ url: "http://localhost:3000/done", text: "Order confirmed" }));
 
-    const { fn, calls } = makeFakeGenerate([{ output: { pass: true, reason: "confirmation visible" } }]);
+    const { fn, calls } = makeFakeGenerate([
+      { output: { pass: true, reason: "confirmation visible" } },
+    ]);
     const result = await runFlow(
       optsFor(flowPath, outDir, d, defaultConfig(), { aiRuntimeFactory: aiFactory(fn) }),
     );
@@ -333,7 +343,9 @@ inputs = [${inputsToml}]
     d.setSnapshot(makeSnapshot({ url: "http://localhost:3000/done", text: "Order confirmed" }));
     d.setScreenshot("BASE64SHOT");
 
-    const { fn, calls } = makeFakeGenerate([{ output: { pass: true, reason: "confirmation visible" } }]);
+    const { fn, calls } = makeFakeGenerate([
+      { output: { pass: true, reason: "confirmation visible" } },
+    ]);
     const result = await runFlow(
       optsFor(flowPath, outDir, d, defaultConfig(), { aiRuntimeFactory: aiFactory(fn) }),
     );
@@ -367,7 +379,9 @@ target = "Primary action"
   function pickSnapshot() {
     return makeSnapshot({
       url: PICK_URL,
-      interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Primary action" })],
+      interactiveElements: [
+        makeInteractiveElement({ ref: "e1", role: "button", name: "Primary action" }),
+      ],
     });
   }
 
@@ -383,7 +397,9 @@ target = "Primary action"
     d1.setSignature(`${PICK_URL}|sig1`);
     d1.enqueueBatchResult(makeFailureBatch("hidden")); // L1 fails → escalate
     d1.enqueueBatchResult(makeSuccessBatch("role:button:Primary action")); // L2 acts
-    const { fn: fn1 } = makeFakeGenerate([{ output: { decision: "pick", index: 0, confidence: 0.9 } }]);
+    const { fn: fn1 } = makeFakeGenerate([
+      { output: { decision: "pick", index: 0, confidence: 0.9 } },
+    ]);
 
     const run1 = await runFlow(
       optsFor(flowPath, outDir, d1, defaultConfig(), { aiRuntimeFactory: aiFactory(fn1) }),
@@ -402,7 +418,9 @@ target = "Primary action"
     d2.setSnapshot(pickSnapshot());
     d2.setSignature(`${PICK_URL}|sig1`);
     d2.setBatchResult(makeSuccessBatch("role:button:Primary action")); // L0 replay
-    const { fn: fn2, calls: calls2 } = makeFakeGenerate([{ output: { decision: "pick", index: 0 } }]);
+    const { fn: fn2, calls: calls2 } = makeFakeGenerate([
+      { output: { decision: "pick", index: 0 } },
+    ]);
 
     const run2 = await runFlow(
       optsFor(flowPath, outDir, d2, defaultConfig(), {
@@ -448,7 +466,9 @@ describe("runFlow AI — budget overflow → inconclusive (exit 3)", () => {
     d.setSnapshot(
       makeSnapshot({
         url: "http://localhost:3000/icons",
-        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Delete" })],
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "button", name: "Delete" }),
+        ],
       }),
     );
     d.setSignature("http://localhost:3000/icons|s");
@@ -552,7 +572,9 @@ describe("runFlow AI — L4 advisor verdicts", () => {
       d.setSnapshot(
         makeSnapshot({
           url: "http://localhost:3000/icons",
-          interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Delete" })],
+          interactiveElements: [
+            makeInteractiveElement({ ref: "e1", role: "button", name: "Delete" }),
+          ],
         }),
       );
       d.setSignature("http://localhost:3000/icons|s");
@@ -575,9 +597,7 @@ describe("runFlow AI — L4 advisor verdicts", () => {
 
       // run.jsonl step_end surfaces the verdict (the "advisor: …" diagnosis as the step error).
       const runEvents = await readJsonl(join(result.runDir, "run.jsonl"));
-      const stepEnd = runEvents.find((e) => e.type === "step_end" && e.stepId === "act") as
-        | Record<string, unknown>
-        | undefined;
+      const stepEnd = runEvents.find((e) => e.type === "step_end" && e.stepId === "act");
       expect(String(stepEnd?.error)).toContain("advisor:");
 
       // ai.jsonl records the advisor call with the typed verdict kind.
@@ -621,7 +641,10 @@ describe("runFlow AI — cost totals", () => {
     d.enqueueBatchResult(makeFailureBatch("hidden")); // L1 fails → escalate to L2
     d.enqueueBatchResult(makeSuccessBatch("role:button:Create order")); // L2 acts
     const { fn } = makeFakeGenerate([
-      { output: { decision: "pick", index: 0, confidence: 0.9 }, usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        output: { decision: "pick", index: 0, confidence: 0.9 },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      },
     ]);
 
     const result = await runFlow(

@@ -15,9 +15,9 @@ import {
   JsonlWriter,
   makeRunId,
   openArtifactWriters,
+  type RunSummary,
   resolveRunDir,
   writeSummary,
-  type RunSummary,
 } from "./index.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "fp-artifacts-"));
@@ -131,9 +131,7 @@ describe("JsonlWriter (generic primitive)", () => {
     const path = join(tmp, "concurrent.jsonl");
     const w = new JsonlWriter(path);
     const N = 50;
-    await Promise.all(
-      Array.from({ length: N }, (_, i) => w.write({ i, payload: "x".repeat(i) })),
-    );
+    await Promise.all(Array.from({ length: N }, (_, i) => w.write({ i, payload: "x".repeat(i) })));
     await w.close();
 
     const events = readJsonl(path);
@@ -321,8 +319,12 @@ describe("writeSummary", () => {
       video_path: null,
       trace_path: rd.traceJsonl,
       total_cost_usd: 0.0012,
-      model_usage: [{ role: "resolver", model: "deepseek/deepseek-v4-flash", calls: 1, cost_usd: 0.0012 }],
+      model_usage: [
+        { role: "resolver", model: "deepseek/deepseek-v4-flash", calls: 1, cost_usd: 0.0012 },
+      ],
       proposed_patch_path: null,
+      replan_count: 0,
+      repaired_steps: [],
       steps: [
         { stepId: "s1", do: "goto", ok: true, healed: false, durationMs: 100 },
         { stepId: "s2", do: "click", ok: true, tier: "L1", healed: true, durationMs: 50 },

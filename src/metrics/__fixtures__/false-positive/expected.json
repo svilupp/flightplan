@@ -41,7 +41,5 @@
       "count": 1
     }
   },
-  "falsePositiveSteps": [
-    "s_click"
-  ]
+  "falsePositiveSteps": ["s_click"]
 }

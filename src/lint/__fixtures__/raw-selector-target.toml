@@ -1,8 +1,9 @@
-# BROKEN: a raw CSS selector is hard-coded in `target` → steps/no-raw-selector
+# BROKEN: an NL-classified target entry looks like an unprefixed selector →
+# steps/target-unprefixed-selector (warning; suggest the css: prefix).
 version = 1
 kind = "flow"
 id = "broken.raw_selector_target"
-description = "Hard-coded selector in a step target"
+description = "Unprefixed selector-looking string in a step target"
 
 [[steps]]
 id = "open"
@@ -12,4 +13,4 @@ url = "http://localhost:3000/wizard"
 [[steps]]
 id = "click_next"
 do = "click"
-target = "#wizard-next-1 > button.primary"
+target = ["#wizard-next-1 > button.primary", "the Next button"]

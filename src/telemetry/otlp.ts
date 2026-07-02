@@ -5,12 +5,7 @@
 // into the run: `export` returns the fetch promise and the caller (LiveSpan) observes any
 // rejection and degrades to a no-op. A non-2xx response rejects so the caller can degrade.
 
-import type {
-  AttributeValue,
-  ExportedSpan,
-  SpanAttributes,
-  TelemetrySink,
-} from "./types.ts";
+import type { AttributeValue, ExportedSpan, SpanAttributes, TelemetrySink } from "./types.ts";
 
 /** Logfire's OTLP base endpoint (traces path appended). PROPOSAL §Logfire (610-626). */
 export const DEFAULT_LOGFIRE_ENDPOINT = "https://logfire-api.pydantic.dev";
@@ -113,7 +108,9 @@ export class LogfireSink implements TelemetrySink {
     if (!this.#token) {
       if (!this.#warnedNoToken) {
         this.#warnedNoToken = true;
-        this.#onWarn("flightplan telemetry: Logfire enabled but no token resolved — spans dropped.");
+        this.#onWarn(
+          "flightplan telemetry: Logfire enabled but no token resolved — spans dropped.",
+        );
       }
       return Promise.resolve();
     }

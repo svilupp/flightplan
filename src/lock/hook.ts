@@ -17,8 +17,8 @@
 // Canonical references: PLAN.md §5 Phase 3 (L0 validates url_glob + sig before replay),
 // `src/ladder/types.ts` (`LockHook`, `CachedRecipe`, `ResolveContext`).
 
-import type { CachedRecipe, LockHook, ResolveContext } from "../ladder/index.ts";
 import type { Step } from "../flow/index.ts";
+import type { CachedRecipe, LockHook, ResolveContext } from "../ladder/index.ts";
 import type { ComposedEntry, ComposedLock } from "./compose.ts";
 import { lookupComposed } from "./compose.ts";
 import { lockTargetToRecipe } from "./recipe.ts";
@@ -72,8 +72,9 @@ export function createLockHook(
         }
       }
 
-      // Convert to the ladder's in-memory recipe, carrying `match` so L0 validates url_glob + sig.
-      return lockTargetToRecipe(entry.target);
+      // Convert to the ladder's in-memory recipe, carrying `match` so L0 validates url_glob + sig
+      // and a FRESH advisory note (decay applied via the injected clock) for the AI tiers.
+      return lockTargetToRecipe(entry.target, ctx.now?.() ?? Date.now());
     },
   };
 }

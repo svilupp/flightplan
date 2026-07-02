@@ -9,55 +9,52 @@
 // from a {@link RunDir} (via {@link createRun}), emits events through the typed writers, and
 // writes the final summary via {@link writeSummary}.
 
-// ---- Run directory management ----
-export {
-  createRun,
-  resolveRunDir,
-  makeRunId,
-  DEFAULT_BASE_DIR,
-  RUN_FILES,
-  RUN_DIRS,
-} from "./run-dir.ts";
-export type { RunDir, CreateRunOptions } from "./run-dir.ts";
-
-// ---- Generic JSONL primitive ----
-export { JsonlWriter } from "./jsonl.ts";
-export type { JsonlValue } from "./jsonl.ts";
-
-// ---- Typed writers + facade + summary ----
-export {
-  RunWriter,
-  TraceWriter,
-  AiWriter,
-  ArtifactWriters,
-  openArtifactWriters,
-  writeSummary,
-} from "./writers.ts";
-export type { Clock } from "./writers.ts";
-
-// ---- Event schemas + run-summary type (the cross-agent contract) ----
-export { LADDER_TIERS, AI_CALL_ROLES } from "./events.ts";
 export type {
+  AiCallEvent,
+  AiCallRole,
+  // ai.jsonl
+  AiEvent,
+  AssertionResultEvent,
+  BrowserActionEvent,
   // shared
   LadderTier,
   ModelUsage,
-  RunTotals,
-  AiCallRole,
+  ResolutionAttemptEvent,
+  RunEndEvent,
   // run.jsonl
   RunEvent,
   RunStartEvent,
-  StepStartEvent,
-  StepEndEvent,
-  AssertionResultEvent,
-  RunEndEvent,
-  // trace.jsonl
-  TraceEvent,
-  BrowserActionEvent,
-  ResolutionAttemptEvent,
-  // ai.jsonl
-  AiEvent,
-  AiCallEvent,
   // summary
   RunSummary,
+  RunTotals,
+  StepEndEvent,
+  StepStartEvent,
   StepSummary,
+  // trace.jsonl
+  TraceEvent,
 } from "./events.ts";
+// ---- Event schemas + run-summary type (the cross-agent contract) ----
+export { AI_CALL_ROLES, LADDER_TIERS } from "./events.ts";
+export type { JsonlValue } from "./jsonl.ts";
+// ---- Generic JSONL primitive ----
+export { JsonlWriter } from "./jsonl.ts";
+export type { CreateRunOptions, RunDir } from "./run-dir.ts";
+// ---- Run directory management ----
+export {
+  createRun,
+  DEFAULT_BASE_DIR,
+  makeRunId,
+  RUN_DIRS,
+  RUN_FILES,
+  resolveRunDir,
+} from "./run-dir.ts";
+export type { Clock } from "./writers.ts";
+// ---- Typed writers + facade + summary ----
+export {
+  AiWriter,
+  ArtifactWriters,
+  openArtifactWriters,
+  RunWriter,
+  TraceWriter,
+  writeSummary,
+} from "./writers.ts";

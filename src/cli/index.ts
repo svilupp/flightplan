@@ -9,12 +9,12 @@
 // can be unit-tested in isolation.
 
 import pkg from "../../package.json" with { type: "json" };
-import { formatHuman, formatJson, lintPaths } from "../lint/index.ts";
-import { loadFlowFile } from "../flow/index.ts";
-import { resolveConfigWithDefaults } from "../config/index.ts";
-import type { Config, ResolvedConfig } from "../config/index.ts";
-import { runFlow, type RunOptions } from "../runner/index.ts";
 import type { RunSummary } from "../artifacts/index.ts";
+import type { Config, ResolvedConfig } from "../config/index.ts";
+import { resolveConfigWithDefaults } from "../config/index.ts";
+import { loadFlowFile } from "../flow/index.ts";
+import { formatHuman, formatJson, lintPaths } from "../lint/index.ts";
+import { type RunOptions, runFlow } from "../runner/index.ts";
 import { runExplain } from "./explain.ts";
 import { runReport } from "./report.ts";
 import { runSweep } from "./sweep.ts";
@@ -40,6 +40,8 @@ export interface ParsedArgs {
   out: string | null;
   /** Resume a run from a given step id. */
   from: string | null;
+  /** Stop a run after a given step id (inclusive). */
+  to: string | null;
   /**
    * Which ladder tier to start resolution at (`--start-tier l0|l3`). `null` = unset (defaults to
    * `"L0"`, the normal ladder — identical to before). `"L3"` runs the "AI-only baseline" mode:
@@ -87,6 +89,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     lock: null,
     out: null,
     from: null,
+    to: null,
     startTier: null,
     trials: null,
     compareBaseline: false,
@@ -137,6 +140,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
       parsed.from = value;
       continue;
     }
+    if (arg === "--to") {
+      const value = argv[++i];
+      if (value === undefined) throw new CliUsageError("--to requires a step id");
+      parsed.to = value;
+      continue;
+    }
     if (arg === "--start-tier") {
       const value = argv[++i];
       if (value === undefined) throw new CliUsageError("--start-tier requires a value (l0|l3)");
@@ -152,7 +161,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
       if (value === undefined) throw new CliUsageError("--trials requires a number");
       const n = Number(value);
       if (!Number.isInteger(n) || n < 1) {
-        throw new CliUsageError(`--trials must be a positive integer (got ${JSON.stringify(value)})`);
+        throw new CliUsageError(
+          `--trials must be a positive integer (got ${JSON.stringify(value)})`,
+        );
       }
       parsed.trials = n;
       continue;
@@ -197,7 +208,9 @@ Flags:
   --no-lock-write       Suppress all lock writes
   --lock <path>         Override the lock file path
   -o, --out <dir>       Output directory for run artifacts
-  --from <step>         Resume a run starting at the given step id
+  --from <step>         Resume a run starting at the given step id (inclusive)
+  --to <step>           Stop a run after the given step id (inclusive); combine with --from
+                         to run a debugging slice
   --start-tier <tier>   Start ladder resolution at "l0" (default) or "l3" (AI-only vision
                          baseline: skips L0/L1, resolves every step via vision, falls through
                          to L4 on escalation — for fair comparison against the tiered resolver)
@@ -243,7 +256,7 @@ export async function runLint(args: ParsedArgs): Promise<number> {
     return 2;
   }
 
-  let multi;
+  let multi: Awaited<ReturnType<typeof lintPaths>>;
   try {
     multi = await lintPaths(args.positionals);
   } catch (err) {
@@ -273,7 +286,7 @@ export async function runLint(args: ParsedArgs): Promise<number> {
  * Loads the flow to derive its resolved config (built-in defaults → flow `[config]` + `[run]`;
  * global/imported layers land in later phases), builds {@link RunOptions} from the parsed flags
  * (`-o/--out`→out, `--frozen`/`--no-lock-write`/`--lock`→pass-through, `--from`→fromStep,
- * `--json`→json), and calls {@link runFlow}. Prints the RunSummary JSON under `--json`, else a
+ * `--to`→toStep, `--json`→json), and calls {@link runFlow}. Prints the RunSummary JSON under `--json`, else a
  * concise human summary. Exit code: 0 passed · 1 failed · 2 usage/IO/connect error · 3
  * inconclusive (verdict→code mapping owned by the runner; see `RunResult.exitCode`).
  */
@@ -306,10 +319,11 @@ export async function runRun(args: ParsedArgs): Promise<number> {
   if (args.noLockWrite) runOpts.noLockWrite = true;
   if (args.lock !== null) runOpts.lockPath = args.lock;
   if (args.from !== null) runOpts.fromStep = args.from;
+  if (args.to !== null) runOpts.toStep = args.to;
   if (args.json) runOpts.json = true;
   if (args.startTier !== null) runOpts.startTier = args.startTier;
 
-  let result;
+  let result: Awaited<ReturnType<typeof runFlow>>;
   try {
     result = await runFlow(runOpts);
   } catch (err) {

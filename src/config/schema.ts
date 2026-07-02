@@ -6,10 +6,7 @@
 // PROPOSAL_v1.md "Global config example" / "Resolution and overrides".
 
 import { z } from "zod";
-import {
-  ASSERTION_MODES,
-  FILE_KINDS,
-} from "../types.ts";
+import { ASSERTION_MODES, FILE_KINDS } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Model registry — [ai.models.{resolver,advisor,vision}] (PLAN.md §4 ModelRole)
@@ -32,12 +29,18 @@ export const ModelRoleSchema = z
   })
   .strict();
 
-/** The `[ai.models]` registry: one entry per named role. All optional (merged key-by-key). */
+/**
+ * The `[ai.models]` registry: one entry per named role. All optional (merged key-by-key).
+ * `planner` (cheap) + `planner_capable` (escalation-only, UNPROVEN) back the L5 path-repair planner
+ * (PLAN_v003 v003-6); override them via `[ai.models.planner]` / `[ai.models.planner_capable]`.
+ */
 export const ModelRegistrySchema = z
   .object({
     resolver: ModelRoleSchema.optional(),
     advisor: ModelRoleSchema.optional(),
     vision: ModelRoleSchema.optional(),
+    planner: ModelRoleSchema.optional(),
+    planner_capable: ModelRoleSchema.optional(),
   })
   .strict();
 
@@ -124,6 +127,11 @@ export const RunLimitsSchema = z
     max_model_calls: z.number().int().nonnegative().optional(),
     max_screenshots: z.number().int().nonnegative().optional(),
     max_cost_usd: z.number().nonnegative().optional(),
+    /**
+     * Max L5 path-repair replans this run (PLAN_v003 v003-6). Also settable on `[plan]`.
+     * `0` = no replans permitted (the first replan trips it); unset = unlimited.
+     */
+    max_replans: z.number().int().nonnegative().optional(),
     assertions: z.enum(ASSERTION_MODES).optional(),
     fail_on_assertion: z.boolean().optional(),
     assert_timeout_ms: z.number().int().positive().optional(),
@@ -190,6 +198,56 @@ export const ArtifactsConfigSchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
+// [cache] — L0 cache-hit-quality tuning (L0 cache-hit quality, Layer 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `[cache]` block. All fields optional; zero-config (Layer 1) volatile-text masking is always
+ * on regardless of this block.
+ *
+ *  - `ignore_regions` — CSS selectors whose subtrees are excluded from BOTH the masked-text and
+ *    the structural hashing (a page-specific escalation of the default volatile-region masking).
+ *  - `signature` — `"full"` (default) compares the full composite signature; `"struct-only"`
+ *    trusts a cached recipe when the role-tree skeleton is unchanged even if the (masked) text
+ *    drifts. A per-step `cache = "full" | "struct-only"` on a targeting step overrides this.
+ */
+export const CacheConfigSchema = z
+  .object({
+    ignore_regions: z.array(z.string().min(1)).optional(),
+    signature: z.enum(["full", "struct-only"]).optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// [plan] — the L5 cheap-first path-repair planner (PLAN_v003 §4 Phase C / v003-6)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `[plan]` block — the cheap-first path-repair planner (PLAN_v003 v003-6). ENABLED BY DEFAULT
+ * (`enabled` defaults to `true` in the resolved config): the planner is a field-test in prod, but
+ * it is INERT unless BOTH an AI runtime is present AND a divergence has a recorded expectation to
+ * compare against, so deterministic (no-AI) runs stay byte-identical.
+ *
+ *  - `enabled`             — master switch (default TRUE). `false` disables the planner entirely.
+ *  - `escalate_confidence` — planner confidence at/below which the CHEAP arm's repair escalates to
+ *    the capable arm (default {@link 0.5}; the escalation signal is UNPROVEN — tune in the field).
+ *  - `escalate_attempts`   — how many cheap attempts for ONE divergence before escalating.
+ *  - `max_replans`         — run-level hard stop on total replans (also settable on `[run]`);
+ *    `0` = no replans permitted, unset = unlimited.
+ *
+ * The cheap/capable MODELS are overridden via `[ai.models.planner]` / `[ai.models.planner_capable]`
+ * (the model registry), NOT here — this block carries only the planner POLICY.
+ */
+export const PlanConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    escalate_confidence: z.number().min(0).max(1).optional(),
+    escalate_attempts: z.number().int().positive().optional(),
+    max_replans: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
 // The full Config object (all sections optional; built-in defaults fill the gaps).
 // ---------------------------------------------------------------------------
 
@@ -203,6 +261,8 @@ export const ConfigSchema = z
     telemetry: TelemetryConfigSchema.optional(),
     redaction: RedactionConfigSchema.optional(),
     artifacts: ArtifactsConfigSchema.optional(),
+    cache: CacheConfigSchema.optional(),
+    plan: PlanConfigSchema.optional(),
   })
   .strict();
 

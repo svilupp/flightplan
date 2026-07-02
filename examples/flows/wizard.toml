@@ -33,42 +33,32 @@ text = "Full name"
 [[steps]]
 id = "enter_name"
 do = "fill"
-target = "the full name field"
-hints = ["Full name", "[data-testid='wizard-name']"]
-intent = "type the applicant's full name into the name field"
+target = ["[data-testid='wizard-name']", "the full name field"]
 value = "${inputs.full_name}"
 
 [[steps]]
 id = "advance_to_plan"
 do = "click"
-target = "the Next button"
-hints = ["Next", "[data-testid='wizard-next-1']"]
-# Intent is the fuzzy-match query (PLAN §7) — it must point squarely at the "Next" button, so
-# we keep it button-name-centric. (A wordy intent mentioning "plan" would mis-rank the Plan
+# The NL entry is the fuzzy-match query (PLAN §7) — it must point squarely at the "Next" button,
+# so we keep it button-name-centric. (A wordy query mentioning "plan" would mis-rank the Plan
 # dropdown over Next on the v0.0.18 AX snapshot.)
-intent = "click the Next button"
+target = ["[data-testid='wizard-next-1']", "the Next button"]
 
 [[steps]]
 id = "choose_plan"
 do = "select"
-target = "the plan dropdown"
-hints = ["Plan", "[data-testid='wizard-plan']"]
-intent = "choose the subscription plan"
+target = ["[data-testid='wizard-plan']", "the plan dropdown"]
 value = "${inputs.plan}"
 
 [[steps]]
 id = "advance_to_review"
 do = "click"
-target = "the Next button"
-hints = ["Next", "[data-testid='wizard-next-2']"]
-intent = "click the Next button"
+target = ["[data-testid='wizard-next-2']", "the Next button"]
 
 [[steps]]
 id = "submit_wizard"
 do = "click"
-target = "the Submit button"
-hints = ["Submit", "[data-testid='wizard-submit']"]
-intent = "click the Submit button"
+target = ["[data-testid='wizard-submit']", "the Submit button"]
 
 # The result text is surfaced in the page's accessibility text after submit. Assert against the
 # whole-page text (no selector) — the v0.0.18 AX snapshot exposes node names + page text, not

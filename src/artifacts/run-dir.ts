@@ -119,7 +119,7 @@ export function makeRunId(now: () => number, genId: () => string): string {
   const stamp =
     `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}` +
     `T${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}${p2(d.getUTCSeconds())}` +
-    `${p3(d.getUTCMilliseconds())}`;
+    p3(d.getUTCMilliseconds());
   return `${stamp}-${genId()}`;
 }
 
@@ -131,8 +131,7 @@ export function resolveRunDir(options: CreateRunOptions = {}): RunDir {
   const cwd = options.cwd ?? process.cwd();
   const rawBase = options.baseDir ?? DEFAULT_BASE_DIR;
   const baseDir = isAbsolute(rawBase) ? rawBase : resolve(cwd, rawBase);
-  const runId =
-    options.runId ?? makeRunId(options.now ?? Date.now, options.genId ?? defaultGenId);
+  const runId = options.runId ?? makeRunId(options.now ?? Date.now, options.genId ?? defaultGenId);
   const dir = join(baseDir, runId);
   return {
     runId,

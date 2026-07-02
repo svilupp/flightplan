@@ -30,8 +30,7 @@
 // L1 race over the same shared snapshot); the ladder builds the durable selector array for
 // the chosen element and learns the winning strategy from `StepResult.selectorUsed`.
 
-import type { Step } from "../flow/types.ts";
-import type { AdvisoryVerdict, Strategy } from "../types.ts";
+import type { LadderTier } from "../artifacts/index.ts";
 import type {
   BatchResult,
   CoveringElement,
@@ -40,7 +39,10 @@ import type {
   InteractiveElement,
   StepResult,
 } from "../driver/index.ts";
-import type { LadderTier } from "../artifacts/index.ts";
+import type { Step } from "../flow/types.ts";
+import type { CacheOptions } from "../lock/signature.ts";
+import type { StrategyEntry } from "../lock/types.ts";
+import type { AdvisoryVerdict, Strategy } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Tiers
@@ -84,6 +86,32 @@ export interface RankedCandidate {
 }
 
 // ---------------------------------------------------------------------------
+// PortfolioExecOutcome — the L0 portfolio-race result carried on a StepExecution
+// ---------------------------------------------------------------------------
+
+/** One strategy's identity in a portfolio verdict (kind + selector). */
+export interface PortfolioVerdict {
+  kind: Strategy;
+  selector: string;
+}
+
+/**
+ * The portfolio-race outcome L0 attaches to a `StepExecution` (DESIGN §3.2), consumed by the lock
+ * write-back to update per-strategy track records:
+ *
+ *  - `winner`    — the strategy that carried the replay (its selector floats to the top).
+ *  - `agreed`    — strategies that resolved to the SAME winning element (bump `greens`+`last_ok`).
+ *  - `drifted`   — strategies that resolved ELSEWHERE or went stale (stamp `last_drift`, demote).
+ *  - `agreement` — human summary `"<agreeing>/<parseable>"` (e.g. `"3/4"`) for the trace.
+ */
+export interface PortfolioExecOutcome {
+  winner: PortfolioVerdict;
+  agreed: PortfolioVerdict[];
+  drifted: PortfolioVerdict[];
+  agreement: string;
+}
+
+// ---------------------------------------------------------------------------
 // L2Handoff — the fuzzy-match packet handed to the (Phase-4) L2 resolver
 // ---------------------------------------------------------------------------
 
@@ -117,14 +145,7 @@ export interface L2Handoff {
  * `ActionType` — the verbs the ladder actually drives for a targeted step. Matches the
  * `Driver` single-action method names.
  */
-export type BatchActionVerb =
-  | "click"
-  | "fill"
-  | "select"
-  | "check"
-  | "hover"
-  | "press"
-  | "submit";
+export type BatchActionVerb = "click" | "fill" | "select" | "check" | "hover" | "press" | "submit";
 
 /**
  * The result of resolving AND executing one step through the ladder (resolution and action are
@@ -181,6 +202,23 @@ export interface StepExecution {
   /** L0-only: true when a cached recipe was validated and its replay ran (see the field doc). */
   replayed?: boolean;
   /**
+   * L0-only (L0 cache-hit quality — Layer 3): true when the page SIGNATURE did NOT match but the
+   * cached recipe's selector still uniquely resolved the locked target against the fresh snapshot,
+   * so the recipe was replayed as an L0 hit anyway (0 AI, no L2/L3 re-escalation). Distinguished
+   * from a pure signature hit so metrics can count "revalidated" replays separately (the trace
+   * carries an `l0_revalidated` note). Absent on a pure signature hit or any miss.
+   */
+  revalidated?: boolean;
+  /**
+   * The PORTFOLIO race outcome (DESIGN §3.2), attached by L0 when it resolved a step by racing the
+   * remembered strategy portfolio over the shared snapshot. Carries the per-strategy verdicts
+   * (which strategies agreed on the winning element, which drifted to a different element or went
+   * stale) so the write-back path (`recordResolution` → `applyOutcome`) updates track records, plus
+   * the human-readable `agreement` (`"3/4"`) + winning `kind` the trace surfaces. Absent on L1+ or
+   * a hand-built recipe with no portfolio.
+   */
+  portfolio?: PortfolioExecOutcome;
+  /**
    * The TERMINAL advisor (L4) verdict, attached by `classifyL4` (Phase 4). Present only on an L4
    * result (`tier:'L4'`, `escalate:false`). The advisor never acts — it classifies — so this is
    * data the runner (Round 2) acts on (heal-write / proposed-patch / fail), never an action the
@@ -194,6 +232,14 @@ export interface StepExecution {
    * AI tiers on a successful pick; absent for L0/L1. Additive.
    */
   pinnedLabel?: string;
+  /**
+   * The advisory note-to-future-self an AI tier (L2/L3) EMITTED via structured output (DESIGN §4).
+   * Sparse — set only when the model returned a genuinely-useful `note`, on a successful pick. The
+   * lock write-back REDACTS it (secrets/PII) then persists it into `[targets.memory]` in `auto`
+   * mode. Advisory only: it never affects the verdict, routing, or which selector was chosen.
+   * Absent for L0/L1 and whenever the model emitted no note.
+   */
+  note?: string;
 }
 
 /** Alias: a `Resolution` IS a `StepExecution` (resolution and action are coupled). */
@@ -209,7 +255,7 @@ export type Resolution = StepExecution;
  * gate. In Phase 2 this is a forward-compat shape only; nothing populates it yet.
  */
 export interface CachedRecipe {
-  /** A re-resolvable selector string (never `ref:eN`). */
+  /** A re-resolvable selector string (never `ref:eN`). The portfolio winner's selector. */
   selector: string;
   /** The strategy that selector represents. */
   strategy: Strategy;
@@ -217,6 +263,20 @@ export interface CachedRecipe {
   match?: { url_glob: string; sig: string };
   /** Ranked fallbacks to try if the winning recipe fails. */
   candidates?: CachedRecipe[];
+  /**
+   * The full learned strategy PORTFOLIO for this target (DESIGN §3), carried so L0 can RACE it over
+   * the shared snapshot (agreement/disagreement logic) and report per-strategy track-record updates
+   * back to the write path. `selector`/`strategy`/`candidates` are the winner+fallbacks projection
+   * of this same portfolio (for the replay batch). Absent on a hand-built test recipe.
+   */
+  strategies?: StrategyEntry[];
+  /**
+   * The target's FRESH advisory note (the "note-to-future-self", DESIGN §4), carried so an AI tier
+   * (L2/L3) can prepend it to its prompt as extra context when it runs. Only a non-stale note is
+   * surfaced here (the lock hook applies decay); a decayed/absent note is `undefined`. Advisory
+   * only — it never affects L0 replay, routing, or correctness.
+   */
+  note?: string;
 }
 
 /**
@@ -227,7 +287,10 @@ export interface CachedRecipe {
  */
 export interface LockHook {
   /** Look up a cached recipe for this step. `undefined` (or absent hook) = cache miss. */
-  lookup(step: Step, ctx: ResolveContext): Promise<CachedRecipe | undefined> | CachedRecipe | undefined;
+  lookup(
+    step: Step,
+    ctx: ResolveContext,
+  ): Promise<CachedRecipe | undefined> | CachedRecipe | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +341,13 @@ export interface ResolveContext {
   currentUrl?: string;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * L0 cache-hit quality tuning from `[cache]` config (Layer 2). Threaded into the page-signature
+   * computation (`ignore_regions` excluded from BOTH hashes) and the L0 match (`signature` mode).
+   * Absent → default full-signature matching with only the zero-config volatile-text masking
+   * (Layer 1) active, so a run with no `[cache]` block behaves exactly as before this option.
+   */
+  cache?: CacheOptions;
 }
 
 // ---------------------------------------------------------------------------

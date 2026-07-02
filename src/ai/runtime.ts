@@ -12,17 +12,22 @@
 // `GenerateFn` (no network, no SDK). The CALLER (Round 2) gates the default runtime on API-key
 // presence and supplies `provider.defaultGenerate` for real runs (see `provider.ts`).
 
-import type { AiJudgeAssertion } from "../flow/types.ts";
 import type { AiJudgeOptions, AssertionResult } from "../assert/types.ts";
-import { BudgetTracker, resolveBudgetLimits } from "./budget.ts";
-import { CostAccumulator } from "./cost.ts";
-import { resolveRegistry } from "./registry.ts";
-import type { AiCallRuntime } from "./call.ts";
-import { resolveL2 } from "./resolver-l2.ts";
-import { resolveL3 } from "./vision-l3.ts";
+import type { AiJudgeAssertion } from "../flow/types.ts";
 import { classifyL4 } from "./advisor-l4.ts";
+import { BudgetTracker, resolveBudgetLimits } from "./budget.ts";
+import type { AiCallRuntime } from "./call.ts";
+import { CostAccumulator } from "./cost.ts";
 import { judge as judgeImpl } from "./judge.ts";
-import type { AiHooksImpl, AiRuntime, AiRuntimeDeps } from "./types.ts";
+import {
+  gatherPlannerPage,
+  planRepairEscalated as planRepairEscalatedImpl,
+  planRepair as planRepairImpl,
+} from "./planner-l5.ts";
+import { resolveRegistry } from "./registry.ts";
+import { resolveL2 } from "./resolver-l2.ts";
+import type { AiHooksImpl, AiRuntime, AiRuntimeDeps, PlannerRuntime } from "./types.ts";
+import { resolveBatchL3, resolveL3 } from "./vision-l3.ts";
 
 /**
  * Assemble an {@link AiRuntime} from deps. The returned `hooks` satisfy the orchestrator's
@@ -49,6 +54,18 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
     resolveL2: (step, prior, ctx) => resolveL2(rt, step, prior, ctx),
     resolveL3: (step, prior, ctx) => resolveL3({ ...rt, budget }, step, prior, ctx),
     classifyL4: (step, prior, ctx) => classifyL4(rt, step, prior, ctx),
+    // Vision batching (PLAN_v003 §4 v003-3): the runner injects this as `BatchVisionResolve`. The
+    // callback OWNS the ONE-screenshot/ONE-call resolve + per-target fallback (see `resolveBatchL3`).
+    resolveBatchL3: (steps, ctx) => resolveBatchL3({ ...rt, budget }, steps, ctx),
+  };
+
+  // The L5 path-repair planner (PLAN_v003 v003-6), bound to the runtime slice. The runner gates its
+  // USE on `[plan].enabled` + a real divergence — a deterministic (no-AI-runtime) run never reaches
+  // it. `planRepairEscalated` is the ESCALATION-ONLY capable arm (never called standing).
+  const planner: PlannerRuntime = {
+    gatherPlannerPage: (divergedStep, ctx, recent) => gatherPlannerPage(divergedStep, ctx, recent),
+    planRepair: (goal, opts) => planRepairImpl(rt, goal, opts),
+    planRepairEscalated: (goal, opts) => planRepairEscalatedImpl(rt, goal, opts),
   };
 
   return {
@@ -60,6 +77,7 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
     hooks,
     judge: (assertion: AiJudgeAssertion, opts: AiJudgeOptions): Promise<AssertionResult> =>
       judgeImpl(rt, assertion, opts),
+    planner,
     usageTotals: () => cost.totals(),
   };
 }

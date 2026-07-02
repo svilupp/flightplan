@@ -96,9 +96,7 @@ describe("MockDriver — structure-signature mode (Change 4)", () => {
   });
 
   test("structure and text queues are independent FIFO channels", async () => {
-    const d = new MockDriver()
-      .enqueueSignature("t1", "t2")
-      .enqueueStructureSignature("s1", "s2");
+    const d = new MockDriver().enqueueSignature("t1", "t2").enqueueStructureSignature("s1", "s2");
     expect(await d.captureStateSignature({ mode: "structure" })).toBe("s1");
     expect(await d.captureStateSignature()).toBe("t1");
     expect(await d.captureStateSignature({ mode: "structure" })).toBe("s2");

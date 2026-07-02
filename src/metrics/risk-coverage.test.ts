@@ -8,10 +8,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  RISK_COVERAGE,
   coveredTestFiles,
   liveValidationRisks,
   offlineCoveredRisks,
+  RISK_COVERAGE,
 } from "./risk-coverage.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));

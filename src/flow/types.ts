@@ -18,8 +18,9 @@ import type {
   GotoStepSchema,
   HiddenAssertionSchema,
   ImportsSchema,
-  ImportTableSchema,
+  OnFailSchema,
   PressStepSchema,
+  RunStepSchema,
   SelectStepSchema,
   StepSchema,
   TextAssertionSchema,
@@ -40,6 +41,9 @@ export type AiJudgeAssertion = z.infer<typeof AiJudgeAssertionSchema>;
 export type DeterministicAssertion = z.infer<typeof DeterministicAssertionSchema>;
 export type Assertion = z.infer<typeof AssertionSchema>;
 
+// ---- Control flow ----
+export type OnFail = z.infer<typeof OnFailSchema>;
+
 // ---- Steps ----
 export type GotoStep = z.infer<typeof GotoStepSchema>;
 export type ClickStep = z.infer<typeof ClickStepSchema>;
@@ -49,10 +53,10 @@ export type PressStep = z.infer<typeof PressStepSchema>;
 export type WaitStep = z.infer<typeof WaitStepSchema>;
 export type AssertStep = z.infer<typeof AssertStepSchema>;
 export type AiPickStep = z.infer<typeof AiPickStepSchema>;
+export type RunStep = z.infer<typeof RunStepSchema>;
 export type Step = z.infer<typeof StepSchema>;
 
 // ---- Imports ----
-export type ImportTable = z.infer<typeof ImportTableSchema>;
 export type Imports = z.infer<typeof ImportsSchema>;
 
 // ---- FlowFile ----

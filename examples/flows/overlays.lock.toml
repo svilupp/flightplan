@@ -1,6 +1,6 @@
 version = 1
 source = "examples/flows/overlays.toml"
-source_hash = "sha256:a74d9a8d00aac848a880b966e3f5bdfe16049847ed315519295d56a24336c7b0"
+source_hash = "sha256:f0dbeea63a096e3f3dd8d7e3de767ce9da985a5847c0e76336779376f8dfee64"
 description = "Dismiss the cookie overlay and place an order on the overlays fixture"
 
 [[targets]]

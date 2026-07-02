@@ -35,9 +35,7 @@ text = "We use cookies"
 [[steps]]
 id = "dismiss_cookie_banner"
 do = "click"
-target = "the Accept cookies button in the cookie consent banner"
-hints = ["Accept cookies", "[data-testid='cookie-accept']"]
-intent = "accept cookies to dismiss the consent overlay"
+target = ["[data-testid='cookie-accept']", "the Accept cookies button in the cookie consent banner"]
 
 # dismissOverlay() removes the whole overlay subtree, so its heading is no longer present —
 # this is the "cookie-overlay hidden/removed" end-state from the contract.
@@ -49,9 +47,7 @@ timeout_ms = 4000
 [[steps]]
 id = "place_order"
 do = "click"
-target = "the Place order call to action"
-hints = ["Place order", "[data-testid='overlays-cta']"]
-intent = "place the order using the primary call to action"
+target = ["[data-testid='overlays-cta']", "the Place order call to action"]
 
 # placeOrder() appends data-testid="result" with text "Order placed". Page-text assertions are the
 # reliable oracle on the v0.0.18 AX snapshot (node names + page text, not raw data-testid selectors).

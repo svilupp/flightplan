@@ -8,8 +8,16 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SnapshotNode } from "browser-pilot";
-import type { RankedCandidate } from "../ladder/index.ts";
-import { buildAncestorContextMap, buildCandidatePacket } from "./resolve-common.ts";
+import {
+  type BatchStep,
+  MockDriver,
+  makeInteractiveElement,
+  makeRankedCandidate,
+  makeSuccessBatch,
+} from "../driver/index.ts";
+import type { Step } from "../flow/types.ts";
+import type { RankedCandidate, ResolveContext } from "../ladder/index.ts";
+import { actOnPick, buildAncestorContextMap, buildCandidatePacket } from "./resolve-common.ts";
 
 /** Three near-identical "Save" buttons under three differently-headed panels (the gauntlet shape). */
 const GAUNTLET_TREE: SnapshotNode[] = [
@@ -36,7 +44,14 @@ const GAUNTLET_TREE: SnapshotNode[] = [
 ];
 
 function rankedFor(ref: string, name = "Save"): RankedCandidate {
-  return { ref, role: "button", name, selector: `role:button:${name}`, strategy: "role_name", score: 0.9 };
+  return {
+    ref,
+    role: "button",
+    name,
+    selector: `role:button:${name}`,
+    strategy: "role_name",
+    score: 0.9,
+  };
 }
 
 describe("buildAncestorContextMap", () => {
@@ -130,9 +145,130 @@ describe("buildCandidatePacket", () => {
   });
 
   test("candidates with no ref (e.g. synthetic) never get a context lookup", () => {
-    const noRef: RankedCandidate = { role: "button", name: "Save", selector: "text:Save", strategy: "css", score: 0.5 };
+    const noRef: RankedCandidate = {
+      role: "button",
+      name: "Save",
+      selector: "text:Save",
+      strategy: "css",
+      score: 0.5,
+    };
     const contextByRef = buildAncestorContextMap(GAUNTLET_TREE);
     const packet = buildCandidatePacket([noRef], contextByRef);
     expect("context" in packet[0]!).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// actOnPick — AI-tier pick candidate ORDERING (the ref-first handoff)
+// ---------------------------------------------------------------------------
+//
+// The AI tier's contract: the model chose THIS specific element by index off a FRESH snapshot
+// (page unchanged), so its `ref` is authoritative and non-stale. For a NAMELESS icon element the
+// native-ranked `chosen.selector` is the bare, NON-UNIQUE `role:<role>` — ordering that first would
+// let browser-pilot's order-honoring `findElement` resolve the FIRST same-role element before the
+// ref is ever tried (the candidate-ordering bug). So the action array MUST lead with `ref:eN`.
+
+const clickStep = (id: string, target: string): Step => ({ id, do: "click", target }) as Step;
+
+function ctxFor(driver: MockDriver): ResolveContext {
+  return { driver, now: () => 0 };
+}
+
+/** The ordered selector array the (single) batch step was built with. */
+function batchSelectors(driver: MockDriver): string[] {
+  const call = driver.callsTo("batch")[0];
+  const steps = call?.args[0] as BatchStep[] | undefined;
+  const selector = steps?.[0]?.selector;
+  return Array.isArray(selector) ? selector : selector ? [selector] : [];
+}
+
+describe("actOnPick — AI-tier pick candidate ordering", () => {
+  test("nameless icon pick leads with ref:<chosen>, not the bare non-unique role selector", async () => {
+    // Two NAMELESS icon buttons; native ranking gives each the bare, non-unique `role:button`.
+    // The model chose index 1 (e2 — the trash icon), so the action must target e2's ref FIRST.
+    const elements = [
+      makeInteractiveElement({
+        ref: "e1",
+        role: "button",
+        name: "",
+        attributes: { "data-testid": "save" },
+      }),
+      makeInteractiveElement({
+        ref: "e2",
+        role: "button",
+        name: "",
+        attributes: { "data-testid": "trash" },
+      }),
+    ];
+    const ranked: RankedCandidate[] = [
+      makeRankedCandidate({
+        ref: "e1",
+        role: "button",
+        name: "",
+        selector: "role:button",
+        score: 0.3,
+      }),
+      makeRankedCandidate({
+        ref: "e2",
+        role: "button",
+        name: "",
+        selector: "role:button",
+        score: 0.3,
+      }),
+    ];
+
+    const d = new MockDriver();
+    // browser-pilot honors ORDER: with ref-first it resolves e2 via the ref and reports `ref:e2`.
+    d.enqueueBatchResult(makeSuccessBatch("ref:e2"));
+
+    const exec = await actOnPick(clickStep("s1", "trash icon"), ctxFor(d), {
+      tier: "L3",
+      chosen: ranked[1]!,
+      elements,
+      ranked,
+      signatureBasis: { sig: "sig", url: "http://x/icons" },
+      intentText: "trash icon",
+      action: "click",
+    });
+
+    // (1) The action array leads with the authoritative ref — NOT the bare `role:button`.
+    const selectors = batchSelectors(d);
+    expect(selectors[0]).toBe("ref:e2");
+    expect(selectors).toEqual(["ref:e2", "role:button"]);
+
+    // (2) Lock learning re-derives a DURABLE selector from the CHOSEN element (e2's testid), because
+    // `selectorUsedToStrategy("ref:e2")` is null. It must be e2's testid, never the bare `role:button`.
+    expect(exec.ok).toBe(true);
+    expect(exec.tier).toBe("L3");
+    expect(exec.strategy).toBe("testid");
+    expect(exec.durableSelector).toBe("[data-testid='trash']");
+    expect(exec.durableSelector).not.toBe("role:button");
+    expect(exec.pinnedLabel).toBeUndefined(); // nameless → no pinned label
+  });
+
+  test("a pick with NO ref emits only the selector (never ref:undefined)", async () => {
+    const chosen = makeRankedCandidate({
+      role: "button",
+      name: "Save",
+      selector: "role:button:Save",
+    }); // no `ref`
+    const d = new MockDriver();
+    d.enqueueBatchResult(makeSuccessBatch("role:button:Save"));
+
+    const exec = await actOnPick(clickStep("s1", "save"), ctxFor(d), {
+      tier: "L2",
+      chosen,
+      elements: [],
+      ranked: [chosen],
+      signatureBasis: { sig: "sig", url: "http://x" },
+      intentText: "save",
+      action: "click",
+    });
+
+    const selectors = batchSelectors(d);
+    expect(selectors).toEqual(["role:button:Save"]); // exactly one entry, no ref rung
+    expect(selectors.some((s) => s.includes("ref:undefined"))).toBe(false);
+    expect(exec.ok).toBe(true);
+    expect(exec.strategy).toBe("role_name");
   });
 });

@@ -47,6 +47,7 @@ export const STEP_DOS = [
   "wait",
   "assert",
   "ai_pick",
+  "run",
 ] as const;
 export type StepDo = (typeof STEP_DOS)[number];
 
@@ -116,8 +117,13 @@ export type FileKind = (typeof FILE_KINDS)[number];
 // Model roles — PLAN.md §4 / PROPOSAL "AI SDK v7 and OpenRouter"
 // ---------------------------------------------------------------------------
 
-/** The three named model roles, all routed via OpenRouter. */
-export const MODEL_ROLES = ["resolver", "advisor", "vision"] as const;
+/**
+ * The named model roles, all routed via OpenRouter. `planner` (cheap) + `planner_capable`
+ * (expensive) back the L5 path-repair planner (PLAN_v003 §4 Phase C / v003-6): `planner` is the
+ * mandatory cheap-first default; `planner_capable` is the escalation-only capable arm (UNPROVEN —
+ * fired only on the low-confidence / repeated-replan signal, never standing).
+ */
+export const MODEL_ROLES = ["resolver", "advisor", "vision", "planner", "planner_capable"] as const;
 export type ModelRoleName = (typeof MODEL_ROLES)[number];
 
 // ---------------------------------------------------------------------------

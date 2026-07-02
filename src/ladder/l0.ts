@@ -20,14 +20,15 @@
 // trusted → MISS. This module imports `lock/signature.ts` (pure; driver-types-only) — the
 // `ladder → lock` direction PLAN.md §2 sanctions; there is no runtime import cycle.
 
-import { selectorUsedToStrategy } from "../driver/index.ts";
 import type { PageSnapshot } from "../driver/index.ts";
+import { selectorUsedToStrategy } from "../driver/index.ts";
 import type { Step } from "../flow/types.ts";
-import type { Strategy } from "../types.ts";
 import { signatureMatches, urlGlobMatches } from "../lock/signature.ts";
+import type { Strategy } from "../types.ts";
 import { actionVerbForStep, buildBatchStep } from "./l1.ts";
 import { capturePageSignature } from "./page-signature.ts";
-import type { CachedRecipe, ResolveContext, StepExecution } from "./types.ts";
+import { type PortfolioRaceResult, racePortfolio, revalidateCachedTarget } from "./revalidate.ts";
+import type { CachedRecipe, PortfolioExecOutcome, ResolveContext, StepExecution } from "./types.ts";
 
 /** A clean L0 cache MISS (before any replay) → escalate to L1, which may REUSE the shared snapshot. */
 function miss(note: string): StepExecution {
@@ -106,19 +107,50 @@ export async function resolveL0(
     );
   }
 
-  // (2) composite page-signature gate (text-hash + structural skeleton).
-  const basis = await capturePageSignature(ctx.driver, snap);
-  if (!signatureMatches(cached.match.sig, basis.sig)) {
-    return miss("L0 miss: page signature changed — re-resolve at L1");
+  // (2) composite page-signature gate (masked-text hash + structural skeleton). `ctx.cache`
+  // threads `[cache] ignore_regions` (excluded from BOTH hashes) + the `signature` match mode.
+  const basis = await capturePageSignature(ctx.driver, snap, ctx.cache);
+  const sigMode = ctx.cache?.signature ?? "full";
+  const signatureHit = signatureMatches(cached.match.sig, basis.sig, sigMode);
+
+  // (2b) PORTFOLIO RACE (DESIGN §3.2): race the remembered strategies over the SINGLE shared
+  // snapshot (0 AI). This generalizes the old Layer-3 single-selector revalidation — the race
+  // reports which strategies AGREE on the same element, which DRIFTED to a different one or went
+  // stale, and the agreement count for the trace. `now` drives the recency tie-break on a
+  // disagreement. `cached.strategies` is the full portfolio; a hand-built recipe with none is
+  // projected from head+candidates by `racePortfolio`'s adapter contract (via `revalidateCachedTarget`).
+  const now = ctx.now ? ctx.now() : Date.now();
+  const race = cached.strategies
+    ? racePortfolio(cached.strategies, snap.interactiveElements, now)
+    : undefined;
+
+  let revalidated = false;
+  if (!signatureHit) {
+    // On a signature MISS the race IS the revalidation: only a race hit rescues the recipe. A
+    // recipe with no portfolio falls back to the CachedRecipe adapter (head + candidates).
+    const rescued = race ? race.ok : revalidateCachedTarget(cached, snap.interactiveElements).ok;
+    if (!rescued) {
+      return miss("L0 miss: page signature changed — re-resolve at L1");
+    }
+    revalidated = true;
   }
 
-  // Validated → replay the recipe (ordered: winning selector, then ranked candidates). From here
-  // a miss is a REPLAY miss (the batch acted): the orchestrator will re-snapshot for L1.
-  const selectors = [cached.selector, ...(cached.candidates ?? []).map((c) => c.selector)];
+  // Validated (by signature or by the race) → replay. Lead the ordered batch with the RACE WINNER's
+  // selector when the race picked one (so the strategy the playbook now trusts carries the action),
+  // then the rest of the portfolio, then the legacy head+candidates as a safety net. From here a
+  // miss is a REPLAY miss (the batch acted): the orchestrator re-snapshots for L1.
+  const winnerSelector = race?.winner?.selector;
+  const portfolioSelectors = cached.strategies?.map((s) => s.selector) ?? [];
+  const legacySelectors = [cached.selector, ...(cached.candidates ?? []).map((c) => c.selector)];
+  const selectors = dedupeStrings([
+    ...(winnerSelector ? [winnerSelector] : []),
+    ...portfolioSelectors,
+    ...legacySelectors,
+  ]);
   const batchStep = buildBatchStep(step, action, selectors);
   const result = await ctx.driver.batch([batchStep], { onFail: "stop" });
   const stepResult = result.steps[0];
-  if (!stepResult || !stepResult.success || stepResult.outcomeStatus === "ambiguous") {
+  if (!stepResult?.success || stepResult.outcomeStatus === "ambiguous") {
     return replayMiss("L0 miss: cached recipe failed to replay — re-resolve at L1");
   }
 
@@ -129,8 +161,49 @@ export async function resolveL0(
     strategy: learned.strategy,
     durableSelector: learned.selector,
     escalate: false,
+    // Carry the FRESH basis so a non-frozen run refreshes a (possibly stale) stored sig and updates
+    // track records (the runner's write-back reads `signatureBasis` + `portfolio`).
     signatureBasis: basis,
   };
   if (stepResult.selectorUsed !== undefined) exec.selectorUsed = stepResult.selectorUsed;
+  if (race?.ok) exec.portfolio = portfolioOutcomeOf(race, learned.strategy, learned.selector);
+  if (revalidated) {
+    exec.revalidated = true;
+    exec.error = "l0_revalidated: signature miss, portfolio re-validated against fresh snapshot";
+  }
   return exec;
+}
+
+/** De-duplicate an ordered selector list, preserving first-seen order. */
+function dedupeStrings(selectors: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of selectors) {
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+/**
+ * Build the {@link PortfolioExecOutcome} the write-back reads from a race result. The `winner` is
+ * the strategy that actually carried the batch replay (`learned`) when it agreed with the race, so
+ * the trace + track records credit the selector that truly acted; otherwise the race's own winner.
+ */
+function portfolioOutcomeOf(
+  race: PortfolioRaceResult,
+  learnedStrategy: Strategy,
+  learnedSelector: string,
+): PortfolioExecOutcome {
+  const winner = race.agreed.find(
+    (v) => v.selector === learnedSelector && v.kind === learnedStrategy,
+  ) ??
+    race.winner ?? { kind: learnedStrategy, selector: learnedSelector };
+  return {
+    winner: { kind: winner.kind, selector: winner.selector },
+    agreed: race.agreed.map((v) => ({ kind: v.kind, selector: v.selector })),
+    drifted: race.drifted.map((v) => ({ kind: v.kind, selector: v.selector })),
+    agreement: race.agreement,
+  };
 }

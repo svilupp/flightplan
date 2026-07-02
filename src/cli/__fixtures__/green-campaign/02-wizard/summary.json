@@ -1,0 +1,66 @@
+{
+  "verdict": "passed",
+  "flow_id": "examples.wizard",
+  "run_id": "02-wizard",
+  "run_dir": "__fixtures__/green-campaign/02-wizard",
+  "failed_step": null,
+  "failed_assertions": [],
+  "advisory_verdict": null,
+  "healed_steps": [],
+  "drift_count": 0,
+  "screenshot_paths": [],
+  "video_path": null,
+  "trace_path": "__fixtures__/green-campaign/02-wizard/trace.jsonl",
+  "total_cost_usd": 0,
+  "model_usage": [],
+  "proposed_patch_path": null,
+  "steps": [
+    {
+      "stepId": "open_wizard",
+      "do": "goto",
+      "ok": true,
+      "healed": false,
+      "durationMs": 1400
+    },
+    {
+      "stepId": "enter_name",
+      "do": "fill",
+      "ok": true,
+      "healed": false,
+      "durationMs": 45,
+      "tier": "L1"
+    },
+    {
+      "stepId": "advance_to_plan",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 43,
+      "tier": "L1"
+    },
+    {
+      "stepId": "choose_plan",
+      "do": "select",
+      "ok": true,
+      "healed": false,
+      "durationMs": 33,
+      "tier": "L1"
+    },
+    {
+      "stepId": "advance_to_review",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 44,
+      "tier": "L1"
+    },
+    {
+      "stepId": "submit_wizard",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 170,
+      "tier": "L1"
+    }
+  ]
+}

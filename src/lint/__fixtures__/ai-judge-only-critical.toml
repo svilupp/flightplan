@@ -7,8 +7,7 @@ description = "Step whose only assertion is ai_judge"
 [[steps]]
 id = "submit"
 do = "click"
-target = "the submit button"
-intent = "submit the order"
+target = "the submit button to submit the order"
 
 [[steps.assert]]
 type = "ai_judge"

@@ -22,19 +22,18 @@
 
 import { readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-
-import { RUN_FILES } from "../artifacts/index.ts";
-import type { LadderTier } from "../artifacts/index.ts";
 import { resolveRegistry } from "../ai/registry.ts";
+import type { LadderTier } from "../artifacts/index.ts";
+import { RUN_FILES } from "../artifacts/index.ts";
+import type { CampaignMetrics, CostModelResult, StabilityResult } from "../metrics/index.ts";
 import {
-  CAMPAIGN_EXPECTED_TIERS,
   aggregateCampaign,
+  CAMPAIGN_EXPECTED_TIERS,
   checkLockStability,
   projectCampaignCost,
 } from "../metrics/index.ts";
-import type { CampaignMetrics, CostModelResult, StabilityResult } from "../metrics/index.ts";
-import { ExplainError, loadRun } from "./explain.ts";
 import type { LoadedRun } from "./explain.ts";
+import { ExplainError, loadRun } from "./explain.ts";
 import type { ParsedArgs } from "./index.ts";
 
 // ---------------------------------------------------------------------------
@@ -271,7 +270,9 @@ export function formatReport(data: ReportData): string {
   // Drift / self-healing.
   out.push("");
   out.push("Drift / self-healing:");
-  out.push(`  drift runs:        ${c.driftRuns} of ${c.runCount}  (drift_count total ${c.totalDriftCount})`);
+  out.push(
+    `  drift runs:        ${c.driftRuns} of ${c.runCount}  (drift_count total ${c.totalDriftCount})`,
+  );
   out.push(`  healed steps:      ${c.totalHealedSteps}`);
   out.push(
     `  heal success:      ${c.driftHealSuccessRuns} of ${c.driftRuns}  ` +
@@ -288,7 +289,8 @@ export function formatReport(data: ReportData): string {
   const tierLatLines: string[] = [];
   for (const t of TIERS) {
     const l = c.perTierLatency[t];
-    if (l !== undefined) tierLatLines.push(`  ${t} p50/p95:      ${l.p50} / ${l.p95}  (n=${l.count})`);
+    if (l !== undefined)
+      tierLatLines.push(`  ${t} p50/p95:      ${l.p50} / ${l.p95}  (n=${l.count})`);
   }
   if (tierLatLines.length > 0) out.push(...tierLatLines);
 
@@ -299,14 +301,20 @@ export function formatReport(data: ReportData): string {
     `  projected:       ${usd(proj.campaignUsd)} campaign  ·  ` +
       `${usd(proj.costPerPass)}/pass  ·  ${usd(proj.maxRunCostUsd)} max run`,
   );
-  out.push(`  actual:          ${usd(c.totalCostUsd)} campaign  ·  ${usd(c.costPerPass)}/pass  ·  ${usd(c.maxRunCostUsd)} max run`);
-  out.push(`  within budget:   ${marker(proj.withinBudget)} (projection over the §6 expected-tier table)`);
+  out.push(
+    `  actual:          ${usd(c.totalCostUsd)} campaign  ·  ${usd(c.costPerPass)}/pass  ·  ${usd(c.maxRunCostUsd)} max run`,
+  );
+  out.push(
+    `  within budget:   ${marker(proj.withinBudget)} (projection over the §6 expected-tier table)`,
+  );
 
   // Lock write-policy cross-check.
   out.push("");
   out.push(`Lock stability: ${marker(lockStability.overallStable)} no write-policy violations`);
   for (const { runId, stability } of lockStability.perRun) {
-    const expect = stability.expectedNoWrite ? "no-write expected" : "write allowed (drift/verdict)";
+    const expect = stability.expectedNoWrite
+      ? "no-write expected"
+      : "write allowed (drift/verdict)";
     out.push(`  ${runId}: verdict=${stability.verdict} drift=${stability.driftCount} — ${expect}`);
   }
 
@@ -316,7 +324,9 @@ export function formatReport(data: ReportData): string {
   if (c.perFixture.length === 0) {
     out.push("  (no runs matched the §6 expected-tier table)");
   } else {
-    out.push(`  ${"fixture".padEnd(14)} ${"expected".padEnd(12)} ${"observed".padEnd(10)} hit  runs`);
+    out.push(
+      `  ${"fixture".padEnd(14)} ${"expected".padEnd(12)} ${"observed".padEnd(10)} hit  runs`,
+    );
     for (const f of c.perFixture) {
       const expected = f.expectedTiers.join("/");
       const observed = f.maxTierObserved ?? "-";

@@ -1,12 +1,12 @@
 // Lock parse tests: valid load, MISSING → empty (no throw), malformed → clear error.
 
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { emptyLock, loadLockFile, LockParseError, parseLockFile } from "./parse.ts";
-import { serializeLock } from "./write.ts";
+import { join } from "node:path";
+import { emptyLock, LockParseError, loadLockFile, parseLockFile } from "./parse.ts";
 import { LOCK_VERSION } from "./types.ts";
+import { serializeLock } from "./write.ts";
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), "fp-lock-"));
@@ -26,20 +26,32 @@ describe("emptyLock", () => {
 });
 
 describe("parseLockFile (valid)", () => {
-  test("loads a valid lock with a full target", () => {
+  test("loads a valid lock with a full v2 portfolio target (round-trips)", () => {
     const lock = emptyLock("f.flow.toml", "sha256:x", "desc");
     lock.targets.push({
       step: "submit",
       target: "the submit button",
       match: { url_glob: "/wizard*", sig: "text:/w|aa;struct:/w|bb" },
-      selector: "role:button:Submit",
-      strategy: "role_name",
-      green_runs: 3,
       last_seen: "2026-06-29T00:00:00.000Z",
-      candidates: [{ strategy: "label", selector: "[aria-label='Submit']", green_runs: 1 }],
+      strategies: [
+        {
+          kind: "role_name",
+          selector: "role:button:Submit",
+          greens: 3,
+          last_ok: "2026-06-29T00:00:00.000Z",
+        },
+        {
+          kind: "label",
+          selector: "[aria-label='Submit']",
+          greens: 1,
+          last_ok: "2026-06-28T00:00:00.000Z",
+        },
+      ],
     });
     const text = serializeLock(lock);
-    const parsed = parseLockFile(text, "f.lock.toml");
+    // Normalize on load with a fixed clock so ranking is deterministic (an already-ranked portfolio
+    // stays put — the winner has the higher greens + fresher last_ok).
+    const parsed = parseLockFile(text, "f.lock.toml", () => Date.parse("2026-06-30T00:00:00.000Z"));
     expect(parsed).toEqual(lock);
   });
 
@@ -51,11 +63,56 @@ describe("parseLockFile (valid)", () => {
       kind: "ai_pick",
       match: { url_glob: "/plans*", sig: "text:/p|aa;struct:/p|bb" },
       pinned_choice: { strategy: "role_name", selector: "role:button:Basic", label: "Basic" },
+      strategies: [{ kind: "role_name", selector: "role:button:Basic", greens: 1 }],
     });
-    const parsed = parseLockFile(serializeLock(lock), "f.lock.toml");
+    const parsed = parseLockFile(serializeLock(lock), "f.lock.toml", () => 0);
     expect(parsed.targets[0]?.kind).toBe("ai_pick");
     expect(parsed.targets[0]?.pinned_choice?.label).toBe("Basic");
     expect(parsed).toEqual(lock);
+  });
+
+  test("MIGRATION: a v1 lock (winner + candidates + green_runs) auto-migrates to a portfolio", () => {
+    // A hand-written v1 lock: single winner + ranked candidates, no `strategies`.
+    const toml = [
+      "version = 1",
+      'source = "f.flow.toml"',
+      'source_hash = "sha256:x"',
+      'description = "d"',
+      "[[targets]]",
+      'step = "submit"',
+      'target = "the submit button"',
+      'selector = "role:button:Submit"',
+      'strategy = "role_name"',
+      "green_runs = 3",
+      'last_seen = "2026-06-29T00:00:00.000Z"',
+      "[targets.match]",
+      'url_glob = "/wizard*"',
+      'sig = "text:/w|aa;struct:/w|bb"',
+      "[[targets.candidates]]",
+      'strategy = "label"',
+      "selector = \"[aria-label='Submit']\"",
+      "green_runs = 1",
+    ].join("\n");
+    const parsed = parseLockFile(toml, "f.lock.toml", () => Date.parse("2026-06-30T00:00:00.000Z"));
+    const t = parsed.targets[0]!;
+    // v1 fields are gone; the portfolio carries the HOW.
+    expect(t.selector).toBeUndefined();
+    expect(t.strategy).toBeUndefined();
+    expect(t.candidates).toBeUndefined();
+    expect(t.green_runs).toBeUndefined();
+    // Winner migrated first (greens 3, last_ok = the old last_seen); candidate seeded at greens 0.
+    expect(t.strategies?.[0]).toEqual({
+      kind: "role_name",
+      selector: "role:button:Submit",
+      greens: 3,
+      last_ok: "2026-06-29T00:00:00.000Z",
+    });
+    // The v1 candidate carried `green_runs = 1`, so it migrates with greens 1 (no v1 last_seen → no last_ok).
+    expect(t.strategies?.[1]).toEqual({
+      kind: "label",
+      selector: "[aria-label='Submit']",
+      greens: 1,
+    });
   });
 });
 
@@ -85,11 +142,10 @@ describe("loadLockFile (present + valid)", () => {
         step: "go",
         target: "go",
         match: { url_glob: "/*", sig: "text:/|h;struct:/|s" },
-        selector: "role:link:Go",
-        strategy: "role_name",
+        strategies: [{ kind: "role_name", selector: "role:link:Go", greens: 1 }],
       });
       writeFileSync(path, serializeLock(lock));
-      const loaded = await loadLockFile(path);
+      const loaded = await loadLockFile(path, undefined, () => 0);
       expect(loaded).toEqual(lock);
     } finally {
       rmSync(dir, { recursive: true, force: true });

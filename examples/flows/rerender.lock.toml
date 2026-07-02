@@ -1,6 +1,6 @@
 version = 1
 source = "examples/flows/rerender.toml"
-source_hash = "sha256:56ee8dcca860a183e530fd81c4a9e434277fdd6888a58cc6672018575566b0c8"
+source_hash = "sha256:2b95d7cf2070db22980bc64ae6ebf8cd98cff9959bc5cef7b98abf3cd8bbe658"
 description = "Refresh the widget, then confirm on the re-rendered (fresh-ref) node"
 
 [[targets]]

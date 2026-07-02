@@ -13,6 +13,13 @@ export interface BudgetLimits {
   max_screenshots?: number;
   /** Max aggregate model spend in USD. */
   max_cost_usd?: number;
+  /**
+   * Max L5 path-repair replans across the whole run (PLAN_v003 v003-6). Each time the planner is
+   * invoked for a divergence counts as one replan (a cheap→capable escalation for the SAME
+   * divergence is a re-issue within one `runPathRepair`, NOT a new replan). A run-level hard stop so
+   * a pathological page cannot drive unbounded planner spend. `undefined` → unlimited.
+   */
+  max_replans?: number;
 }
 
 /** The ceiling that was hit, named exactly as the limit key (for the run summary / verdict). */
@@ -20,7 +27,8 @@ export type BudgetLimitName =
   | "max_steps"
   | "max_model_calls"
   | "max_screenshots"
-  | "max_cost_usd";
+  | "max_cost_usd"
+  | "max_replans";
 
 /**
  * Raised when a hard ceiling would be (or has been) exceeded. The runner (Round 2) catches this,
@@ -54,10 +62,13 @@ export function resolveBudgetLimits(config: {
     max_model_calls?: number;
     max_screenshots?: number;
     max_cost_usd?: number;
+    max_replans?: number;
   };
+  plan?: { max_replans?: number };
 }): BudgetLimits {
   const run = config.run ?? {};
   const ai = config.ai ?? {};
+  const plan = config.plan ?? {};
   const limits: BudgetLimits = {};
   if (run.max_steps !== undefined) limits.max_steps = run.max_steps;
   const modelCalls = run.max_model_calls ?? ai.max_model_calls;
@@ -65,6 +76,9 @@ export function resolveBudgetLimits(config: {
   const screenshots = run.max_screenshots ?? ai.max_screenshots;
   if (screenshots !== undefined) limits.max_screenshots = screenshots;
   if (run.max_cost_usd !== undefined) limits.max_cost_usd = run.max_cost_usd;
+  // `max_replans` may live on `[run]` (flow-local) or `[plan]` (planner-scoped); `[run]` wins.
+  const replans = run.max_replans ?? plan.max_replans;
+  if (replans !== undefined) limits.max_replans = replans;
   return limits;
 }
 
@@ -78,6 +92,8 @@ export class BudgetTracker {
   modelCalls = 0;
   screenshots = 0;
   cost_usd = 0;
+  /** L5 path-repair replans counted this run (PLAN_v003 v003-6). Read into the run summary. */
+  replans = 0;
 
   constructor(readonly limits: BudgetLimits = {}) {}
 
@@ -85,22 +101,30 @@ export class BudgetTracker {
   noteModelCall(): void {
     const max = this.limits.max_model_calls;
     if (max !== undefined && this.modelCalls + 1 > max) {
-      throw new BudgetExceededError(
-        "max_model_calls",
-        `Budget exceeded: max_model_calls (${max})`,
-      );
+      throw new BudgetExceededError("max_model_calls", `Budget exceeded: max_model_calls (${max})`);
     }
     this.modelCalls += 1;
+  }
+
+  /**
+   * Pre-check + increment the replan counter (PLAN_v003 v003-6). Called ONCE per divergence, BEFORE
+   * `runPathRepair` issues any planner call, so the ceiling stops the (maxReplans+1)-th replan
+   * before it spends anything. Throws `BudgetExceededError('max_replans')`, which the runner maps to
+   * the `inconclusive` verdict via the same path as the other budget ceilings.
+   */
+  noteReplan(): void {
+    const max = this.limits.max_replans;
+    if (max !== undefined && this.replans + 1 > max) {
+      throw new BudgetExceededError("max_replans", `Budget exceeded: max_replans (${max})`);
+    }
+    this.replans += 1;
   }
 
   /** Pre-check + increment the screenshot counter. */
   noteScreenshot(): void {
     const max = this.limits.max_screenshots;
     if (max !== undefined && this.screenshots + 1 > max) {
-      throw new BudgetExceededError(
-        "max_screenshots",
-        `Budget exceeded: max_screenshots (${max})`,
-      );
+      throw new BudgetExceededError("max_screenshots", `Budget exceeded: max_screenshots (${max})`);
     }
     this.screenshots += 1;
   }

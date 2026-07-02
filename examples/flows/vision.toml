@@ -30,8 +30,7 @@ url = "${inputs.base_url}/vision/icons"
 [[steps]]
 id = "delete_item"
 do = "click"
-target = "the trash-can / delete icon in the toolbar"
-intent = "delete the item by clicking the trash-can icon"
+target = "the trash-can / delete icon in the toolbar to delete the item"
 
 # Clicking the trash glyph renders data-testid="result" with text "Clicked: trash" (vs edit/share).
 [[steps.assert]]

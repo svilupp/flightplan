@@ -8,33 +8,37 @@
 import { describe, expect, test } from "bun:test";
 import {
   MockDriver,
+  makeBatchResult,
+  makeFailureBatch,
   makeInteractiveElement,
   makeRankedCandidate,
   makeSnapshot,
   makeStepResult,
   makeSuccessBatch,
-  makeFailureBatch,
-  makeBatchResult,
 } from "../driver/index.ts";
-import type { ClickStep, FillStep, Step } from "../flow/types.ts";
-import { resolveL1, actionVerbForStep } from "./l1.ts";
+import type { ClickStep, Step } from "../flow/types.ts";
+import { actionVerbForStep, resolveL1 } from "./l1.ts";
 import type { ResolveContext } from "./types.ts";
 
 function ctxFor(driver: MockDriver): ResolveContext {
   return { driver, now: () => 0 };
 }
 
-const clickStep = (over: Partial<ClickStep> = {}): Step =>
-  ({ id: "s1", do: "click", target: "Create order", ...over }) as ClickStep;
+const clickStep = (over: Partial<ClickStep> = {}): Step => ({
+  id: "s1",
+  do: "click",
+  target: "Create order",
+  ...over,
+});
 
 describe("actionVerbForStep", () => {
   test("maps targeting steps; non-targeting → undefined", () => {
-    expect(actionVerbForStep({ id: "a", do: "click" } as Step)).toBe("click");
-    expect(actionVerbForStep({ id: "a", do: "fill", value: "x" } as Step)).toBe("fill");
-    expect(actionVerbForStep({ id: "a", do: "select", value: "x" } as Step)).toBe("select");
-    expect(actionVerbForStep({ id: "a", do: "ai_pick" } as Step)).toBe("click");
-    expect(actionVerbForStep({ id: "a", do: "goto", url: "/" } as Step)).toBeUndefined();
-    expect(actionVerbForStep({ id: "a", do: "wait", ms: 1 } as Step)).toBeUndefined();
+    expect(actionVerbForStep({ id: "a", do: "click" })).toBe("click");
+    expect(actionVerbForStep({ id: "a", do: "fill", value: "x" })).toBe("fill");
+    expect(actionVerbForStep({ id: "a", do: "select", value: "x" })).toBe("select");
+    expect(actionVerbForStep({ id: "a", do: "ai_pick" })).toBe("click");
+    expect(actionVerbForStep({ id: "a", do: "goto", url: "/" })).toBeUndefined();
+    expect(actionVerbForStep({ id: "a", do: "wait", ms: 1 })).toBeUndefined();
   });
 });
 
@@ -86,7 +90,7 @@ describe("L1 — §4 mapping: each winning selectorUsed → correct Strategy", (
     );
     d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Create order" })]);
     d.setBatchResult(makeSuccessBatch(selectorUsed));
-    return resolveL1(clickStep({ hints: ["[data-testid='create-order']"] }), ctxFor(d));
+    return resolveL1(clickStep({ target: ["[data-testid='create-order']"] }), ctxFor(d));
   }
 
   test("testid winner → strategy 'testid', durable = the testid selector", async () => {
@@ -166,7 +170,8 @@ describe("L1 — durableSelector is NEVER ref:eN", () => {
     expect(r.strategy).toBe("testid");
     expect(r.durableSelector).toBe("[data-testid='submit-order']");
     // the testid rung was offered ahead of role_name in the batch array.
-    const sent = (d.callsTo("batch")[0]?.args[0] as Array<{ selector: string[] }>)[0]?.selector ?? [];
+    const sent =
+      (d.callsTo("batch")[0]!.args[0] as Array<{ selector: string[] }>)[0]?.selector ?? [];
     expect(sent).toEqual([
       "ref:e7",
       "[data-testid='submit-order']",
@@ -190,13 +195,15 @@ describe("L1 — role verification for scoped_text (risk #8)", () => {
         ],
       }),
     );
-    d.setResolveAll([makeRankedCandidate({ ref: "e2", role: "button", name: "New order", score: 0.5 })]);
+    d.setResolveAll([
+      makeRankedCandidate({ ref: "e2", role: "button", name: "New order", score: 0.5 }),
+    ]);
     d.setBatchResult(makeBatchResult([makeStepResult({ success: true })]));
 
     const r = await resolveL1(clickStep({ target: "Create order" }), ctxFor(d));
     // The selectors we send must NOT contain a text: selector for the code element.
     const batchCall = d.callsTo("batch")[0];
-    const sentStep = (batchCall?.args[0] as Array<{ selector: string[] }>)[0];
+    const sentStep = (batchCall!.args[0] as Array<{ selector: string[] }>)[0];
     const sentSelectors = sentStep?.selector ?? [];
     expect(sentSelectors.some((s) => s === "text:Create order")).toBe(false);
     // And no candidate should be the code element.
@@ -216,7 +223,8 @@ describe("L1 — role verification for scoped_text (risk #8)", () => {
     // Force the text: rung to win to prove it was offered.
     d.setBatchResult(makeSuccessBatch("text:Create order"));
     const r = await resolveL1(clickStep({ target: "Create order" }), ctxFor(d));
-    const sent = (d.callsTo("batch")[0]?.args[0] as Array<{ selector: string[] }>)[0]?.selector ?? [];
+    const sent =
+      (d.callsTo("batch")[0]!.args[0] as Array<{ selector: string[] }>)[0]?.selector ?? [];
     expect(sent).toContain("text:Create order");
     expect(r.strategy).toBe("scoped_text");
   });
@@ -306,7 +314,7 @@ describe("L1 — fill carries its value into the batch step", () => {
     d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "textbox", name: "First name" })]);
     d.setBatchResult(makeSuccessBatch("role:textbox:First name", "fill"));
 
-    const step: Step = { id: "s1", do: "fill", target: "First name", value: "Ada" } as FillStep;
+    const step: Step = { id: "s1", do: "fill", target: "First name", value: "Ada" };
     const r = await resolveL1(step, ctxFor(d));
     expect(r.ok).toBe(true);
     const sent = d.callsTo("batch")[0]?.args[0] as Array<{ action: string; value?: string }>;

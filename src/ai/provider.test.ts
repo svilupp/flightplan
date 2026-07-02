@@ -8,8 +8,8 @@
 // exception that pins the provider call shape to the installed `ai@6` + provider versions.
 
 import { describe, expect, test } from "bun:test";
-import { MockLanguageModelV3 } from "ai/test";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import { MockLanguageModelV3 } from "ai/test";
 import { defaultGenerate } from "./provider.ts";
 import { JudgeSchema } from "./schemas.ts";
 
@@ -27,7 +27,7 @@ function hangingModel(): LanguageModelV3 {
           reject(options.abortSignal!.reason ?? new Error("aborted"));
         });
       }),
-  }) as unknown as LanguageModelV3;
+  });
 }
 
 /** A mock model whose single text part is a JSON object the Output API will parse + validate. */
@@ -41,7 +41,7 @@ function jsonModel(json: string): LanguageModelV3 {
     },
     warnings: [],
   };
-  return new MockLanguageModelV3({ doGenerate: async () => result }) as unknown as LanguageModelV3;
+  return new MockLanguageModelV3({ doGenerate: async () => result });
 }
 
 /** A mock model that always throws (an exhausted/rotated/no-output model). */
@@ -50,12 +50,14 @@ function failingModel(): LanguageModelV3 {
     doGenerate: async () => {
       throw new Error("AI_NoOutputGeneratedError: No output generated.");
     },
-  }) as unknown as LanguageModelV3;
+  });
 }
 
 describe("provider.defaultGenerate — Output API call shape + fallback iteration", () => {
   test("output: Output.object({schema}) → validated result.output", async () => {
-    const generate = defaultGenerate({ resolveModel: () => jsonModel('{"pass":true,"reason":"ok"}') });
+    const generate = defaultGenerate({
+      resolveModel: () => jsonModel('{"pass":true,"reason":"ok"}'),
+    });
 
     const result = await generate({
       modelRole: "resolver",
@@ -132,7 +134,9 @@ describe("provider.defaultGenerate — Output API call shape + fallback iteratio
   });
 
   test("a normal (fast) call is unaffected by the default timeout — no behavior change", async () => {
-    const generate = defaultGenerate({ resolveModel: () => jsonModel('{"pass":true,"reason":"ok"}') });
+    const generate = defaultGenerate({
+      resolveModel: () => jsonModel('{"pass":true,"reason":"ok"}'),
+    });
 
     const result = await generate({
       modelRole: "resolver",

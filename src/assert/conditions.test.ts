@@ -8,13 +8,39 @@
 import { describe, expect, test } from "bun:test";
 import { MockDriver } from "../driver/mock-driver.ts";
 import { makeInteractiveElement, makeSnapshot } from "../driver/mock-fixtures.ts";
-import type { PageSnapshot } from "../driver/types.ts";
+import type { ElementState, PageSnapshot } from "../driver/types.ts";
+import type { Assertion } from "../flow/types.ts";
 import { FakeClock } from "./clock.ts";
-import { count, hidden, text, urlMatchesPattern, value, visible } from "./conditions.ts";
+import {
+  count,
+  evaluateDeterministic,
+  hidden,
+  text,
+  urlMatchesPattern,
+  value,
+  visible,
+} from "./conditions.ts";
 import type { ConditionOpts } from "./types.ts";
 
+/** Build an `ElementState` with sensible "absent" defaults; override what a test cares about. */
+function es(partial: Partial<ElementState> = {}): ElementState {
+  return {
+    exists: false,
+    visible: false,
+    count: 0,
+    text: "",
+    value: null,
+    boundingBox: null,
+    ...partial,
+  };
+}
+
 /** Build ConditionOpts wired to a driver + a fresh FakeClock (returned for inspection). */
-function opts(driver: MockDriver, timeoutMs = 1000, pollIntervalMs = 50): {
+function opts(
+  driver: MockDriver,
+  timeoutMs = 1000,
+  pollIntervalMs = 50,
+): {
   opts: ConditionOpts;
   clock: FakeClock;
 } {
@@ -121,7 +147,7 @@ describe("url (glob or substring)", () => {
 });
 
 // helper to avoid shadowing `url` import name in the passing test
-async function urlEvalPass(d: MockDriver, o: ConditionOpts) {
+async function urlEvalPass(_d: MockDriver, o: ConditionOpts) {
   const { url } = await import("./conditions.ts");
   return url("/wizard/step-2", o);
 }
@@ -217,5 +243,181 @@ describe("polling across changing snapshots", () => {
     expect(r.pass).toBe(true);
     expect(clock.sleeps).toBe(0); // no polling needed; passed on the first probe
     expect(d.callsTo("snapshot").length).toBe(1);
+  });
+});
+
+describe("synthetic/CSS targets resolve via driver.elementState", () => {
+  test("visible passes when elementState reports the synthetic selector visible", async () => {
+    const d = new MockDriver().setElementState(es({ exists: true, visible: true, count: 1 }));
+    const { opts: o } = opts(d);
+    const r = await visible("[data-testid='toolbar']", o);
+    expect(r.pass).toBe(true);
+    // delegated to the live-DOM primitive with the RAW selector (not the AX snapshot path)
+    const calls = d.callsTo("elementState");
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls[0]?.args[0]).toBe("[data-testid='toolbar']");
+  });
+
+  test("visible fails (times out) when elementState reports not visible", async () => {
+    const d = new MockDriver().setElementState(es({ exists: true, visible: false, count: 1 }));
+    const { opts: o } = opts(d, 100);
+    const r = await visible("[data-testid='toolbar']", o);
+    expect(r.pass).toBe(false);
+    expect(r.message).toContain("not visible");
+  });
+
+  test("onElementState provider keys on the queried selector", async () => {
+    const d = new MockDriver().onElementState((sel) =>
+      sel === "[data-testid='toolbar']" ? es({ exists: true, visible: true, count: 1 }) : es(),
+    );
+    const { opts: o } = opts(d);
+    expect((await visible("[data-testid='toolbar']", o)).pass).toBe(true);
+  });
+
+  test("hidden passes when the synthetic selector is not visible", async () => {
+    const d = new MockDriver().setElementState(es({ exists: true, visible: false, count: 1 }));
+    const { opts: o } = opts(d);
+    const r = await hidden("[data-testid='toolbar']", o);
+    expect(r.pass).toBe(true);
+  });
+
+  test("count uses elementState.count for a synthetic selector (non-interactive rows)", async () => {
+    const d = new MockDriver().setElementState(es({ exists: true, visible: true, count: 3 }));
+    const { opts: o } = opts(d);
+    const r = await count("[data-testid='row']", 3, o);
+    expect(r.pass).toBe(true);
+  });
+
+  test("count fails (times out) when the synthetic count differs", async () => {
+    const d = new MockDriver().setElementState(es({ exists: true, visible: true, count: 3 }));
+    const { opts: o } = opts(d, 100);
+    const r = await count("[data-testid='row']", 5, o);
+    expect(r.pass).toBe(false);
+    expect(r.message).toContain("count is 3, expected 5");
+  });
+
+  test("text matches against elementState.text for a synthetic selector", async () => {
+    const d = new MockDriver().setElementState(
+      es({ exists: true, visible: true, text: "Total: 12 users" }),
+    );
+    const { opts: o } = opts(d);
+    expect((await text("[data-testid='total']", "Total: 12", o)).pass).toBe(true);
+    const { opts: o2 } = opts(d, 100);
+    expect((await text("[data-testid='total']", "not there", o2)).pass).toBe(false);
+  });
+
+  test("value matches elementState.value for a synthetic form-control selector", async () => {
+    const d = new MockDriver().setElementState(
+      es({ exists: true, visible: true, count: 1, value: "GB" }),
+    );
+    const { opts: o } = opts(d);
+    const r = await value("[data-testid='ship-country']", "GB", o);
+    expect(r.pass).toBe(true);
+    expect(r.message).toContain('value === "GB"');
+    // read via the live-DOM primitive with the raw selector, not the AX snapshot
+    expect(d.callsTo("elementState")[0]?.args[0]).toBe("[data-testid='ship-country']");
+  });
+
+  test("value fails (times out) when the synthetic value differs", async () => {
+    const d = new MockDriver().setElementState(
+      es({ exists: true, visible: true, count: 1, value: "US" }),
+    );
+    const { opts: o } = opts(d, 100);
+    const r = await value("[data-testid='ship-country']", "GB", o);
+    expect(r.pass).toBe(false);
+    expect(r.message).toContain('value is "US", expected "GB"');
+  });
+
+  test("value fails with a clear message when the synthetic element is absent", async () => {
+    const d = new MockDriver().setElementState(es({ exists: false, count: 0, value: null }));
+    const { opts: o } = opts(d, 100);
+    const r = await value("[data-testid='ship-country']", "GB", o);
+    expect(r.pass).toBe(false);
+    expect(r.message).toContain("no element matched");
+  });
+
+  test("count with a css:-prefixed selector uses elementState.count (prefix stripped)", async () => {
+    const d = new MockDriver().setElementState(es({ exists: true, visible: true, count: 5 }));
+    const { opts: o } = opts(d);
+    const r = await count("css:tr", 5, o);
+    expect(r.pass).toBe(true);
+    // routed through the live-DOM primitive with the `css:` prefix STRIPPED
+    expect(d.callsTo("elementState")[0]?.args[0]).toBe("tr");
+  });
+
+  test("count with a css:-prefixed selector fails (times out) on a mismatch", async () => {
+    const d = new MockDriver().setElementState(es({ exists: true, visible: true, count: 5 }));
+    const { opts: o } = opts(d, 100);
+    const r = await count("css:tr", 3, o);
+    expect(r.pass).toBe(false);
+    expect(r.message).toContain("count is 5, expected 3");
+  });
+
+  test("visible with a css:-prefixed compound selector routes to elementState (prefix stripped)", async () => {
+    const d = new MockDriver().setElementState(es({ exists: true, visible: true, count: 1 }));
+    const { opts: o } = opts(d);
+    const r = await visible("css:div.card", o);
+    expect(r.pass).toBe(true);
+    const calls = d.callsTo("elementState");
+    expect(calls.length).toBeGreaterThan(0);
+    // the raw selector reaching elementState has the `css:` prefix stripped
+    expect(calls[0]?.args[0]).toBe("div.card");
+  });
+
+  test("feature-detect: a driver without elementState falls back to the snapshot path", async () => {
+    // Strip elementState off a MockDriver so the code takes the (unchanged) snapshot fallback for
+    // a synthetic target — no matching interactive element → visible fails, exactly as pre-change.
+    const d = new MockDriver().setSnapshot(SNAP_WITH_BUTTON);
+    (d as { elementState?: unknown }).elementState = undefined;
+    const { opts: o } = opts(d, 80);
+    const r = await visible("[data-testid='missing']", o);
+    expect(r.pass).toBe(false);
+    expect(d.callsTo("elementState").length).toBe(0);
+  });
+});
+
+describe("silent-ignore bug: visible/hidden honor BOTH selector and text (regression)", () => {
+  test("visible passes when the element is visible AND its text contains the expected", async () => {
+    const d = new MockDriver().setElementState(
+      es({ exists: true, visible: true, text: "Total: 12 users" }),
+    );
+    const { opts: o } = opts(d);
+    const assertion: Assertion = {
+      type: "visible",
+      selector: "[data-testid='x']",
+      text: "Total: 12 users",
+    };
+    const r = await evaluateDeterministic(assertion, o);
+    expect(r.pass).toBe(true);
+  });
+
+  test("visible FAILS when the element is visible but its text does NOT contain the expected", async () => {
+    // The bug: supplying BOTH selector and text dropped the text check → this used to PASS.
+    const d = new MockDriver().setElementState(
+      es({ exists: true, visible: true, text: "Total: 3 users" }),
+    );
+    const { opts: o } = opts(d, 100);
+    const assertion: Assertion = {
+      type: "visible",
+      selector: "[data-testid='x']",
+      text: "Total: 12 users",
+    };
+    const r = await evaluateDeterministic(assertion, o);
+    expect(r.pass).toBe(false);
+    expect(r.message).toContain("does not contain");
+  });
+
+  test("hidden passes when the element is visible but its text mismatches (negation)", async () => {
+    const d = new MockDriver().setElementState(
+      es({ exists: true, visible: true, text: "Total: 3 users" }),
+    );
+    const { opts: o } = opts(d);
+    const assertion: Assertion = {
+      type: "hidden",
+      selector: "[data-testid='x']",
+      text: "Total: 12 users",
+    };
+    const r = await evaluateDeterministic(assertion, o);
+    expect(r.pass).toBe(true);
   });
 });

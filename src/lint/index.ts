@@ -5,13 +5,6 @@
 // directories, globs). The CLI (`flightplan lint`) wires `runLint` to these.
 
 export type {
-  Diagnostic,
-  LintResult,
-  MultiLintResult,
-  Severity,
-} from "./types.ts";
-
-export type {
   ImportLintInfo,
   LintContext,
   LockLintInfo,
@@ -20,15 +13,18 @@ export type {
   Rule,
 } from "./context.ts";
 export { diag } from "./context.ts";
-
-export { RULES, RULE_IDS, looksLikeRawSelector } from "./rules.ts";
-
 export {
   expandPaths,
+  type LintFileOptions,
   lintFile,
   lintFlowFile,
   lintPaths,
-  type LintFileOptions,
 } from "./lint.ts";
-
 export { formatHuman, formatJson } from "./report.ts";
+export { looksLikeUnprefixedSelector, RULE_IDS, RULES } from "./rules.ts";
+export type {
+  Diagnostic,
+  LintResult,
+  MultiLintResult,
+  Severity,
+} from "./types.ts";

@@ -48,7 +48,7 @@ interface LogfireOpts {
   service_name?: string;
 }
 function cfg(logfire?: LogfireOpts): Config {
-  return (logfire ? { telemetry: { logfire } } : {}) as Config;
+  return logfire ? { telemetry: { logfire } } : {};
 }
 
 const FAKE_AI_CALL: AiCallEvent = {
@@ -116,7 +116,9 @@ describe("resolveTelemetryGating — gating truth table", () => {
   });
 
   test("whitespace-only token counts as absent", () => {
-    expect(resolveTelemetryGating(cfg({ enabled: "auto" }), { LOGFIRE_TOKEN: "   " }).enabled).toBe(false);
+    expect(resolveTelemetryGating(cfg({ enabled: "auto" }), { LOGFIRE_TOKEN: "   " }).enabled).toBe(
+      false,
+    );
   });
 
   test("service_name default + override", () => {
@@ -252,7 +254,11 @@ describe("createTelemetry — FakeSink captures the span/event tree", () => {
 
   test("undefined attrs are stripped (e.g. an omitted tier)", () => {
     const sink = new FakeSink();
-    const tel = createTelemetry({ config: cfg({ enabled: true }), env: { LOGFIRE_TOKEN: "t" }, sink });
+    const tel = createTelemetry({
+      config: cfg({ enabled: true }),
+      env: { LOGFIRE_TOKEN: "t" },
+      sink,
+    });
     const run = tel.startRun(runSpanAttrs({ flowId: "f", runId: "r" }));
     const step = run.child(TELEMETRY_SPAN_NAMES.step, stepSpanAttrs({ stepId: "s", do: "wait" }));
     step.end(stepEndAttrs({ ok: true, healed: false })); // no tier/repaired/durationMs
@@ -289,7 +295,10 @@ describe("createTelemetry — a failing sink never propagates into the run", () 
     // Driving the whole tree must not throw.
     expect(() => {
       const run = tel.startRun(runSpanAttrs({ flowId: "f", runId: "r" }));
-      const step = run.child(TELEMETRY_SPAN_NAMES.step, stepSpanAttrs({ stepId: "s", do: "click" }));
+      const step = run.child(
+        TELEMETRY_SPAN_NAMES.step,
+        stepSpanAttrs({ stepId: "s", do: "click" }),
+      );
       step.end(stepEndAttrs({ ok: true, healed: false }));
       run.end(runEndAttrs({ verdict: "passed", driftCount: 0 }));
     }).not.toThrow();
@@ -395,14 +404,16 @@ describe("LogfireSink — OTLP/HTTP transport", () => {
   });
 
   test("a non-2xx response rejects so the caller can degrade", async () => {
-    const impl = (() => Promise.resolve(new Response(null, { status: 503 }))) as unknown as typeof fetch;
+    const impl = (() =>
+      Promise.resolve(new Response(null, { status: 503 }))) as unknown as typeof fetch;
     const sink = new LogfireSink({ token: "t", fetchImpl: impl });
     await expect(sink.export(SPAN)).rejects.toThrow(/HTTP 503/);
   });
 
   test("toOtlpPayload is pure and matches the wire shape", () => {
     const payload = toOtlpPayload(SPAN, "flightplan");
-    const span = (payload as any).resourceSpans[0].scopeSpans[0].spans[0];
+    const span = (payload as unknown as Record<string, any>).resourceSpans[0].scopeSpans[0]
+      .spans[0];
     expect(span.kind).toBe(1);
     expect(span.startTimeUnixNano).toBe("1000000000");
     expect(span.endTimeUnixNano).toBe("2000000000");
@@ -435,7 +446,9 @@ describe("attribute builders", () => {
       verdict: "failed",
       drift_count: 3,
     });
-    expect(stepEndAttrs({ ok: false, tier: "L4", healed: false, repaired: true, durationMs: 9 })).toEqual({
+    expect(
+      stepEndAttrs({ ok: false, tier: "L4", healed: false, repaired: true, durationMs: 9 }),
+    ).toEqual({
       ok: false,
       tier: "L4",
       healed: false,

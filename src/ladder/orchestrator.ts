@@ -16,6 +16,9 @@
 // wires the AI tiers in by supplying `ctx.ai` — no change to this file's core is needed.
 
 import type { Step } from "../flow/types.ts";
+import { resolveL0 } from "./l0.ts";
+import { type L1Options, resolveL1 } from "./l1.ts";
+import { attemptRepair, type RepairOptions } from "./repair.ts";
 import type {
   AiHooks,
   Ladder,
@@ -24,9 +27,6 @@ import type {
   ResolveContext,
   StepExecution,
 } from "./types.ts";
-import { resolveL0 } from "./l0.ts";
-import { type L1Options, resolveL1 } from "./l1.ts";
-import { attemptRepair, type RepairOptions } from "./repair.ts";
 
 /** Options threaded into the orchestrator (L1 tunables + auto-repair bounds). */
 export interface OrchestratorOptions {
@@ -61,12 +61,27 @@ function attemptOf(exec: StepExecution, durationMs: number): ResolutionAttempt {
   return a;
 }
 
-/** Which AI hook (if any) handles the given prior tier's escalation. */
+/**
+ * Which AI hook (if any) handles the given prior tier's escalation.
+ *
+ * Pillar (c) — vision is the one capability wall (PLAN_v003 §2 (c)): when `visionHinted`
+ * (`step.tier_hint === "vision"`), an L1 escalation SKIPS the L2 text tier and goes STRAIGHT to
+ * L3 (vision), because text tiers can't resolve the marked target (an unlabeled icon / Nth glyph)
+ * and burning them first only wastes a paid call. The free/deterministic L0+L1 tiers still run
+ * ahead of this hook — a vision hint only reroutes the *AI* climb. The L3→L4 escalation is
+ * unchanged for both hinted and non-hinted steps.
+ */
 function nextAiHook(
   ai: AiHooks | undefined,
   priorTier: StepExecution["tier"],
+  visionHinted: boolean,
 ): keyof AiHooks | undefined {
   if (!ai) return undefined;
+  // Vision-hinted: L1 → L3 directly (skip L2 text), falling back to L2 only if no L3 is wired.
+  if (priorTier === "L1" && visionHinted) {
+    if (ai.resolveL3) return "resolveL3";
+    if (ai.resolveL2) return "resolveL2";
+  }
   if (priorTier === "L1" && ai.resolveL2) return "resolveL2";
   if (priorTier === "L2" && ai.resolveL3) return "resolveL3";
   // After L3 (or an L2 with no L3), the advisor classifies.
@@ -153,9 +168,11 @@ export async function resolveStep(
   prior = rep.execution; // repaired-but-still-failed → feed the latest exec into the AI climb.
 
   // --- L2/L3/L4 (Phase 4 — reached only through ctx.ai hooks) ---
-  // Bounded climb: at most L2 → L3 → L4 (3 AI tiers).
+  // Bounded climb: at most L2 → L3 → L4 (3 AI tiers). A `tier_hint = "vision"` step (pillar c)
+  // skips L2 on the first hop and climbs straight to L3 (see `nextAiHook`).
+  const visionHinted = "tier_hint" in step && step.tier_hint === "vision";
   for (let i = 0; i < 3; i++) {
-    const hookName = nextAiHook(ctx.ai, prior.tier);
+    const hookName = nextAiHook(ctx.ai, prior.tier, visionHinted);
     if (!hookName) break;
     const hook = ctx.ai![hookName]!;
     t0 = now();
@@ -168,6 +185,73 @@ export async function resolveStep(
   // No AI hook available (Phase 2 default) or all escalated: return the deepest failed execution.
   // It carries `escalate:true` + the `L2Handoff` so the runner can surface/fail it.
   return { execution: prior, attempts };
+}
+
+// ===========================================================================
+// Vision batching (PLAN_v003 §4 v003-3): resolve N same-page vision targets in ONE call
+// ===========================================================================
+//
+// When ≥2 targets on the SAME page are routed to vision (an explicit `tier_hint = vision`, or an
+// AI-only baseline where every target is a vision target), one screenshot + one vision call can
+// answer all of them (measured: 1 batch for 8 icons == 8 singles at 8/8, ~79.5% cheaper). The
+// orchestrator groups the batchable steps and delegates the shared call to a `BatchVisionResolve`
+// callback — which is `ai/vision-l3.ts`'s `resolveBatchL3`, injected by the caller so this file
+// keeps importing NOTHING from `ai/` (the extension-point invariant in the file header). The
+// callback OWNS the per-target fallback: it returns one `StepExecution` per input step, in order,
+// resolving any target the batch could not cleanly answer via its own single-target vision call.
+
+/**
+ * The batch-vision resolver the orchestrator delegates to. Injected by the caller (bound to
+ * `ai/vision-l3.ts`'s `resolveBatchL3`), so the ladder never imports `ai/`. Contract: returns
+ * exactly one `StepExecution` per input step, in the SAME order; a malformed/partial batch answer
+ * is recovered per-target INSIDE the callback (never surfaced as a whole-batch failure).
+ */
+export type BatchVisionResolve = (steps: Step[], ctx: ResolveContext) => Promise<StepExecution[]>;
+
+/**
+ * Resolve a group of same-page steps through a SINGLE batched vision call, returning one
+ * `LadderResult` per input step (same order). Each result carries a single `L3` attempt (the tier
+ * the batch resolved at) so the runner emits `resolution_attempt` events exactly as for a
+ * single-target L3, plus — when the batched L3 escalated AND an `classifyL4` hook exists — an L4
+ * advisor attempt per still-failing target (mirroring `resolveStep`'s L3→L4 fall-through).
+ *
+ * A one-step group degrades to the callback's own single-target path. This function is a peer of
+ * `resolveStep`, invoked by the runner when it has grouped ≥2 vision-hinted steps on one page.
+ */
+export async function resolveVisionBatch(
+  steps: Step[],
+  ctx: ResolveContext,
+  batchResolve: BatchVisionResolve,
+): Promise<LadderResult[]> {
+  const now = ctx.now ?? Date.now;
+  if (steps.length === 0) return [];
+
+  const t0 = now();
+  const execs = await batchResolve(steps, ctx);
+  const dt = now() - t0;
+
+  const results: LadderResult[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i]!;
+    const l3 = execs[i] ?? {
+      ok: false,
+      tier: "L3" as const,
+      escalate: true,
+      error: "vision batch returned no result for this target",
+    };
+    const attempts: ResolutionAttempt[] = [attemptOf(l3, dt)];
+
+    // L3 escalated → climb to the advisor exactly like `resolveStep`'s tail (if wired).
+    if (!l3.ok && l3.escalate && ctx.ai?.classifyL4) {
+      const t1 = now();
+      const l4 = await ctx.ai.classifyL4(step, l3, ctx);
+      attempts.push(attemptOf(l4, now() - t1));
+      results.push({ execution: l4, attempts });
+      continue;
+    }
+    results.push({ execution: l3, attempts });
+  }
+  return results;
 }
 
 /** A `Ladder` object binding `resolveStep` to fixed options (the runner's handle). */

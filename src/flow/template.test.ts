@@ -3,12 +3,48 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  applyLoopTemplating,
   applyTemplating,
   applyTemplatingDeep,
   collectRefs,
+  hasLoopToken,
   resolveInputs,
   TemplateError,
 } from "./index.ts";
+
+describe("applyLoopTemplating (for_each scope)", () => {
+  test("resolves ${item} and ${loop.index}/${loop.index1}", () => {
+    expect(applyLoopTemplating("add ${item} #${loop.index1}", { item: "Cable", index: 2 })).toBe(
+      "add Cable #3",
+    );
+    expect(applyLoopTemplating("idx=${loop.index}", { item: "x", index: 0 })).toBe("idx=0");
+  });
+
+  test("resolves ${item.key} for table items", () => {
+    expect(applyLoopTemplating("${item.email}", { item: { email: "a@b.com" }, index: 0 })).toBe(
+      "a@b.com",
+    );
+  });
+
+  test("leaves ${inputs.*} / ${env.*} untouched (no cross-contamination)", () => {
+    expect(applyLoopTemplating("${inputs.base}/${item}", { item: "x", index: 0 })).toBe(
+      "${inputs.base}/x",
+    );
+  });
+
+  test("throws on an unknown loop token", () => {
+    expect(() => applyLoopTemplating("${loop.nope}", { item: "x", index: 0 })).toThrow(
+      TemplateError,
+    );
+  });
+
+  test("hasLoopToken detects loop tokens but not input/env tokens", () => {
+    expect(hasLoopToken("hi ${item}")).toBe(true);
+    expect(hasLoopToken("${loop.index}")).toBe(true);
+    expect(hasLoopToken("${inputs.x}")).toBe(false);
+    expect(hasLoopToken("plain")).toBe(false);
+  });
+});
 
 describe("applyTemplating", () => {
   test("substitutes ${inputs.x}", () => {
@@ -40,21 +76,17 @@ describe("applyTemplating", () => {
   });
 
   test("throws on an undeclared input", () => {
-    expect(() => applyTemplating("${inputs.missing}", { inputs: {} })).toThrow(
-      TemplateError,
-    );
+    expect(() => applyTemplating("${inputs.missing}", { inputs: {} })).toThrow(TemplateError);
   });
 
   test("throws on an undefined env var", () => {
-    expect(() =>
-      applyTemplating("${env.NOPE}", { inputs: {}, env: {} }),
-    ).toThrow(TemplateError);
+    expect(() => applyTemplating("${env.NOPE}", { inputs: {}, env: {} })).toThrow(TemplateError);
   });
 
   test("throws on an unsupported source (e.g. ${steps.*}, deferred to v1)", () => {
-    expect(() =>
-      applyTemplating("${steps.s1.outputs.id}", { inputs: {}, env: {} }),
-    ).toThrow(TemplateError);
+    expect(() => applyTemplating("${steps.s1.outputs.id}", { inputs: {}, env: {} })).toThrow(
+      TemplateError,
+    );
   });
 
   test("leaves non-template text untouched", () => {
@@ -98,29 +130,19 @@ describe("applyTemplatingDeep", () => {
 
 describe("resolveInputs", () => {
   test("`with` overrides win over declared defaults", () => {
-    const out = resolveInputs(
-      { account: "default", region: "us" },
-      { account: "override" },
-      {},
-    );
+    const out = resolveInputs({ account: "default", region: "us" }, { account: "override" }, {});
     expect(out).toEqual({ account: "override", region: "us" });
   });
 
   test("declared defaults are templated against env", () => {
-    const out = resolveInputs(
-      { base: "${env.BASE}", path: "${inputs.base}/api" },
-      undefined,
-      { BASE: "https://x" },
-    );
+    const out = resolveInputs({ base: "${env.BASE}", path: "${inputs.base}/api" }, undefined, {
+      BASE: "https://x",
+    });
     expect(out).toEqual({ base: "https://x", path: "https://x/api" });
   });
 
   test("`with` values are templated against parent env + parent inputs", () => {
-    const out = resolveInputs(
-      { acct: "fallback" },
-      { acct: "${env.ACCT}" },
-      { ACCT: "real" },
-    );
+    const out = resolveInputs({ acct: "fallback" }, { acct: "${env.ACCT}" }, { ACCT: "real" });
     expect(out.acct).toBe("real");
   });
 

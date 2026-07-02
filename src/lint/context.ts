@@ -52,15 +52,35 @@ export interface LintContext {
   sourceHash: string;
 }
 
-/** Outcome of resolving a flow's `imports` (+ setup/teardown), precomputed for the rules. */
+/**
+ * Outcome of resolving a flow's `imports` (+ setup/teardown + path-form `run` references),
+ * precomputed for the rules.
+ */
 export interface ImportLintInfo {
   /** Per-reference resolution outcome. */
   refs: ResolvedRef[];
-  /** A detected import cycle, rendered as its path chain, when one exists. */
+  /** A detected import cycle (over the combined import+run DAG), as its path chain. */
   cycle: string[] | null;
+  /**
+   * The file's LIBRARY scope: every module registered via `imports` (directly or
+   * transitively) with its declared flow id + [inputs] keys. `null` when the graph could
+   * not be resolved (missing module / cycle) — id-scope rules then stay silent rather than
+   * double-report.
+   */
+  scope: ImportScopeModule[] | null;
 }
 
-/** A single import/setup/teardown reference and whether its target file exists. */
+/** One module in a file's import scope (PLAN_v002 v002-5/v002-6). */
+export interface ImportScopeModule {
+  /** The module's declared flow id (what an id-form `run.flow` resolves against). */
+  id: string;
+  /** Absolute path of the module. */
+  path: string;
+  /** The module's declared [inputs] keys (for `templating/with-inputs-declared`). */
+  inputNames: string[];
+}
+
+/** A single import/setup/teardown/run reference and whether its target file exists. */
 export interface ResolvedRef {
   /** The path exactly as written in the file. */
   raw: string;
@@ -68,8 +88,12 @@ export interface ResolvedRef {
   resolved: string;
   /** Whether a file exists at `resolved`. */
   exists: boolean;
-  /** How the reference entered the graph. */
-  relation: "import" | "setup" | "teardown";
+  /** How the reference entered the graph (`run` = path-form `run` step reference). */
+  relation: "import" | "setup" | "teardown" | "run";
+  /** Declared flow id of the referenced module, when it loaded cleanly. */
+  flowId?: string;
+  /** Declared [inputs] keys of the referenced module, when it loaded cleanly. */
+  inputNames?: string[];
 }
 
 /** Minimal lock-file data the linter reads (just enough for the stale-hash warning). */

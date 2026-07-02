@@ -34,14 +34,7 @@
 //   its fields win); never partially merged across differing modes.
 
 import { ConfigSchema } from "./schema.ts";
-import type {
-  Config,
-  ConnectConfig,
-  ModelRegistry,
-  ModelRole,
-  ResolvedConfig,
-  RunLimits,
-} from "./types.ts";
+import type { Config, ModelRegistry, ModelRole, ResolvedConfig, RunLimits } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Built-in defaults — the lowest layer. Documented and intentionally minimal:
@@ -63,6 +56,16 @@ export const DEFAULT_REDACTION = {
   redact_media: true,
 } as const;
 
+/**
+ * Default planner policy (PLAN_v003 v003-6): ENABLED BY DEFAULT for a prod field test. It is inert
+ * unless BOTH an AI runtime is present AND a divergence has a recorded expectation to compare
+ * against, so a deterministic (no-AI) run is byte-identical regardless. Cheap-first is mandatory:
+ * the model defaults live in the registry (`planner` cheap, `planner_capable` escalation-only).
+ */
+export const DEFAULT_PLAN = {
+  enabled: true,
+} as const;
+
 /** Default AI provider/key wiring (PROPOSAL "Hard decisions"). Models stay unset by default
  * (the registry is config-driven; PLAN.md §8 risk #4 — never hardcode model ids). */
 export const DEFAULT_AI = {
@@ -82,6 +85,7 @@ export const BUILTIN_DEFAULTS: Config = {
   ai: { ...DEFAULT_AI },
   run: { ...DEFAULT_RUN_LIMITS },
   redaction: { ...DEFAULT_REDACTION },
+  plan: { ...DEFAULT_PLAN },
 };
 
 // ---------------------------------------------------------------------------
@@ -120,7 +124,7 @@ function mergeModelRegistry(
   if (!base) return over;
   if (!over) return base;
   const out: ModelRegistry = { ...base };
-  for (const role of ["resolver", "advisor", "vision"] as const) {
+  for (const role of ["resolver", "advisor", "vision", "planner", "planner_capable"] as const) {
     const o = over[role];
     if (o === undefined) continue;
     const b = base[role];
@@ -154,7 +158,7 @@ export function mergeConfigLayer(base: Config, over: Config): Config {
 
   // SPECIAL CASE: `connect` (discriminated union) is replaced wholesale by a later layer.
   if (over.connect !== undefined) {
-    merged.connect = over.connect as ConnectConfig;
+    merged.connect = over.connect;
   }
 
   // MERGEABLE (key-by-key): the model registry merges per role.
@@ -186,9 +190,7 @@ export function resolveConfig(layers: ReadonlyArray<Config>): Config {
  * is a valid Config (it always should be, since every layer was already validated). Returns
  * a {@link ResolvedConfig} with the always-present sections (`run`, `redaction`) guaranteed.
  */
-export function resolveConfigWithDefaults(
-  layers: ReadonlyArray<Config>,
-): ResolvedConfig {
+export function resolveConfigWithDefaults(layers: ReadonlyArray<Config>): ResolvedConfig {
   const merged = resolveConfig([BUILTIN_DEFAULTS, ...layers]);
   // Re-validate the merged shape (defense-in-depth; cheap, and catches a bad CLI override).
   const parsed = ConfigSchema.parse(merged);
@@ -196,5 +198,8 @@ export function resolveConfigWithDefaults(
     ...parsed,
     run: parsed.run ?? { ...DEFAULT_RUN_LIMITS },
     redaction: parsed.redaction ?? { ...DEFAULT_REDACTION },
+    // The planner is enabled-by-default (PLAN_v003 v003-6): a layer may set `plan.enabled = false`,
+    // but when unset the resolved config guarantees `enabled: true`.
+    plan: { ...DEFAULT_PLAN, ...parsed.plan },
   };
 }

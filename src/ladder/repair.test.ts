@@ -18,8 +18,12 @@ import { resolveL1 } from "./l1.ts";
 import { attemptRepair, mapFailureReason } from "./repair.ts";
 import type { AiHooks, ResolveContext } from "./types.ts";
 
-const clickStep = (over: Partial<ClickStep> = {}): Step =>
-  ({ id: "s1", do: "click", target: "Create order", ...over }) as ClickStep;
+const clickStep = (over: Partial<ClickStep> = {}): Step => ({
+  id: "s1",
+  do: "click",
+  target: "Create order",
+  ...over,
+});
 
 /** A snapshot carrying the single "Create order" button (optionally disabled). */
 function snapshotWith(name: string, opts: { disabled?: boolean } = {}) {
@@ -40,7 +44,11 @@ function snapshotWith(name: string, opts: { disabled?: boolean } = {}) {
  * a page whose sole target is the "Create order" button (ref `e1`), so a single full-score
  * candidate lets L1 pick it, act, and surface the batch's `failureReason` for auto-repair.
  */
-const CREATE_ORDER_CANDIDATE = makeRankedCandidate({ ref: "e1", role: "button", name: "Create order" });
+const CREATE_ORDER_CANDIDATE = makeRankedCandidate({
+  ref: "e1",
+  role: "button",
+  name: "Create order",
+});
 
 /** A fake clock sleep that records the requested delays and never actually waits. */
 function fakeSleep() {
@@ -159,7 +167,13 @@ describe("repair — disabled", () => {
     const l1 = await resolveL1(clickStep(), ctx);
     expect(l1.failureReason).toBe("disabled");
 
-    const rep = await attemptRepair(clickStep(), l1, ctx, {}, { pollIntervalMs: 250, pollMaxTicks: 8 });
+    const rep = await attemptRepair(
+      clickStep(),
+      l1,
+      ctx,
+      {},
+      { pollIntervalMs: 250, pollMaxTicks: 8 },
+    );
     expect(rep.repaired).toBe(true);
     expect(rep.kind).toBe("disabled");
     expect(rep.execution.ok).toBe(true);

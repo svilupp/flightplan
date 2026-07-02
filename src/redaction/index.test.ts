@@ -6,12 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Step } from "../flow/types.ts";
-import {
-  REDACTED,
-  DEFAULT_PII_PATTERNS,
-  createRedactor,
-  gatherSecretValues,
-} from "./index.ts";
+import { createRedactor, DEFAULT_PII_PATTERNS, gatherSecretValues, REDACTED } from "./index.ts";
 
 const fill = (over: Partial<Step> = {}): Step =>
   ({ id: "s1", do: "fill", target: "Password", value: "hunter2", ...over }) as Step;
@@ -135,5 +130,39 @@ describe("gatherSecretValues", () => {
   test("no secret fills → empty set", () => {
     const steps: Step[] = [fill({ id: "a", value: "x" })];
     expect(gatherSecretValues(steps, { A: "x" }).size).toBe(0);
+  });
+
+  test("collects secret:true value on a SELECT step (B7 — not only fills)", () => {
+    // A select whose chosen option is a secret must be masked exactly like a secret fill.
+    const steps: Step[] = [
+      { id: "pick", do: "select", target: "the plan", value: "SECRET-PLAN", secret: true },
+      { id: "pick2", do: "select", target: "region", value: "eu-west" }, // no secret flag
+    ];
+    const got = gatherSecretValues(steps, {});
+    expect(got.has("SECRET-PLAN")).toBe(true);
+    expect(got.has("eu-west")).toBe(false);
+  });
+
+  test("collects a secret:true GOTO url + its backing input (B7)", () => {
+    // A goto whose URL embeds a secret token (e.g. a signed link) must be masked.
+    const steps: Step[] = [
+      {
+        id: "open",
+        do: "goto",
+        url: "https://x.test/callback?token=abc123TOKEN",
+        secret: true,
+      },
+    ];
+    const got = gatherSecretValues(steps, { TOKEN: "abc123TOKEN" });
+    expect(got.has("https://x.test/callback?token=abc123TOKEN")).toBe(true);
+    expect(got.has("abc123TOKEN")).toBe(true); // bare backing input also masked
+  });
+
+  test("a non-secret select/goto value is NOT collected", () => {
+    const steps: Step[] = [
+      { id: "s", do: "select", target: "t", value: "public" },
+      { id: "g", do: "goto", url: "https://x.test/public" },
+    ];
+    expect(gatherSecretValues(steps, {}).size).toBe(0);
   });
 });

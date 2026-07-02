@@ -176,7 +176,9 @@ describe("durableSelectorForElement — never a ref, always derivable", () => {
 describe("scopedTextSelectorForElement / structuralFingerprintForElement", () => {
   test("scoped_text requires both an interactive role and a name", () => {
     expect(
-      scopedTextSelectorForElement(makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })),
+      scopedTextSelectorForElement(
+        makeInteractiveElement({ ref: "e1", role: "button", name: "Go" }),
+      ),
     ).toBe("text:Go");
     expect(
       scopedTextSelectorForElement(makeInteractiveElement({ ref: "e1", role: "button", name: "" })),

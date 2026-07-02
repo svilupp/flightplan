@@ -1,0 +1,12 @@
+# BROKEN: `steps` authored after [inputs] silently nests as inputs.steps → steps/toml-key-order
+version = 1
+kind = "flow"
+id = "broken.toml_key_order"
+description = "steps array absorbed into [inputs] by TOML key ordering"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+steps = [
+  { id = "open", do = "goto", url = "${inputs.base_url}/wizard" },
+]

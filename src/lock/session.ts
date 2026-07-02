@@ -20,16 +20,17 @@
 // (dependency direction: the runner owns orchestration; lock/ stays a leaf domain it composes).
 
 import type { Step } from "../flow/index.ts";
+import { describeTarget } from "../flow/normalize-target.ts";
 import type { LockHook, StepExecution } from "../ladder/index.ts";
 import type { Strategy } from "../types.ts";
 import {
-  composeLocks,
   type ComposedEntry,
   type ComposedLock,
+  composeLocks,
   type ImportedLock,
 } from "./compose.ts";
-import { createLockHook, type CreateLockHookOptions } from "./hook.ts";
-import { emptyLock, loadLockFile, LockParseError } from "./parse.ts";
+import { type CreateLockHookOptions, createLockHook } from "./hook.ts";
+import { emptyLock, LockParseError, loadLockFile } from "./parse.ts";
 import { deriveUrlGlob } from "./signature.ts";
 import type { LockFile, LockMatch, LockTarget } from "./types.ts";
 import { decideLockWrite, type LockWriteMode, writeLockFile } from "./write.ts";
@@ -75,6 +76,12 @@ export interface OpenLockSessionOptions {
   inferStrategy: (selector: string) => Strategy | null;
   /** Injectable clock for `last_seen` (deterministic in tests). */
   now?: () => number;
+  /**
+   * REDACTION SINK for the advisory note (DESIGN §4) — the run's `redactor.redactText`. Applied to
+   * an AI-emitted note BEFORE it is persisted to the lock so a note echoing a `secret=true` value
+   * never reaches the committed artifact. Omit → identity (no redaction); behavior unchanged.
+   */
+  redactNote?: (note: string) => string;
   /** Imported-module locks to compose into the read view (Phase 5 wires the runner side). */
   imported?: SessionImport[];
   /** Hook tuning (e.g. `prefilterUrl`, `namespaceFor`). */
@@ -101,9 +108,11 @@ export interface RecordResolutionResult {
 // LockSession
 // ---------------------------------------------------------------------------
 
-/** The step's NL target (for the persisted recipe's human-readable `target`). */
+/** The step's human-readable target description (for the persisted recipe's `target` field):
+ * the target list's NL entry, else its first selector entry, else `undefined` — the lock
+ * `target` description field never uses the bare step id (v002-1 §1 "lock target description"). */
 function targetTextOf(step: Step): string | undefined {
-  return "target" in step && typeof step.target === "string" ? step.target : undefined;
+  return "target" in step ? describeTarget(step.target) : undefined;
 }
 
 /**
@@ -121,6 +130,7 @@ export class LockSession {
   private readonly mode: LockWriteMode;
   private readonly inferStrategy: (selector: string) => Strategy | null;
   private readonly now: (() => number) | undefined;
+  private readonly redactNote: ((note: string) => string) | undefined;
 
   constructor(
     root: TrackedLock,
@@ -129,12 +139,14 @@ export class LockSession {
       mode: LockWriteMode;
       inferStrategy: (selector: string) => Strategy | null;
       now?: () => number;
+      redactNote?: (note: string) => string;
       hookOptions?: CreateLockHookOptions;
     },
   ) {
     this.mode = options.mode;
     this.inferStrategy = options.inferStrategy;
     this.now = options.now;
+    this.redactNote = options.redactNote;
     this.rootSource = root.lock.source;
 
     this.bySource.set(root.lock.source, root);
@@ -166,7 +178,12 @@ export class LockSession {
   recordResolution(
     step: Step,
     execution: StepExecution,
-    opts: { resolvedAtL0: boolean; kind?: "ai_pick"; pinnedLabel?: string } = {
+    opts: {
+      resolvedAtL0: boolean;
+      revalidated?: boolean;
+      kind?: "ai_pick";
+      pinnedLabel?: string;
+    } = {
       resolvedAtL0: false,
     },
   ): RecordResolutionResult {
@@ -182,11 +199,16 @@ export class LockSession {
       mode: this.mode,
       existing: entry?.target,
       resolvedAtL0: opts.resolvedAtL0,
-      step: { id: step.id, ...(targetTextOf(step) !== undefined ? { target: targetTextOf(step) } : {}) },
+      ...(opts.revalidated ? { revalidated: true } : {}),
+      step: {
+        id: step.id,
+        ...(targetTextOf(step) !== undefined ? { target: targetTextOf(step) } : {}),
+      },
       execution,
       match,
       inferStrategy: this.inferStrategy,
       ...(this.now ? { now: this.now } : {}),
+      ...(this.redactNote ? { redactNote: this.redactNote } : {}),
       ...(opts.kind ? { kind: opts.kind } : {}),
       ...(opts.pinnedLabel !== undefined ? { pinnedLabel: opts.pinnedLabel } : {}),
     });
@@ -262,8 +284,14 @@ export async function openLockSession(options: OpenLockSessionOptions): Promise<
 
   const rootLock = await loadLockSafe(
     options.lockPath,
-    { source: options.source, source_hash: options.sourceHash, description: options.description ?? "" },
+    {
+      source: options.source,
+      source_hash: options.sourceHash,
+      description: options.description ?? "",
+    },
+    options.mode,
     onWarn,
+    options.now,
   );
   const root: TrackedLock = { path: options.lockPath, lock: rootLock, dirty: false };
 
@@ -272,29 +300,47 @@ export async function openLockSession(options: OpenLockSessionOptions): Promise<
     const lock = await loadLockSafe(
       imp.lockPath,
       { source: imp.source, source_hash: imp.sourceHash, description: imp.description ?? "" },
+      options.mode,
       onWarn,
+      options.now,
     );
-    imported.push({ tracked: { path: imp.lockPath, lock, dirty: false }, namespace: imp.namespace });
+    imported.push({
+      tracked: { path: imp.lockPath, lock, dirty: false },
+      namespace: imp.namespace,
+    });
   }
 
   return new LockSession(root, imported, {
     mode: options.mode,
     inferStrategy: options.inferStrategy,
     ...(options.now ? { now: options.now } : {}),
+    ...(options.redactNote ? { redactNote: options.redactNote } : {}),
     ...(options.hookOptions ? { hookOptions: options.hookOptions } : {}),
   });
 }
 
-/** Load a lock, downgrading a malformed file to empty + a warning (auto-heal default). */
+/**
+ * Load a lock. In `auto`/`no-write` modes a MALFORMED file downgrades to empty + a warning (the
+ * auto-heal default — a corrupt local artifact never aborts a run). In `frozen` mode the committed
+ * lock is AUTHORITATIVE, so a malformed lock is a hard failure: the {@link LockParseError} is
+ * rethrown so the runner maps it to an `error` verdict rather than silently re-resolving fresh (and
+ * masking a garbage committed artifact with a `drift_count=0` pass).
+ */
 async function loadLockSafe(
   path: string,
   fresh: { source: string; source_hash: string; description: string },
+  mode: LockWriteMode,
   onWarn: (message: string) => void,
+  now?: () => number,
 ): Promise<LockFile> {
   try {
-    return await loadLockFile(path, fresh);
+    return await loadLockFile(path, fresh, now ?? Date.now);
   } catch (err) {
     if (err instanceof LockParseError) {
+      if (mode === "frozen") {
+        // Frozen's contract: the committed lock is authoritative; a corrupt one must fail fast.
+        throw err;
+      }
       onWarn(
         `flightplan: ignoring malformed lock ${path} (${err.message}); resolving fresh and re-learning.`,
       );

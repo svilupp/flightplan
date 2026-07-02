@@ -31,9 +31,7 @@ url = "${inputs.base_url}/signature?variant=${inputs.variant}"
 [[steps]]
 id = "continue_action"
 do = "click"
-target = "the Continue button"
-hints = ["Continue", "[data-testid='signature-action']"]
-intent = "continue past the signature gate using the primary button"
+target = ["[data-testid='signature-action']", "the Continue button"]
 
 # cont() appends data-testid="result" with text "Continued" — identical across both variants, so the
 # assertion is variant-independent; only the resolving tier (L0 hit vs L0 sig-mismatch -> L1) differs.

@@ -38,8 +38,12 @@ export const DEFAULT_TIER_TOKENS: Record<"L2" | "L3" | "L4", TierCallTokens> = {
   L4: { inputTokens: 200, outputTokens: 90 },
 };
 
-/** Map a resolving tier to the model role that pays for it (null for the free deterministic tiers). */
-export function tierRole(tier: LadderTier): ModelRoleName | null {
+/**
+ * Map a resolving tier to the model role that pays for it (null for the free deterministic tiers).
+ * The L5 path-repair planner (PLAN_v003 v003-6) is NOT a ladder tier, so the planner roles never
+ * appear here — the return stays within {@link AiCallRole} for the fixture-cost projection.
+ */
+export function tierRole(tier: LadderTier): Extract<ModelRoleName, AiCallRole> | null {
   switch (tier) {
     case "L2":
       return "resolver";

@@ -76,8 +76,10 @@ export function makeStepResult(partial: Partial<StepResult> = {}): StepResult {
 }
 
 /** A successful single-step batch whose only step used `selectorUsed`. */
-export function makeSuccessBatch(selectorUsed: string, action: StepResult["action"] = "click"):
-  BatchResult {
+export function makeSuccessBatch(
+  selectorUsed: string,
+  action: StepResult["action"] = "click",
+): BatchResult {
   return makeBatchResult([
     makeStepResult({ action, selectorUsed, success: true, outcomeStatus: "success" }),
   ]);

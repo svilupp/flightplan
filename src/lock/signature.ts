@@ -45,6 +45,26 @@ const STRUCT_PREFIX = "struct:";
 const COMPONENT_SEP = ";";
 
 // ---------------------------------------------------------------------------
+// Cache options (L0 cache-hit quality — Layer 2 `[cache]` config)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `[cache]` tuning threaded from config into the signature computation + match (Layer 2).
+ *
+ *  - `ignoreRegions` — CSS selectors whose subtrees are excluded from BOTH the masked-text and the
+ *    structural hashing (see `lock/masked-text.ts` + `ladder/page-signature.ts`). Sourced from
+ *    `[cache] ignore_regions`.
+ *  - `signature` — `"full"` (default) compares BOTH components; `"struct-only"` compares only the
+ *    struct component (`signatureMatches` already degrades to a single component), which trusts a
+ *    cached recipe as long as the role-tree skeleton is unchanged even if the (masked) text drifts.
+ *    Sourced from `[cache] signature` (flow-level) or a per-step `cache` override.
+ */
+export interface CacheOptions {
+  ignoreRegions?: readonly string[];
+  signature?: "full" | "struct-only";
+}
+
+// ---------------------------------------------------------------------------
 // Composite match signature
 // ---------------------------------------------------------------------------
 
@@ -82,14 +102,32 @@ export function splitMatchSignature(sig: string): { text?: string; struct?: stri
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a current composite signature matches the cached one. BOTH the text and structure
- * components must match. If either side is a legacy bare value (no `struct:`), only the text
- * component is compared (graceful degradation — an older lock still validates on text alone).
+ * Whether a current composite signature matches the cached one. In the default `"full"` mode BOTH
+ * the text and structure components must match; if either side is a legacy bare value (no
+ * `struct:`), only the text component is compared (graceful degradation — an older lock still
+ * validates on text alone).
+ *
+ * In `"struct-only"` mode (Layer 2 `[cache] signature = "struct-only"`) ONLY the structural
+ * component is compared — a cached recipe stays trusted as long as the role-tree skeleton is
+ * unchanged, even if the (masked) text drifts. Falls back to text equality only when a side has no
+ * struct component at all (a legacy text-only sig), so an old lock never spuriously matches.
  */
-export function signatureMatches(cachedSig: string, currentSig: string): boolean {
+export function signatureMatches(
+  cachedSig: string,
+  currentSig: string,
+  mode: "full" | "struct-only" = "full",
+): boolean {
   if (cachedSig === currentSig) return true;
   const a = splitMatchSignature(cachedSig);
   const b = splitMatchSignature(currentSig);
+
+  if (mode === "struct-only") {
+    // Compare only struct. If BOTH sides carry a struct component, that decides it. If either
+    // lacks one (a legacy text-only sig), there is no skeleton to compare → fall back to text.
+    if (a.struct !== undefined && b.struct !== undefined) return a.struct === b.struct;
+    return a.text === b.text;
+  }
+
   if (a.text !== b.text) return false;
   // If either lacks a structural component, fall back to text-only equality (already true).
   if (a.struct === undefined || b.struct === undefined) return true;
@@ -129,9 +167,7 @@ export function deriveUrlGlob(url: string): string {
     const u = new URL(url);
     return `${u.origin}${u.pathname}*`;
   } catch {
-    const cut = [url.indexOf("?"), url.indexOf("#")]
-      .filter((i) => i >= 0)
-      .sort((a, b) => a - b)[0];
+    const cut = [url.indexOf("?"), url.indexOf("#")].filter((i) => i >= 0).sort((a, b) => a - b)[0];
     const base = cut === undefined ? url : url.slice(0, cut);
     return `${base}*`;
   }

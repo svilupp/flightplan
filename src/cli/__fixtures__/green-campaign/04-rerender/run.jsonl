@@ -1,0 +1,13 @@
+{"type":"run_start","ts":1700400000000,"runId":"04-rerender","flowId":"examples.rerender","inputs":{},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700400000100,"stepId":"open_rerender","do":"goto"}
+{"type":"assertion_result","ts":1700400001500,"stepId":"open_rerender","assertType":"text","pass":true,"message":"page contains \"generation: 1\"","durationMs":3}
+{"type":"step_end","ts":1700400001500,"stepId":"open_rerender","ok":true,"healed":false,"durationMs":1400}
+{"type":"step_start","ts":1700400001500,"stepId":"refresh_widget","do":"click","intent":"the Refresh widget button"}
+{"type":"step_end","ts":1700400001540,"stepId":"refresh_widget","ok":true,"healed":false,"durationMs":40,"tier":"L1"}
+{"type":"step_start","ts":1700400001540,"stepId":"await_rerender","do":"wait"}
+{"type":"assertion_result","ts":1700400002450,"stepId":"await_rerender","assertType":"text","pass":true,"message":"page contains \"generation: 2\"","durationMs":8}
+{"type":"step_end","ts":1700400002450,"stepId":"await_rerender","ok":true,"healed":false,"durationMs":900}
+{"type":"step_start","ts":1700400002450,"stepId":"confirm_action","do":"click","intent":"the Confirm button in the refreshed widget"}
+{"type":"assertion_result","ts":1700400002600,"stepId":"confirm_action","assertType":"text","pass":true,"message":"page contains \"Re-rendered action confirmed\"","durationMs":2}
+{"type":"step_end","ts":1700400002610,"stepId":"confirm_action","ok":true,"healed":false,"durationMs":150,"tier":"L1"}
+{"type":"run_end","ts":1700400002650,"verdict":"passed","totals":{"steps_run":4,"drift_count":0,"total_cost_usd":0,"model_usage":[]}}

@@ -9,18 +9,18 @@
 // Named exports throughout (no `export *`), matching the lint/lock module barrels. Canonical
 // references: PLAN.md §6 (escalation matrix), §7 (cost ladder), §8 (risks).
 
+export type { LoadedRun } from "../cli/explain.ts";
 // --- artifact loader (re-exported for convenience; owned by cli/explain.ts, imported zero-edit) ---
 export { loadRun } from "../cli/explain.ts";
-export type { LoadedRun } from "../cli/explain.ts";
-
-// --- Unit A: aggregator ---
-export { aggregateRun, aggregateCampaign } from "./aggregate.ts";
 export type { CampaignOptions } from "./aggregate.ts";
-
-// --- Unit D: lock byte-stability ---
-export { sha256, checkLockStability } from "./lock-stability.ts";
-export type { LockStabilityInput } from "./lock-stability.ts";
-
+// --- Unit A: aggregator ---
+export { aggregateCampaign, aggregateRun } from "./aggregate.ts";
+export type {
+  CostModelOptions,
+  CostModelResult,
+  FixtureCostProjection,
+  TierCallTokens,
+} from "./cost-model.ts";
 // --- Unit E: cost-model calculator ---
 export {
   CAMPAIGN_EXPECTED_TIERS,
@@ -29,19 +29,16 @@ export {
   tierCostUsd,
   tierRole,
 } from "./cost-model.ts";
-export type {
-  CostModelOptions,
-  CostModelResult,
-  FixtureCostProjection,
-  TierCallTokens,
-} from "./cost-model.ts";
+export type { LockStabilityInput } from "./lock-stability.ts";
+// --- Unit D: lock byte-stability ---
+export { checkLockStability, sha256 } from "./lock-stability.ts";
 
 // --- Unit G: residual-risk → unit-test traceability matrix ---
 export {
-  RISK_COVERAGE,
   coveredTestFiles,
   liveValidationRisks,
   offlineCoveredRisks,
+  RISK_COVERAGE,
 } from "./risk-coverage.ts";
 
 // --- types ---

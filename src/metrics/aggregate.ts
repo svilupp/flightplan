@@ -169,9 +169,7 @@ function collectRun(loaded: LoadedRun): RunRaw {
   }
 
   // --- false-positive resolution: ok step with a failed assertion on it ---
-  const failedAssertionSteps = new Set(
-    assertions.filter((a) => !a.pass).map((a) => a.stepId),
-  );
+  const failedAssertionSteps = new Set(assertions.filter((a) => !a.pass).map((a) => a.stepId));
   const falsePositiveSteps = stepEnds
     .filter((s) => s.ok && failedAssertionSteps.has(s.stepId))
     .map((s) => s.stepId);
@@ -353,7 +351,12 @@ function computeFixtureCoverage(
   const falseNegatives: CampaignMetrics["falseNegatives"] = [];
   const perFixtureAcc = new Map<
     string,
-    { entry: ExpectedTierEntry; observed: TierHistogram; runs: number; fn: PerFixtureMetrics["falseNegativeSteps"] }
+    {
+      entry: ExpectedTierEntry;
+      observed: TierHistogram;
+      runs: number;
+      fn: PerFixtureMetrics["falseNegativeSteps"];
+    }
   >();
 
   for (const raw of raws) {
@@ -391,9 +394,7 @@ function computeFixtureCoverage(
     const acc = perFixtureAcc.get(entry.fixture);
     if (acc === undefined) continue;
     const observedMax = maxTier(acc.observed);
-    const expectedTierHit = TIERS.some(
-      (t) => acc.observed[t] > 0 && entry.tiers.includes(t),
-    );
+    const expectedTierHit = TIERS.some((t) => acc.observed[t] > 0 && entry.tiers.includes(t));
     perFixture.push({
       fixture: entry.fixture,
       flowId: entry.flowId,

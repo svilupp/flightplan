@@ -7,6 +7,8 @@
 // registry merge. (The one SDK-touching test lives in `provider.test.ts`, isolated.)
 
 import { describe, expect, test } from "bun:test";
+import type { AiCallEvent } from "../artifacts/events.ts";
+import type { Config } from "../config/types.ts";
 import {
   MockDriver,
   makeFailureBatch,
@@ -15,16 +17,13 @@ import {
   makeSnapshot,
   makeSuccessBatch,
 } from "../driver/index.ts";
-import type { Config } from "../config/types.ts";
-import type { Step } from "../flow/types.ts";
-import type { AiJudgeAssertion } from "../flow/types.ts";
-import type { AiCallEvent } from "../artifacts/events.ts";
-import { resolveStep } from "../ladder/orchestrator.ts";
+import type { AiJudgeAssertion, Step } from "../flow/types.ts";
 import type { ResolveContext, StepExecution } from "../ladder/index.ts";
+import { resolveStep } from "../ladder/orchestrator.ts";
 import type { AdvisoryVerdict } from "../types.ts";
-import { createAiRuntime } from "./runtime.ts";
-import { resolveRegistry, DEFAULT_MODEL_REGISTRY } from "./registry.ts";
 import { BudgetExceededError } from "./budget.ts";
+import { DEFAULT_MODEL_REGISTRY, resolveRegistry } from "./registry.ts";
+import { createAiRuntime } from "./runtime.ts";
 import type { AiCallSink, GenerateFn, GenerateRequest } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -61,7 +60,11 @@ function makeFakeGenerate(responses: FakeResponse[]): { fn: GenerateFn; calls: G
   return { fn, calls };
 }
 
-function buildRuntime(generate: GenerateFn, sink: AiCallSink, config: Pick<Config, "ai" | "run"> = {}) {
+function buildRuntime(
+  generate: GenerateFn,
+  sink: AiCallSink,
+  config: Pick<Config, "ai" | "run"> = {},
+) {
   return createAiRuntime({ config, generate, aiWriter: sink });
 }
 
@@ -83,7 +86,9 @@ describe("L2 resolver — L1 escalates, resolver picks index 0, action succeeds"
     const d = new MockDriver();
     d.setSnapshot(
       makeSnapshot({
-        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Create order" })],
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "button", name: "Create order" }),
+        ],
       }),
     );
     // The AI tier now ranks via the driver's native resolveAll (not Flightplan's own matcher).
@@ -103,7 +108,7 @@ describe("L2 resolver — L1 escalates, resolver picks index 0, action succeeds"
     expect(execution.strategy).toBe("role_name");
     expect(execution.durableSelector).toBe("role:button:Create order");
     expect(execution.signatureBasis).toBeDefined();
-    expect(execution.candidates && execution.candidates.length).toBeGreaterThan(0);
+    expect(execution.candidates?.length).toBeGreaterThan(0);
     expect(execution.pinnedLabel).toBe("Create order"); // carried for ai_pick labeling
 
     expect(sink.events).toHaveLength(1);
@@ -155,13 +160,17 @@ describe("L3 vision — resolver requests a screenshot, vision resolves", () => 
     const d = new MockDriver();
     d.setSnapshot(
       makeSnapshot({
-        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Delete" })],
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "button", name: "Delete" }),
+        ],
       }),
     );
     // L3 re-snapshots and re-ranks via the driver's native resolveAll. "Delete" scores below L1's
     // 0.4 floor for intent "trash icon" so L1 escalates WITHOUT acting, but stays in the ranked list
     // so L3 vision has a candidate to pick.
-    d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Delete", score: 0.3 })]);
+    d.setResolveAll([
+      makeRankedCandidate({ ref: "e1", role: "button", name: "Delete", score: 0.3 }),
+    ]);
     d.setSignature("http://x/icons|sig");
     // L1 finds no plausible target ("Delete" vs intent "trash icon" scores below L1's 0.4 floor),
     // so it escalates WITHOUT acting (no batch). L2 returns screenshot_needed (no batch). The only
@@ -176,7 +185,10 @@ describe("L3 vision — resolver requests a screenshot, vision resolves", () => 
     ]);
     const rt = buildRuntime(fn, sink);
 
-    const { execution } = await resolveStep(clickStep({ target: "trash icon" }), ctxFor(d, rt.hooks));
+    const { execution } = await resolveStep(
+      clickStep({ target: "trash icon" }),
+      ctxFor(d, rt.hooks),
+    );
 
     expect(execution.ok).toBe(true);
     expect(execution.tier).toBe("L3");
@@ -234,15 +246,20 @@ describe("L4 advisor — produces each verdict kind, terminal + attached", () =>
 // ---------------------------------------------------------------------------
 
 describe("ai_judge — routing follows the modality", () => {
-  const judgeAssertion = (over: Partial<AiJudgeAssertion> = {}): AiJudgeAssertion =>
-    ({ type: "ai_judge", prompt: "An order-confirmation is shown.", ...over }) as AiJudgeAssertion;
+  const judgeAssertion = (over: Partial<AiJudgeAssertion> = {}): AiJudgeAssertion => ({
+    type: "ai_judge",
+    prompt: "An order-confirmation is shown.",
+    ...over,
+  });
 
   test("inputs include screenshot → vision path (screenshot + role:'judge')", async () => {
     const d = new MockDriver();
     d.setScreenshot("BASE64SHOT");
     d.setSnapshot(makeSnapshot({ text: "Order confirmed" }));
     const sink = new RecordingSink();
-    const { fn, calls } = makeFakeGenerate([{ output: { pass: true, reason: "confirmation visible" } }]);
+    const { fn, calls } = makeFakeGenerate([
+      { output: { pass: true, reason: "confirmation visible" } },
+    ]);
     const rt = buildRuntime(fn, sink);
 
     const result = await rt.judge(judgeAssertion({ inputs: ["text", "screenshot"] }), {
@@ -266,7 +283,9 @@ describe("ai_judge — routing follows the modality", () => {
     const d = new MockDriver();
     d.setSnapshot(makeSnapshot({ text: "No banner here" }));
     const sink = new RecordingSink();
-    const { fn, calls } = makeFakeGenerate([{ output: { pass: false, reason: "no confirmation" } }]);
+    const { fn, calls } = makeFakeGenerate([
+      { output: { pass: false, reason: "no confirmation" } },
+    ]);
     const rt = buildRuntime(fn, sink);
 
     const result = await rt.judge(judgeAssertion({ inputs: ["text"] }), {
@@ -289,7 +308,11 @@ describe("ai_judge — routing follows the modality", () => {
 describe("budgets — each ceiling throws from the right choke point", () => {
   test("max_model_calls:0 → BudgetExceededError('max_model_calls') from aiCall", async () => {
     const d = new MockDriver();
-    d.setSnapshot(makeSnapshot({ interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })] }));
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })],
+      }),
+    );
     d.setSignature("u|s");
     const sink = new RecordingSink();
     const { fn } = makeFakeGenerate([{ output: { decision: "pick", index: 0, confidence: 0.9 } }]);
@@ -308,7 +331,11 @@ describe("budgets — each ceiling throws from the right choke point", () => {
 
   test("max_screenshots:0 → BudgetExceededError('max_screenshots') before any screenshot", async () => {
     const d = new MockDriver();
-    d.setSnapshot(makeSnapshot({ interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })] }));
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })],
+      }),
+    );
     const sink = new RecordingSink();
     const { fn } = makeFakeGenerate([{ output: { decision: "pick", index: 0, confidence: 0.9 } }]);
     const rt = buildRuntime(fn, sink, { run: { max_screenshots: 0 } });
@@ -326,7 +353,11 @@ describe("budgets — each ceiling throws from the right choke point", () => {
 
   test("tiny max_cost_usd → BudgetExceededError('max_cost_usd') after the call accrues cost", async () => {
     const d = new MockDriver();
-    d.setSnapshot(makeSnapshot({ interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })] }));
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })],
+      }),
+    );
     d.setSignature("u|s");
     const sink = new RecordingSink();
     // resolver cost for 10/5 tokens = 0.0000018 > 0.0000001 ceiling.
@@ -352,13 +383,20 @@ describe("budgets — each ceiling throws from the right choke point", () => {
 describe("cost aggregation — usageTotals matches fake tokens × registry pricing", () => {
   test("per-role rows + total are deterministic", async () => {
     const d = new MockDriver();
-    d.setSnapshot(makeSnapshot({ interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })] }));
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })],
+      }),
+    );
     d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Go" })]); // native ranking → L2 acts
     d.setSignature("u|s");
     d.enqueueBatchResult(makeSuccessBatch("role:button:Go")); // L2 acts
     const sink = new RecordingSink();
     const { fn } = makeFakeGenerate([
-      { output: { decision: "pick", index: 0, confidence: 0.9 }, usage: { inputTokens: 10, outputTokens: 5 } }, // resolver
+      {
+        output: { decision: "pick", index: 0, confidence: 0.9 },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      }, // resolver
       { output: { kind: "flake", reason: "x" }, usage: { inputTokens: 20, outputTokens: 10 } }, // advisor
     ]);
     const rt = buildRuntime(fn, sink);

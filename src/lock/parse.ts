@@ -16,10 +16,11 @@
 // Canonical references: PLAN.md §4 (lock format), §5 Phase 3 (read), §8 (lock-stale warning).
 
 import { z } from "zod";
-import { parseToml, TomlParseError, formatIssues } from "../config/parse.ts";
+import { formatIssues, parseToml, TomlParseError } from "../config/parse.ts";
 import { STRATEGIES } from "../types.ts";
-import { LOCK_VERSION } from "./types.ts";
+import { normalizeLock } from "./portfolio.ts";
 import type { LockFile } from "./types.ts";
+import { LOCK_VERSION } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Error
@@ -62,6 +63,20 @@ const LockCandidateSchema = z
   })
   .strict();
 
+/**
+ * One portfolio strategy entry (v2). `greens` is the per-strategy green count; `last_ok`/
+ * `last_drift` are ISO timestamps (validated as strings, parsed by `portfolio.ts`).
+ */
+const StrategyEntrySchema = z
+  .object({
+    kind: StrategySchema,
+    selector: z.string(),
+    greens: z.number().int().nonnegative(),
+    last_ok: z.string().optional(),
+    last_drift: z.string().optional(),
+  })
+  .strict();
+
 const LockPinnedChoiceSchema = z
   .object({
     strategy: StrategySchema,
@@ -71,18 +86,33 @@ const LockPinnedChoiceSchema = z
   })
   .strict();
 
+/**
+ * The advisory memory sub-table (`[targets.memory]`, DESIGN §4). Both fields optional: an old lock
+ * has no `memory` at all; a note may exist without a timestamp (treated as stale on load).
+ */
+const TargetMemorySchema = z
+  .object({
+    note: z.string().optional(),
+    note_updated: z.string().optional(),
+  })
+  .strict();
+
 const LockTargetSchema = z
   .object({
     step: z.string().min(1),
     target: z.string(),
     kind: z.literal("ai_pick").optional(),
     match: LockMatchSchema,
+    // v2 — the ranked strategy portfolio.
+    strategies: z.array(StrategyEntrySchema).optional(),
+    pinned_choice: LockPinnedChoiceSchema.optional(),
+    memory: TargetMemorySchema.optional(),
+    last_seen: z.string().optional(),
+    // v1 (pre-portfolio) — accepted on load for auto-migration; never written by v2.
     selector: z.string().optional(),
     strategy: StrategySchema.optional(),
     candidates: z.array(LockCandidateSchema).optional(),
-    pinned_choice: LockPinnedChoiceSchema.optional(),
     green_runs: z.number().int().nonnegative().optional(),
-    last_seen: z.string().optional(),
   })
   .strict();
 
@@ -122,8 +152,18 @@ export function emptyLock(source: string, source_hash: string, description = "")
 /**
  * Parse + validate lock TOML already read from disk (pure; useful for tests and round-trip
  * checks). Throws {@link LockParseError} on bad TOML or a schema violation.
+ *
+ * The parsed lock is NORMALIZED into the v2 strategy-portfolio shape before it is returned
+ * (`normalizeLock`): a v1 lock (winner + candidates + green_runs) auto-migrates in memory, so
+ * every caller — L0 lookup, the write-back session, tests — sees the portfolio form regardless of
+ * the on-disk version. `now` (defaulting to `Date.now`) drives the initial ranking's recency
+ * weighting and is injectable for deterministic tests.
  */
-export function parseLockFile(sourceText: string, path: string): LockFile {
+export function parseLockFile(
+  sourceText: string,
+  path: string,
+  now: () => number = Date.now,
+): LockFile {
   let data: unknown;
   try {
     data = parseToml(sourceText, path);
@@ -143,7 +183,7 @@ export function parseLockFile(sourceText: string, path: string): LockFile {
       result.error.issues,
     );
   }
-  return result.data;
+  return normalizeLock(result.data, now());
 }
 
 /**
@@ -160,11 +200,12 @@ export function parseLockFile(sourceText: string, path: string): LockFile {
 export async function loadLockFile(
   path: string,
   fresh?: { source?: string; source_hash?: string; description?: string },
+  now: () => number = Date.now,
 ): Promise<LockFile> {
   const file = Bun.file(path);
   if (!(await file.exists())) {
     return emptyLock(fresh?.source ?? path, fresh?.source_hash ?? "", fresh?.description ?? "");
   }
   const sourceText = await file.text();
-  return parseLockFile(sourceText, path);
+  return parseLockFile(sourceText, path, now);
 }

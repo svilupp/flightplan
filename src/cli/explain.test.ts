@@ -9,7 +9,7 @@
 // Temp-dir pattern mirrors the runner/lock tests (mkdtemp under os.tmpdir, afterAll cleanup).
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,8 +26,8 @@ import type {
   StepStartEvent,
   TraceEvent,
 } from "../artifacts/index.ts";
-import { parseArgs } from "./index.ts";
 import { buildExplainJson, formatExplainReport, loadRun, runExplain } from "./explain.ts";
+import { parseArgs } from "./index.ts";
 
 // ---------------------------------------------------------------------------
 // Temp-dir + artifact helpers
@@ -43,7 +43,7 @@ afterAll(async () => {
   await Promise.all(tmpDirs.map((d) => rm(d, { recursive: true, force: true })));
 });
 
-const jsonl = (events: object[]): string => events.map((e) => JSON.stringify(e)).join("\n") + "\n";
+const jsonl = (events: object[]): string => `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
 
 /** Write a run directory; only the files passed are created (so AI-less runs omit ai/trace). */
 async function writeRunDir(files: {
@@ -227,7 +227,11 @@ describe("explain — full AI run", () => {
       run_dir: "(set below)",
       failed_step: "submit",
       failed_assertions: [
-        { step: "submit", type: "text", detail: 'expected text "Order created" but found "Server error"' },
+        {
+          step: "submit",
+          type: "text",
+          detail: 'expected text "Order created" but found "Server error"',
+        },
       ],
       advisory_verdict: "intent_changed",
       healed_steps: ["fill_name"],
@@ -242,6 +246,8 @@ describe("explain — full AI run", () => {
         { role: "advisor", model: "z-ai/glm-5.2", calls: 1, cost_usd: 0.000629 },
       ],
       proposed_patch_path: "proposed-patches/submit.patch",
+      replan_count: 0,
+      repaired_steps: [],
       steps: [],
     };
 
@@ -291,7 +297,7 @@ describe("explain — full AI run", () => {
 
   test("--json emits a machine-readable diagnosis with the key fields", async () => {
     const dir = await buildFullRun();
-    const data = buildExplainJson(await loadRun(dir)) as Record<string, unknown>;
+    const data = buildExplainJson(await loadRun(dir));
     expect(data.verdict).toBe("failed");
     expect(data.exit_code).toBe(1);
     expect(data.drift_count).toBe(1);
@@ -302,9 +308,7 @@ describe("explain — full AI run", () => {
     expect(data.model_calls).toBe(3);
 
     // The same data is reachable through the command's --json path.
-    const { code, out } = await capture(() =>
-      runExplain(parseArgs(["explain", dir, "--json"])),
-    );
+    const { code, out } = await capture(() => runExplain(parseArgs(["explain", dir, "--json"])));
     expect(code).toBe(0);
     expect(JSON.parse(out).verdict).toBe("failed");
   });

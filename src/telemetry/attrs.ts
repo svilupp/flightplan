@@ -69,6 +69,7 @@ export function browserActionEventAttrs(e: BrowserActionEvent): SpanAttributes {
     selector_or_intent: e.selectorOrIntent,
     selector_used: e.selectorUsed,
     strategy: e.strategy,
+    agreement: e.agreement,
     ok: e.ok,
     failure_reason: e.failureReason,
     covering_element: e.coveringElement,

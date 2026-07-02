@@ -1,6 +1,6 @@
 version = 1
 source = "examples/flows/async.toml"
-source_hash = "sha256:01cd636dde350d8ef9885066a21d48a918054e12961f408951b648e8d798452f"
+source_hash = "sha256:529de3c7106a4ae25c0b486a9b0e6937e94f5b8a2697f53e0c31696a6746c23f"
 description = "Trigger the async action and poll for the late-rendered result"
 
 [[targets]]

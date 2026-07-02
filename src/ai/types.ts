@@ -10,14 +10,13 @@
 // PROPOSAL_v1.md "Advisory verdict (typed)" / "AI judge".
 
 import type { z } from "zod";
-import type { ResolveContext, StepExecution } from "../ladder/types.ts";
-import type { Step } from "../flow/types.ts";
-import type { ModelRoleName } from "../types.ts";
-import type { Config } from "../config/types.ts";
 import type { AiCallEvent, AiCallRole, ModelUsage } from "../artifacts/events.ts";
 import type { AiJudgeOptions, AssertionResult } from "../assert/types.ts";
-import type { AiJudgeAssertion } from "../flow/types.ts";
+import type { Config } from "../config/types.ts";
+import type { AiJudgeAssertion, Step } from "../flow/types.ts";
+import type { ResolveContext, StepExecution } from "../ladder/types.ts";
 import type { Redactor } from "../redaction/index.ts";
+import type { ModelRoleName } from "../types.ts";
 import type { ResolvedModelRole } from "./registry.ts";
 
 // ---------------------------------------------------------------------------
@@ -67,6 +66,16 @@ export interface GenerateRequest {
    * omit it, in which case `defaultGenerate` falls back to `DEFAULT_TIMEOUT_MS`.
    */
   timeoutMs?: number;
+  /**
+   * OPTIONAL prompt-cache marker (PLAN_v003 v003-6, MANDATORY for the incremental replan loop —
+   * uncached measured 3.85× the cost). When set, the caller has built the prompt as a STABLE PREFIX
+   * (the cacheable part — the planner goal + instructions) followed by a volatile suffix (the
+   * current page). `prefix` is the byte-stable text the provider should mark cacheable;
+   * `key` is the cache identity (the flow goal), so the cached prefix is REUSED across replans in a
+   * run and INVALIDATED on a goal change, NOT on page nav (PLAN_v003 §7 leaning). The provider
+   * (`provider.ts`) owns the SDK-specific cache-control breakpoint; every other file stays SDK-free.
+   */
+  cache?: { prefix: string; key: string };
 }
 
 /** Token usage (and optional provider-reported cost) from one model call. */
@@ -108,8 +117,8 @@ export interface AiCallSink {
 // Tier decision/verdict types (the validated outputs, re-exported from schemas)
 // ---------------------------------------------------------------------------
 
-export type { ResolverDecision, JudgeVerdict } from "./schemas.ts";
 export type { AdvisoryVerdict } from "../types.ts";
+export type { JudgeVerdict, ResolverDecision } from "./schemas.ts";
 
 // ---------------------------------------------------------------------------
 // AiCallContext — the per-call inputs `aiCall` consumes
@@ -130,6 +139,12 @@ export interface AiCallContext<S extends z.ZodType = z.ZodType> {
   maxOutputTokens: number;
   prompt?: string;
   messages?: AiMessage[];
+  /**
+   * OPTIONAL prompt-cache marker (PLAN_v003 v003-6). Threaded verbatim into
+   * {@link GenerateRequest.cache} so the provider marks the stable prefix cacheable. See the field
+   * doc on `GenerateRequest.cache`.
+   */
+  cache?: { prefix: string; key: string };
   /** Map the validated output → the `ai_call` event's `outcome` + optional `advisoryVerdict`. */
   deriveOutcome?: (output: z.infer<S>) => {
     outcome?: string;
@@ -199,8 +214,38 @@ export interface AiRuntime {
   hooks: AiHooksImpl;
   /** The `ai_judge` oracle wired into `assertCtx.aiJudge`. */
   judge(assertion: AiJudgeAssertion, opts: AiJudgeOptions): Promise<AssertionResult>;
+  /**
+   * The L5 path-repair planner (PLAN_v003 v003-6). Bound to `planner-l5.ts` around the same runtime
+   * slice `aiCall` uses, so the runner's `runPathRepair` can gather the current page + call the
+   * cheap arm + (on the escalation signal) the capable arm — all offline-testable through the
+   * `generate` seam. Present whenever a runtime exists; the runner gates its USE on
+   * `[plan].enabled` + a real divergence, so a deterministic (no-AI-runtime) run never touches it.
+   */
+  planner: PlannerRuntime;
   /** The run-level cost rollup Round 2 folds into `run_end` totals + `buildSummary`. */
   usageTotals(): { total_cost_usd: number; model_usage: ModelUsage[] };
+}
+
+/**
+ * The bound L5 planner surface the runtime exposes (PLAN_v003 v003-6). Mirrors the free functions in
+ * `planner-l5.ts`, each pre-bound to the runtime slice + registry so the runner needs no `ai/`
+ * internals. `gatherPlannerPage` builds the current-page context (URL + candidates); `planRepair`
+ * calls the CHEAP arm; `planRepairEscalated` calls the ESCALATION-ONLY capable arm.
+ */
+export interface PlannerRuntime {
+  gatherPlannerPage(
+    divergedStep: Step,
+    ctx: ResolveContext,
+    recent: import("./planner-l5.ts").RecentAction[],
+  ): Promise<import("./planner-l5.ts").PlannerPageContext>;
+  planRepair(
+    goal: string,
+    opts: import("./planner-l5.ts").PlanRepairOpts,
+  ): Promise<import("./planner-l5.ts").PlanRepairResult>;
+  planRepairEscalated(
+    goal: string,
+    opts: import("./planner-l5.ts").PlanRepairOpts & { duel?: boolean },
+  ): Promise<import("./planner-l5.ts").PlanRepairResult>;
 }
 
 /** The concrete (all-present) Ai hooks the runtime exposes (the orchestrator's `AiHooks`). */
@@ -208,4 +253,12 @@ export interface AiHooksImpl {
   resolveL2(step: Step, prior: StepExecution, ctx: ResolveContext): Promise<StepExecution>;
   resolveL3(step: Step, prior: StepExecution, ctx: ResolveContext): Promise<StepExecution>;
   classifyL4(step: Step, prior: StepExecution, ctx: ResolveContext): Promise<StepExecution>;
+  /**
+   * L3 vision BATCH (PLAN_v003 §4 v003-3): resolve ≥2 same-page vision targets from ONE screenshot
+   * + ONE vision call, returning one `StepExecution` per input step (same order) with per-target
+   * fallback to a single {@link resolveL3} inside the callback. Bound to `vision-l3.ts`'s
+   * `resolveBatchL3`, this is the `BatchVisionResolve` the runner injects into `resolveVisionBatch`
+   * so the ladder keeps importing NOTHING from `ai/`.
+   */
+  resolveBatchL3(steps: Step[], ctx: ResolveContext): Promise<StepExecution[]>;
 }

@@ -8,13 +8,8 @@
 // PROPOSAL_v1.md "Step vocabulary" / "Assertion vocabulary" / "AI judge" / "Composition".
 
 import { z } from "zod";
-import {
-  AI_JUDGE_INPUTS,
-  ASSERT_WHENS,
-  DETERMINISTIC_ASSERT_TYPES,
-  FILE_KINDS,
-} from "../types.ts";
 import { ConfigSchema, RunLimitsSchema } from "../config/schema.ts";
+import { AI_JUDGE_INPUTS, ASSERT_WHENS, FILE_KINDS } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Assertion — discriminated union on `type` (PLAN.md §4 AssertType).
@@ -118,6 +113,20 @@ export const AssertionSchema = z.discriminatedUnion("type", [
 // Step — discriminated union on `do` (PLAN.md §4 StepDo).
 // ---------------------------------------------------------------------------
 
+/**
+ * Control flow: `on_fail = { goto, max }`. When a step would otherwise FAIL the run (target
+ * resolution exhausts the ladder, or a post-assertion fails), control jumps to the step id in
+ * `goto` instead of failing. `goto = "self"` (or the step's own id) retries the same step. `max`
+ * caps how many times a step may be RE-ENTERED via a jump before the run fails normally (loop
+ * safety); omitted → default 1 extra entry. See `src/runner/runner.ts` for the jump semantics.
+ */
+export const OnFailSchema = z
+  .object({
+    goto: z.string().min(1),
+    max: z.number().int().positive().optional(),
+  })
+  .strict();
+
 /** Fields common to every step. */
 const stepCommon = {
   id: z.string().min(1),
@@ -125,17 +134,35 @@ const stepCommon = {
   assert: z.array(AssertionSchema).optional(),
   /** Optional per-step timeout override (PLAN.md §4 mentions per-step timeout_ms). */
   timeout_ms: z.number().int().positive().optional(),
+  /** Control flow: jump to another step (or retry `self`) instead of failing the run. */
+  on_fail: OnFailSchema.optional(),
 } as const;
 
-/** Fields shared by the NL-targeting actions (click / fill / select / ai_pick). */
+/** Fields shared by the locator-targeting actions (click / fill / select / ai_pick). */
 const targetingCommon = {
-  target: z.string().optional(), // NL target description
-  hints: z.array(z.string()).optional(), // explicit selector/text hints tried in L1
-  intent: z.string().optional(), // NL intent fed to fuzzy match + models
+  /** Ordered locator list (PLAN_v002 §1): selectors (`ref:`/`role:`/`text:`/`css:`/`[...]`
+   * prefixed) tried in author order at L1, plus at most one natural-language query that feeds
+   * fuzzy ranking + L2/L3. A bare string is a one-entry list. See `./normalize-target.ts`. */
+  target: z.union([z.string(), z.array(z.string())]).optional(),
+  /** Per-step L0 cache-match mode (L0 cache-hit quality, Layer 2). Overrides the flow-level
+   * `[cache] signature`. `struct-only` trusts a cached recipe when the role-tree skeleton is
+   * unchanged even if the (masked) text drifts. Omitted → the flow/config default. */
+  cache: z.enum(["full", "struct-only"]).optional(),
+  /** Hard tier hint (PLAN_v003 §2 (c) / §4 v003-3). `"vision"` marks a target text tiers can't
+   * resolve (an unlabeled icon / Nth glyph) so the runner routes it STRAIGHT to vision (L3),
+   * skipping the L2 text tier — and, when ≥2 consecutive vision-hinted targeting steps sit on the
+   * SAME page, batches them into ONE screenshot + ONE vision call. Omitted → the normal cheap-first
+   * ladder (L0→L1→L2→L3→L4). */
+  tier_hint: z.literal("vision").optional(),
 } as const;
 
 export const GotoStepSchema = z
-  .object({ ...stepCommon, do: z.literal("goto"), url: z.string().min(1) })
+  .object({
+    ...stepCommon,
+    do: z.literal("goto"),
+    url: z.string().min(1),
+    secret: z.boolean().optional(), // secret → the (templated) URL is redacted everywhere
+  })
   .strict();
 
 export const ClickStepSchema = z
@@ -158,6 +185,7 @@ export const SelectStepSchema = z
     do: z.literal("select"),
     ...targetingCommon,
     value: z.string(), // select requires a value to choose
+    secret: z.boolean().optional(), // secret → the (templated) value is redacted everywhere
   })
   .strict();
 
@@ -186,6 +214,21 @@ export const AiPickStepSchema = z
   })
   .strict();
 
+/**
+ * run — execute another flow at this position (PLAN_v002 §3, v002-5..v002-9). `flow` names an
+ * imported flow id (recommended) or a direct path (contains `/` or ends `.toml` — v002-6).
+ * `with` passes inputs to the child, templated against the parent's scope. Expansion is static
+ * at load time (v002-8) — see `./run.ts` for the flattening pass.
+ */
+export const RunStepSchema = z
+  .object({
+    ...stepCommon,
+    do: z.literal("run"),
+    flow: z.string().min(1),
+    with: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
 export const StepSchema = z.discriminatedUnion("do", [
   GotoStepSchema,
   ClickStepSchema,
@@ -195,24 +238,16 @@ export const StepSchema = z.discriminatedUnion("do", [
   WaitStepSchema,
   AssertStepSchema,
   AiPickStepSchema,
+  RunStepSchema,
 ]);
 
 // ---------------------------------------------------------------------------
-// Imports — string | string[] | [[imports]] tables (PROPOSAL "Composition").
+// Imports — string | string[] (PLAN_v002 v002-5: imports are a LIBRARY — they register flow
+// ids and compose locks, never execute; inputs are passed at each `run` site. The old
+// [[imports]]+`with` table form is dropped; `imports/no-with` lints the migration.)
 // ---------------------------------------------------------------------------
 
-export const ImportTableSchema = z
-  .object({
-    module: z.string().min(1),
-    with: z.record(z.string(), z.string()).optional(),
-  })
-  .strict();
-
-export const ImportsSchema = z.union([
-  z.string().min(1),
-  z.array(z.string().min(1)),
-  z.array(ImportTableSchema),
-]);
+export const ImportsSchema = z.union([z.string().min(1), z.array(z.string().min(1))]);
 
 // ---------------------------------------------------------------------------
 // FlowFile — header + body (PLAN.md §4).
@@ -225,6 +260,13 @@ export const FlowFileSchema = z
     kind: z.literal(FILE_KINDS[1]), // "flow"
     id: z.string().min(1),
     description: z.string().min(1),
+    /**
+     * The durable WHAT the flow accomplishes (PLAN_v003 §4 Phase C / v003-6). Load-bearing for the
+     * L5 path-repair planner's NON-LOCAL repairs: a divergence far from the intent needs the goal to
+     * re-anchor. Optional — when absent it defaults to `description` at resolve time (see
+     * `resolveFlowGoal`), so an author who wrote only a `description` still gets a usable goal.
+     */
+    goal: z.string().min(1).optional(),
     // composition
     imports: ImportsSchema.optional(),
     setup: z.string().min(1).optional(),

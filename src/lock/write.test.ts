@@ -19,15 +19,19 @@ function exec(selector: string, strategy: Strategy = "role_name"): StepExecution
   return { ok: true, tier: "L1", durableSelector: selector, strategy, escalate: false };
 }
 
+/** An existing v2 portfolio target whose winner is `selector`. */
 function existingTarget(selector: string, strategy: Strategy = "role_name"): LockTarget {
   return {
     step: "s1",
     target: "the button",
     match: MATCH,
-    selector,
-    strategy,
-    green_runs: 2,
+    strategies: [{ kind: strategy, selector, greens: 2, last_ok: "1970-01-01T00:00:00.000Z" }],
   };
+}
+
+/** The winner selector of a decision's target portfolio. */
+function winnerSelector(t: LockTarget | undefined): string | undefined {
+  return t?.strategies?.[0]?.selector;
 }
 
 const STEP = { id: "s1", target: "the button" };
@@ -72,7 +76,7 @@ describe("decideLockWrite — no-write paths", () => {
     expect(d.healed).toBe(false);
   });
 
-  test("existing recipe, same winner → not a heal, no write", () => {
+  test("existing recipe, same winner → not a heal (portfolio track records still update)", () => {
     const d = decideLockWrite({
       mode: "auto",
       existing: existingTarget("role:button:Go"),
@@ -83,8 +87,34 @@ describe("decideLockWrite — no-write paths", () => {
       inferStrategy,
       now: NOW,
     });
+    // Winner unchanged → NOT a heal. But the portfolio IS persisted so `greens` accumulates.
     expect(d.healed).toBe(false);
-    expect(d.target).toBeUndefined();
+    expect(winnerSelector(d.target)).toBe("role:button:Go");
+    expect(d.target?.strategies?.[0]?.greens).toBe(3); // 2 → 3 on this green
+  });
+
+  test("a FROZEN L0 hit is read-only (no track-record write)", () => {
+    const d = decideLockWrite({
+      mode: "frozen",
+      existing: existingTarget("role:button:Go"),
+      resolvedAtL0: true,
+      step: STEP,
+      execution: {
+        ...exec("role:button:Go"),
+        tier: "L0",
+        portfolio: {
+          winner: { kind: "role_name", selector: "role:button:Go" },
+          agreed: [{ kind: "role_name", selector: "role:button:Go" }],
+          drifted: [],
+          agreement: "1/1",
+        },
+      },
+      match: MATCH,
+      inferStrategy,
+      now: NOW,
+    });
+    expect(d.healed).toBe(false);
+    expect(d.target).toBeUndefined(); // portfolio consulted, never written
   });
 });
 
@@ -102,8 +132,8 @@ describe("decideLockWrite — first learn", () => {
     });
     expect(d.healed).toBe(false);
     expect(d.fail).toBe(false);
-    expect(d.target?.selector).toBe("role:button:Go");
-    expect(d.target?.green_runs).toBe(1);
+    expect(winnerSelector(d.target)).toBe("role:button:Go");
+    expect(d.target?.strategies?.[0]?.greens).toBe(1);
     expect(d.target?.match).toEqual(MATCH);
   });
 });
@@ -120,12 +150,13 @@ describe("decideLockWrite — heal (drift)", () => {
       now: NOW,
     }) as const;
 
-  test("auto → heal, persistable target, prior winner demoted to candidate", () => {
+  test("auto → heal, new winner leads the portfolio, prior winner demoted (still present)", () => {
     const d = decideLockWrite({ mode: "auto", ...drift() });
     expect(d.healed).toBe(true);
     expect(d.fail).toBe(false);
-    expect(d.target?.selector).toBe("role:button:NewName");
-    expect(d.target?.candidates?.some((c) => c.selector === "role:button:OldName")).toBe(true);
+    expect(winnerSelector(d.target)).toBe("role:button:NewName");
+    // The prior winner is DEMOTED, not deleted — it stays in the portfolio (drift resets confidence).
+    expect(d.target?.strategies?.some((s) => s.selector === "role:button:OldName")).toBe(true);
   });
 
   test("--frozen → heal reported AND run must fail", () => {
@@ -133,7 +164,7 @@ describe("decideLockWrite — heal (drift)", () => {
     expect(d.healed).toBe(true);
     expect(d.fail).toBe(true);
     // The merged target is still produced (heal-in-memory); the session gates disk persistence.
-    expect(d.target?.selector).toBe("role:button:NewName");
+    expect(winnerSelector(d.target)).toBe("role:button:NewName");
   });
 
   test("--no-lock-write → heal reported, run NOT failed", () => {

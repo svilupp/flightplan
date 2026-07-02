@@ -5,8 +5,8 @@
 import { describe, expect, test } from "bun:test";
 import { MockDriver } from "../driver/mock-driver.ts";
 import { makeInteractiveElement, makeSnapshot } from "../driver/mock-fixtures.ts";
-import type { Assertion } from "../flow/types.ts";
 import type { PageSnapshot } from "../driver/types.ts";
+import type { Assertion } from "../flow/types.ts";
 import { FakeClock } from "./clock.ts";
 import {
   isPhase4NotImplemented,
@@ -48,10 +48,7 @@ describe("runAssertion — dispatch + phase stamping", () => {
 
   test("stamps phase 'before' when when='before'", async () => {
     const d = new MockDriver().setSnapshot(SNAP);
-    const r = await runAssertion(
-      { type: "url", url: "/checkout", when: "before" },
-      ctx(d),
-    );
+    const r = await runAssertion({ type: "url", url: "/checkout", when: "before" }, ctx(d));
     expect(r.pass).toBe(true);
     expect(r.when).toBe("before");
   });

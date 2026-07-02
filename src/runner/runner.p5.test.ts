@@ -14,26 +14,25 @@
 // NO real browser, NO network, NO API key, NO real sleeping, NO telemetry token.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import type { GenerateFn, GenerateRequest } from "../ai/index.ts";
+import { createAiRuntime } from "../ai/index.ts";
 import { FakeClock } from "../assert/clock.ts";
+import type { Config, ConnectConfig, ResolvedConfig } from "../config/index.ts";
+import { resolveConfigWithDefaults } from "../config/index.ts";
 import {
   MockDriver,
-  makeSnapshot,
-  makeInteractiveElement,
-  makeSuccessBatch,
   makeFailureBatch,
+  makeInteractiveElement,
+  makeRankedCandidate,
+  makeSnapshot,
+  makeSuccessBatch,
 } from "../driver/index.ts";
-import type { ConnectConfig } from "../config/index.ts";
-import { resolveConfigWithDefaults } from "../config/index.ts";
-import type { Config, ResolvedConfig } from "../config/index.ts";
 import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
-import { createAiRuntime } from "../ai/index.ts";
-import type { GenerateFn, GenerateRequest } from "../ai/index.ts";
-import { FakeSink } from "../telemetry/index.ts";
 import { REDACTED } from "../redaction/index.ts";
+import { FakeSink } from "../telemetry/index.ts";
 import { runFlow } from "./runner.ts";
 import type { AiRuntimeFactory, RunOptions } from "./types.ts";
 
@@ -140,7 +139,11 @@ function makeFakeGenerate(
     calls.push(req);
     const r = responses[Math.min(i, responses.length - 1)] ?? { output: {} };
     i += 1;
-    return { output: r.output, model: req.models[0]!, usage: r.usage ?? { inputTokens: 10, outputTokens: 5 } };
+    return {
+      output: r.output,
+      model: req.models[0]!,
+      usage: r.usage ?? { inputTokens: 10, outputTokens: 5 },
+    };
   };
   return { fn, calls };
 }
@@ -172,9 +175,7 @@ url = "http://localhost:3000/login"
 [[steps]]
 id = "enter_pw"
 do = "fill"
-target = "the password field"
-hints = ["Password"]
-intent = "type the password"
+target = ["text:Password", "type the password"]
 value = "\${inputs.password}"
 secret = true
 `;
@@ -183,7 +184,9 @@ secret = true
     return makeSnapshot({
       url: "http://localhost:3000/login",
       text: "Password",
-      interactiveElements: [makeInteractiveElement({ ref: "e1", role: "textbox", name: "Password" })],
+      interactiveElements: [
+        makeInteractiveElement({ ref: "e1", role: "textbox", name: "Password" }),
+      ],
     });
   }
 
@@ -206,6 +209,58 @@ secret = true
     expect(all).not.toContain(SECRET);
   });
 
+  test("a secret:true SELECT value never leaks into artifacts (B7 — not only fills)", async () => {
+    // Before the B7 fix `gatherSecretValues` scanned only `fill` steps, so a secret value used in a
+    // `select` reached run.jsonl / trace.jsonl / summary.json in cleartext. This asserts the leak
+    // is closed for a select exactly as it is for a fill.
+    const SELECT_SECRET = "SECRET-PLAN-TOKEN-9Z";
+    const SELECT_FLOW = `
+version = 1
+kind = "flow"
+id = "p5.selectsecret"
+description = "secret select redaction"
+
+[inputs]
+plan = "${SELECT_SECRET}"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/plan"
+
+[[steps]]
+id = "choose_plan"
+do = "select"
+target = ["text:Plan", "the plan dropdown"]
+value = "\${inputs.plan}"
+secret = true
+`;
+    const { flowPath, outDir } = await writeFlow(SELECT_FLOW);
+    const driver = new MockDriver();
+    driver.setSnapshot(
+      makeSnapshot({
+        url: "http://localhost:3000/plan",
+        text: "Plan",
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "combobox", name: "Plan" }),
+        ],
+      }),
+    );
+    driver.setBatchResult(makeSuccessBatch("role:combobox:Plan", "select"));
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+    expect(result.summary.verdict).toBe("passed");
+
+    // run_start.inputs masks the secret-backing input wholesale.
+    const runEvents = await readJsonl(join(result.runDir, "run.jsonl"));
+    const runStart = runEvents.find((e) => e.type === "run_start") as Record<string, any>;
+    expect(runStart.inputs.plan).toBe(REDACTED);
+
+    // The raw secret appears in NO artifact file (this failed before the fix).
+    const all = await readAllRunFiles(result.runDir);
+    expect(all).not.toContain(SELECT_SECRET);
+  });
+
   test("an assertion's observed/expected value never leaks a secret into run.jsonl / summary.json / telemetry", async () => {
     // The deterministic evaluators echo the configured `expected` AND the live observed DOM value
     // into the assertion message — the leak vector this test guards. A `value` assertion that
@@ -223,9 +278,7 @@ password = "${SECRET}"
 [[steps]]
 id = "enter_pw"
 do = "fill"
-target = "the password field"
-hints = ["Password"]
-intent = "type the password"
+target = ["text:Password", "type the password"]
 value = "\${inputs.password}"
 secret = true
 
@@ -264,9 +317,7 @@ text = "\${inputs.password}"
       run: { assert_timeout_ms: 50 },
       telemetry: { logfire: { enabled: true } },
     });
-    const result = await runFlow(
-      optsFor(flowPath, outDir, driver, cfg, { telemetrySink: sink }),
-    );
+    const result = await runFlow(optsFor(flowPath, outDir, driver, cfg, { telemetrySink: sink }));
 
     // The failing `text` assertion fails the run (eager + fail_on_assertion default true).
     expect(result.summary.verdict).toBe("failed");
@@ -319,17 +370,14 @@ token = "${TOKEN}"
 [[steps]]
 id = "fill_token"
 do = "fill"
-target = "the token field"
-hints = ["Token"]
+target = ["text:Token", "the token field"]
 value = "\${inputs.token}"
 secret = true
 
 [[steps]]
 id = "act"
 do = "click"
-target = "Create order"
-hints = ["Create order"]
-intent = "create the order"
+target = ["text:Create order", "create the order"]
 `;
     const { flowPath, outDir } = await writeFlow(FLOW);
     const driver = new MockDriver();
@@ -362,6 +410,84 @@ intent = "create the order"
     expect(typeof resolver!.redactedResponse).toBe("string");
     expect(resolver!.redactedResponse as string).toContain(REDACTED);
     // …and the raw secret appears NOWHERE in any artifact.
+    const all = await readAllRunFiles(result.runDir);
+    expect(all).not.toContain(TOKEN);
+  });
+
+  test("an AI-emitted note echoing a secret is REDACTED before it reaches the lock + ai.jsonl (DESIGN §4)", async () => {
+    const TOKEN = "SECRET-NOTE-TOKEN-4242";
+    const FLOW = `
+version = 1
+kind = "flow"
+id = "p5.notesecret"
+description = "note secret redaction"
+
+[inputs]
+token = "${TOKEN}"
+
+[[steps]]
+id = "fill_token"
+do = "fill"
+target = ["text:Token", "the token field"]
+value = "\${inputs.token}"
+secret = true
+
+[[steps]]
+id = "act"
+do = "click"
+target = ["text:Create order", "create the order"]
+`;
+    const { flowPath, outDir } = await writeFlow(FLOW);
+    const driver = new MockDriver();
+    driver.setSnapshot(
+      makeSnapshot({
+        url: "http://localhost:3000/order",
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "textbox", name: "Token" }),
+          makeInteractiveElement({ ref: "e2", role: "button", name: "Create order" }),
+        ],
+      }),
+    );
+    // L2 ranks via the driver's native resolveAll — give it the "Create order" candidate to pick.
+    driver.setResolveAll([
+      makeRankedCandidate({ ref: "e2", role: "button", name: "Create order" }),
+    ]);
+    driver.enqueueBatchResult(makeSuccessBatch("role:textbox:Token", "fill")); // fill_token L1
+    driver.enqueueBatchResult(makeFailureBatch("hidden")); // act L1 → escalate
+    driver.enqueueBatchResult(makeSuccessBatch("role:button:Create order")); // act L2 acts
+
+    // The resolver EMITS a note echoing the secret — it must be masked before it reaches the lock.
+    const { fn } = makeFakeGenerate([
+      {
+        output: {
+          decision: "pick",
+          index: 0,
+          confidence: 0.9,
+          note: `field was pre-filled with ${TOKEN}`,
+        },
+      },
+    ]);
+
+    const result = await runFlow(
+      optsFor(flowPath, outDir, driver, defaultConfig(), { aiRuntimeFactory: aiFactory(fn) }),
+    );
+    expect(result.summary.verdict).toBe("passed");
+
+    // The persisted lock file carries a REDACTED note on the `act` target (secret masked, note kept).
+    const lockPath = flowPath.replace(/\.toml$/, ".lock.toml");
+    const lockText = await readFile(lockPath, "utf8");
+    expect(lockText).not.toContain(TOKEN);
+    expect(lockText).toContain("«redacted»");
+    expect(lockText).toContain("[targets.memory]");
+    // Load with a clock near the FakeClock era (which stamped `note_updated`) so decay doesn't drop
+    // the just-written note; then assert the structured note is present + redacted.
+    const lock = await loadLockFile(lockPath, undefined, () => 0);
+    const act = lock.targets.find((t) => t.step === "act");
+    expect(act?.memory?.note).toBeDefined();
+    expect(act?.memory?.note).not.toContain(TOKEN);
+    expect(act?.memory?.note).toContain(REDACTED);
+
+    // ai.jsonl's redacted response also masks the note-echoed secret; the raw secret is nowhere.
     const all = await readAllRunFiles(result.runDir);
     expect(all).not.toContain(TOKEN);
   });
@@ -431,9 +557,7 @@ text = "Full name"
 [[steps]]
 id = "enter"
 do = "fill"
-target = "the full name field"
-hints = ["Full name"]
-intent = "type the name"
+target = ["text:Full name", "type the name"]
 value = "Jane"
 
 [[steps]]
@@ -451,7 +575,9 @@ inputs = ["text"]
     return makeSnapshot({
       url: "http://localhost:3000/wizard",
       text: "Full name Order confirmed",
-      interactiveElements: [makeInteractiveElement({ ref: "e1", role: "textbox", name: "Full name" })],
+      interactiveElements: [
+        makeInteractiveElement({ ref: "e1", role: "textbox", name: "Full name" }),
+      ],
     });
   }
 
@@ -538,9 +664,7 @@ url = "http://localhost:3000/app"
 [[steps]]
 id = "act"
 do = "click"
-target = "the primary button"
-hints = ["Primary"]
-intent = "click primary"
+target = ["text:Primary", "click primary"]
 `;
 
   function appSnapshot() {
@@ -558,7 +682,10 @@ intent = "click primary"
     driver.setVideoPath("/fake/video.webm");
     const sink = new FakeSink();
 
-    const cfg = configWith({ browser: { record: true }, telemetry: { logfire: { enabled: true } } });
+    const cfg = configWith({
+      browser: { record: true },
+      telemetry: { logfire: { enabled: true } },
+    });
     const result = await runFlow(optsFor(flowPath, outDir, driver, cfg, { telemetrySink: sink }));
 
     expect(result.summary.verdict).toBe("passed");
@@ -605,8 +732,7 @@ pw = "MEDIA-SECRET-9"
 [[steps]]
 id = "fill_pw"
 do = "fill"
-target = "the password field"
-hints = ["Password"]
+target = ["text:Password", "the password field"]
 value = "\${inputs.pw}"
 secret = true
 
@@ -620,7 +746,9 @@ url = "http://localhost:3000/next"
     driver.setSnapshot(
       makeSnapshot({
         url: "http://localhost:3000/login",
-        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "textbox", name: "Password" })],
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "textbox", name: "Password" }),
+        ],
       }),
     );
     driver.setBatchResult(makeSuccessBatch("role:textbox:Password", "fill"));
@@ -653,9 +781,7 @@ description = "login setup"
 [[steps]]
 id = "do_login"
 do = "click"
-target = "the login button"
-hints = ["Login"]
-intent = "click login"
+target = ["text:Login", "click login"]
 `;
   const LOGOUT_MODULE = `
 version = 1
@@ -679,9 +805,7 @@ teardown = "./logout.toml"
 [[steps]]
 id = "act"
 do = "click"
-target = "the primary button"
-hints = ["Primary"]
-intent = "click primary"
+target = ["text:Primary", "click primary"]
 `;
 
   function hooksSnapshot() {
@@ -727,7 +851,9 @@ intent = "click primary"
     const rootLock = pathOf("flow.toml").replace(/\.toml$/, ".lock.toml");
     await writeStaleLoginLock(loginLock);
 
-    const result = await runFlow(optsFor(pathOf("flow.toml"), outDir, hooksDriver(), defaultConfig()));
+    const result = await runFlow(
+      optsFor(pathOf("flow.toml"), outDir, hooksDriver(), defaultConfig()),
+    );
 
     expect(result.summary.verdict).toBe("passed");
     // Ordering: setup step runs before the main step (both recorded in the main summary).
@@ -742,10 +868,10 @@ intent = "click primary"
     expect(result.summary.healed_steps).toEqual(["do_login"]);
     expect(result.summary.drift_count).toBe(1);
     const healedLogin = await loadLockFile(loginLock);
-    expect(healedLogin.targets[0]?.selector).toBe("role:button:Login");
-    expect(healedLogin.targets[0]?.candidates?.some((c) => c.selector === "role:button:OldLogin")).toBe(
-      true,
-    );
+    expect(healedLogin.targets[0]?.strategies?.[0]?.selector).toBe("role:button:Login");
+    expect(
+      healedLogin.targets[0]?.strategies?.some((s) => s.selector === "role:button:OldLogin"),
+    ).toBe(true);
     // The root lock learned the main step only (no `do_login` leaked into it).
     const root = await loadLockFile(rootLock);
     expect(root.targets.map((t) => t.step)).toEqual(["act"]);
@@ -782,9 +908,7 @@ description = "shared module"
 [[steps]]
 id = "shared"
 do = "click"
-target = "the primary button"
-hints = ["Primary"]
-intent = "click primary"
+target = ["text:Primary", "click primary"]
 `;
     const ROOT = `
 version = 1
@@ -796,9 +920,7 @@ imports = "./mod.toml"
 [[steps]]
 id = "shared"
 do = "click"
-target = "the primary button"
-hints = ["Primary"]
-intent = "click primary"
+target = ["text:Primary", "click primary"]
 `;
     const { outDir, pathOf } = await writeFiles({ "flow.toml": ROOT, "mod.toml": MODULE });
 
@@ -807,8 +929,12 @@ intent = "click primary"
       d.setSnapshot(
         makeSnapshot({
           url: "http://localhost:3000/app",
-          accessibilityTree: [{ role: "main", ref: "n1", children: [{ role: "button", ref: "n2" }] }],
-          interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Primary" })],
+          accessibilityTree: [
+            { role: "main", ref: "n1", children: [{ role: "button", ref: "n2" }] },
+          ],
+          interactiveElements: [
+            makeInteractiveElement({ ref: "e1", role: "button", name: "Primary" }),
+          ],
         }),
       );
       d.setSignature("http://localhost:3000/app|stable");
@@ -818,7 +944,9 @@ intent = "click primary"
 
     // (1) Run the module STANDALONE so it learns its own `mod.lock.toml` with a valid match.
     const learn = await runFlow(
-      optsFor(pathOf("mod.toml"), outDir, primaryDriver(), defaultConfig(), { runId: "p5-learn-0001" }),
+      optsFor(pathOf("mod.toml"), outDir, primaryDriver(), defaultConfig(), {
+        runId: "p5-learn-0001",
+      }),
     );
     expect(learn.summary.verdict).toBe("passed");
     expect(learn.summary.steps[0]?.tier).toBe("L1"); // first-learn
@@ -828,10 +956,85 @@ intent = "click primary"
     // (2) Run the ROOT (which imports the module) against an IDENTICAL page → the root `shared` step
     //     misses its own (absent) lock but L0-hits the composed module recipe via the namespace.
     const run = await runFlow(
-      optsFor(pathOf("flow.toml"), outDir, primaryDriver(), defaultConfig(), { runId: "p5-import-0002" }),
+      optsFor(pathOf("flow.toml"), outDir, primaryDriver(), defaultConfig(), {
+        runId: "p5-import-0002",
+      }),
     );
     expect(run.summary.verdict).toBe("passed");
     expect(run.summary.steps[0]?.tier).toBe("L0"); // composed import recipe replayed at L0
     expect(run.summary.drift_count).toBe(0);
+  });
+
+  test("two imports defining the SAME step id emit a collision warning (H6)", async () => {
+    // Both modules define step id `submit`. buildStepNamespaceMap silently binds a root `submit`
+    // reference to the graph-iteration-first module; the H6 fix makes that ambiguity observable via
+    // a run-time warning (binding behavior is unchanged — this is diagnostics only).
+    const MOD_A = `
+version = 1
+kind = "flow"
+id = "mod.a"
+description = "module A"
+
+[[steps]]
+id = "submit"
+do = "click"
+target = ["text:Submit", "submit A"]
+`;
+    const MOD_B = `
+version = 1
+kind = "flow"
+id = "mod.b"
+description = "module B"
+
+[[steps]]
+id = "submit"
+do = "click"
+target = ["text:Submit", "submit B"]
+`;
+    const ROOT = `
+version = 1
+kind = "flow"
+id = "p5.collision"
+description = "import step-id collision"
+imports = ["./a.toml", "./b.toml"]
+
+[[steps]]
+id = "act"
+do = "click"
+target = ["text:Primary", "click primary"]
+`;
+    const { outDir, pathOf } = await writeFiles({
+      "flow.toml": ROOT,
+      "a.toml": MOD_A,
+      "b.toml": MOD_B,
+    });
+
+    const driver = new MockDriver();
+    driver.setSnapshot(
+      makeSnapshot({
+        url: "http://localhost:3000/app",
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "button", name: "Primary" }),
+        ],
+      }),
+    );
+    driver.setBatchResult(makeSuccessBatch("role:button:Primary", "click"));
+
+    const warnings: string[] = [];
+    const result = await runFlow(
+      optsFor(pathOf("flow.toml"), outDir, driver, defaultConfig(), {
+        onWarn: (m) => warnings.push(m),
+      }),
+    );
+
+    // The run itself is unaffected (binding behavior unchanged).
+    expect(result.summary.verdict).toBe("passed");
+
+    // A collision warning names the step id AND both competing modules.
+    const collisionWarn = warnings.find((w) => w.includes("import step-id collision"));
+    expect(collisionWarn).toBeDefined();
+    expect(collisionWarn).toContain('"submit"');
+    expect(collisionWarn).toContain("mod.a");
+    expect(collisionWarn).toContain("mod.b");
   });
 });

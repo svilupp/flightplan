@@ -1,0 +1,16 @@
+# BROKEN (warning): an authored `text:` selector matches any element containing the text →
+# steps/text-hint-unscoped (prefer role:Role:Name).
+version = 1
+kind = "flow"
+id = "broken.text_hint_unscoped"
+description = "Unscoped text: selector"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "click_next"
+do = "click"
+target = ["text:Next", "the Next button"]

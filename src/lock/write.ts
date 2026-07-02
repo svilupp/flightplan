@@ -34,10 +34,18 @@
 // Canonical references: PLAN.md §4 (lock TOML), §5 Phase 3 (write policy / stable diffs).
 
 import { stringify } from "smol-toml";
-import type { Strategy } from "../types.ts";
 import type { StepExecution } from "../ladder/index.ts";
+import type { Strategy } from "../types.ts";
+import { sanitizeNote } from "./note-sanitize.ts";
 import { compareCandidates, mergeWinningRecipe, recipeFromExecution } from "./recipe.ts";
-import type { LockCandidate, LockFile, LockMatch, LockPinnedChoice, LockTarget } from "./types.ts";
+import type {
+  LockFile,
+  LockMatch,
+  LockPinnedChoice,
+  LockTarget,
+  StrategyEntry,
+  TargetMemory,
+} from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Canonical ordering
@@ -48,10 +56,15 @@ function orderedTargets(targets: LockTarget[]): LockTarget[] {
   return [...targets].sort((a, b) => (a.step < b.step ? -1 : a.step > b.step ? 1 : 0));
 }
 
-/** A candidate as a canonically-keyed plain object (only defined fields). */
-function candidateToObject(c: LockCandidate): Record<string, unknown> {
-  const out: Record<string, unknown> = { strategy: c.strategy, selector: c.selector };
-  if (c.green_runs !== undefined) out.green_runs = c.green_runs;
+/** A portfolio strategy entry as a canonically-keyed plain object (only defined fields). */
+function strategyToObject(e: StrategyEntry): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    kind: e.kind,
+    selector: e.selector,
+    greens: e.greens,
+  };
+  if (e.last_ok !== undefined) out.last_ok = e.last_ok;
+  if (e.last_drift !== undefined) out.last_drift = e.last_drift;
   return out;
 }
 
@@ -64,9 +77,27 @@ function pinnedToObject(p: LockPinnedChoice): Record<string, unknown> {
 }
 
 /**
- * A target as a canonically-keyed plain object. Key order is fixed:
- *   step, target, kind, match, strategy, selector, green_runs, last_seen, pinned_choice, candidates
- * Only defined fields are emitted (so optionals round-trip as absent). Candidates are pre-sorted.
+ * The advisory memory sub-table as a canonically-keyed plain object, or `undefined` when there is
+ * no note to persist (so an empty memory never emits an empty `[targets.memory]` section). The
+ * `note` is already REDACTED by the write path before it reaches here.
+ */
+function memoryToObject(m: TargetMemory | undefined): Record<string, unknown> | undefined {
+  if (!m?.note) return undefined;
+  const out: Record<string, unknown> = { note: m.note };
+  if (m.note_updated !== undefined) out.note_updated = m.note_updated;
+  return out;
+}
+
+/**
+ * A target as a canonically-keyed plain object (v2 portfolio form). Key order is fixed:
+ *   step, target, kind, match, last_seen, pinned_choice, memory, strategies
+ * Only defined fields are emitted (so optionals round-trip as absent). The `strategies` portfolio
+ * is emitted in its IN-MEMORY (already-ranked) order — the session/normalizer rank it at write-back
+ * time with the injected clock, and this serializer never re-sorts it, so two serializations of the
+ * SAME in-memory lock are byte-identical (stable committed diffs). The self-reordering across runs
+ * is a genuine track-record change, not serialization churn. The v1 fields
+ * (`strategy`/`selector`/`candidates`/`green_runs`) are NEVER emitted — a loaded v1 lock is
+ * migrated to `strategies` on load.
  */
 function targetToObject(t: LockTarget): Record<string, unknown> {
   const out: Record<string, unknown> = {
@@ -75,14 +106,35 @@ function targetToObject(t: LockTarget): Record<string, unknown> {
   };
   if (t.kind !== undefined) out.kind = t.kind;
   out.match = { url_glob: t.match.url_glob, sig: t.match.sig };
-  if (t.strategy !== undefined) out.strategy = t.strategy;
-  if (t.selector !== undefined) out.selector = t.selector;
-  if (t.green_runs !== undefined) out.green_runs = t.green_runs;
   if (t.last_seen !== undefined) out.last_seen = t.last_seen;
   if (t.pinned_choice !== undefined) out.pinned_choice = pinnedToObject(t.pinned_choice);
-  if (t.candidates !== undefined && t.candidates.length > 0) {
-    out.candidates = [...t.candidates].sort(compareCandidates).map(candidateToObject);
+  const memory = memoryToObject(t.memory);
+  if (memory !== undefined) out.memory = memory;
+  if (t.strategies !== undefined && t.strategies.length > 0) {
+    out.strategies = t.strategies.map(strategyToObject);
+  } else if (t.selector !== undefined && t.strategy !== undefined) {
+    // A v1-shaped in-memory target with NO portfolio (a hand-built "old committed lock" — the
+    // normal load path never produces this, but tests + external tooling may). Emit the v1 winner
+    // fields so it serializes to loadable v1 TOML that auto-migrates on the next load. New v2
+    // writes always carry `strategies`, so this branch never fires for a real runtime write-back.
+    out.strategy = t.strategy;
+    out.selector = t.selector;
+    if (t.green_runs !== undefined) out.green_runs = t.green_runs;
+    if (t.candidates !== undefined && t.candidates.length > 0) {
+      out.candidates = [...t.candidates].sort(compareCandidates).map(candidateToObject);
+    }
   }
+  return out;
+}
+
+/** A v1 candidate as a canonically-keyed plain object (legacy write-through only). */
+function candidateToObject(c: {
+  strategy: string;
+  selector: string;
+  green_runs?: number;
+}): Record<string, unknown> {
+  const out: Record<string, unknown> = { strategy: c.strategy, selector: c.selector };
+  if (c.green_runs !== undefined) out.green_runs = c.green_runs;
   return out;
 }
 
@@ -149,6 +201,13 @@ export interface WriteDecisionInput {
   existing: LockTarget | undefined;
   /** True when the step resolved via an L0 cache replay (recipe matched → never rewrite). */
   resolvedAtL0: boolean;
+  /**
+   * True when the L0 hit came from Layer-3 REVALIDATION (the page signature had gone stale but the
+   * cached selector still uniquely resolved the target). The recipe stays stable, but the stored
+   * signature is stale — so we refresh ONLY the `match` gate (new sig + url_glob + `last_seen`),
+   * NOT counted as a drift/heal. Ignored unless `resolvedAtL0` is true. Absent on a pure sig hit.
+   */
+  revalidated?: boolean;
   /** Step identity for the persisted target. */
   step: { id: string; target?: string };
   /** The successful resolution+action result (carries durableSelector/strategy/candidates). */
@@ -163,6 +222,13 @@ export interface WriteDecisionInput {
   kind?: "ai_pick";
   /** The chosen candidate's human-readable name (becomes the `pinned_choice.label`, ai_pick only). */
   pinnedLabel?: string;
+  /**
+   * REDACTION SINK for the advisory note (DESIGN §4). Applied to the AI-emitted `execution.note`
+   * BEFORE it is folded into the target, so a note echoing a `secret=true` value never reaches the
+   * committed lock. Injected as the run's `redactor.redactText` (identity when redaction is off).
+   * Defaults to identity so callers with no redactor behave exactly as before.
+   */
+  redactNote?: (note: string) => string;
 }
 
 /** The pure write-policy decision for ONE resolved step. */
@@ -183,27 +249,109 @@ export interface WriteDecision {
 
 /**
  * The pure write-policy core. Given the resolved step, the existing lock target, and the mode,
- * decide whether the recipe is a clean cache hit (no write), a first-learn, an unchanged
- * re-resolution, or a real heal — and whether that heal should fail the run.
+ * decide whether the resolution updates the portfolio (a normal track-record write), is a
+ * first-learn, or is a real heal — and whether that heal should fail the run.
+ *
+ * The v2 portfolio changes ONE thing from the v1 single-winner policy: an L0 hit is no longer a
+ * pure no-op. The portfolio race updates per-strategy track records (greens/last_ok/last_drift), so
+ * an L0 hit in a NON-FROZEN mode produces a merged target. It is NOT a heal unless the top-ranked
+ * WINNER strategy actually changed (`mergeWinningRecipe(...).winnerChanged`) — repeated green runs
+ * tick the counters but stay `healed=false`, preserving the drift/heal accounting semantics.
  *
  * Semantics:
- *   - L0 cache hit                          → no target, healed=false (lock stays stable).
- *   - no durable selector to persist        → no target, healed=false.
- *   - no existing recipe (first learn)      → target = fresh recipe, healed=false.
- *   - existing recipe, winner UNCHANGED     → no target, healed=false (only the page changed;
- *                                             per mermaid (a) "recipe differed? no" → no write).
- *   - existing recipe, winner DRIFTED       → target = merged recipe, healed=true;
- *                                             fail = (mode === 'frozen').
+ *   - L0 hit, FROZEN                         → no target, healed=false (portfolio is READ-ONLY).
+ *   - L0 hit, non-frozen                     → target = portfolio with updated track records;
+ *                                              healed = winnerChanged; fail=false (a portfolio
+ *                                              re-rank is not a run-failing drift). Revalidated
+ *                                              hits additionally refresh the stale sig.
+ *   - no durable selector to persist         → no target, healed=false.
+ *   - no existing recipe (first learn)       → target = fresh portfolio, healed=false.
+ *   - existing recipe, winner UNCHANGED      → target = re-ranked portfolio, healed=false.
+ *   - existing recipe, winner DRIFTED        → target = merged portfolio, healed=true;
+ *                                              fail = (mode === 'frozen').
  *
  * The returned `target` is applied to the in-memory lock by the session regardless of mode
  * ("heal in memory"); persistence to disk is gated on `auto` by the session's `flush`.
  */
 export function decideLockWrite(input: WriteDecisionInput): WriteDecision {
-  const { mode, existing, resolvedAtL0, step, execution, match, inferStrategy, now, kind, pinnedLabel } =
-    input;
+  const {
+    mode,
+    existing,
+    resolvedAtL0,
+    revalidated,
+    step,
+    execution,
+    match,
+    inferStrategy,
+    now,
+    kind,
+    pinnedLabel,
+    redactNote,
+  } = input;
 
-  // A clean L0 cache replay: the lock recipe matched and replayed — never rewrite (stability).
+  // REDACT then SANITIZE the AI-emitted note at THIS sink (before it enters any target). Redaction
+  // (the injected `redactNote`) masks secret VALUES echoed in a note so they never reach the
+  // committed lock (DESIGN §4). Sanitization (`sanitizeNote`, PLAN_v003 §6 v003-4) then strips
+  // VOLATILE tokens — positional indices, `data-testid` values, `aria-label`/`aria-labelledby` label
+  // leaks — that would rot the moment the page shifts. This is BEYOND the schema's length cap.
+  // `sanitizeNote` returns `undefined` when the input is empty or sanitizes down to nothing → no
+  // note is stored.
+  const rawNote = execution.note?.trim();
+  const redacted =
+    rawNote && rawNote.length > 0 ? (redactNote ? redactNote(rawNote) : rawNote) : undefined;
+  const note = sanitizeNote(redacted);
+
+  const recipeOpts = {
+    inferStrategy,
+    ...(now ? { now } : {}),
+    ...(kind ? { kind } : {}),
+    ...(pinnedLabel !== undefined ? { pinnedLabel } : {}),
+    ...(note !== undefined ? { note } : {}),
+  };
+
+  // An L0 cache replay. In FROZEN mode the portfolio is READ-ONLY (DESIGN §3.3 / §4): consult it,
+  // never write it — so a frozen run neither updates track records nor refreshes a stale sig.
   if (resolvedAtL0) {
+    if (mode === "frozen") {
+      return { healed: false, fail: false, note: "L0 hit: portfolio read-only (--frozen)" };
+    }
+    // Non-frozen: fold the portfolio-race outcome (agreed/drifted) into the existing target so the
+    // track records self-order. When there is no existing target yet (a race over a hand-seeded
+    // recipe with no on-disk backing), fall through to first-learn below.
+    if (existing && execution.portfolio) {
+      const { target, winnerChanged } = mergeWinningRecipe(existing, step, execution, match, {
+        inferStrategy,
+        ...(now ? { now } : {}),
+        ...(note !== undefined ? { note } : {}),
+      });
+      // A revalidated hit refreshes the (already-updated) match sig — mergeWinningRecipe wrote the
+      // fresh `match` from the basis, so nothing extra is needed. Never a run-failing drift at L0.
+      return {
+        healed: winnerChanged,
+        fail: false,
+        target,
+        note: winnerChanged
+          ? `L0 portfolio re-ranked: winner changed (agreement ${execution.portfolio.agreement})`
+          : revalidated
+            ? `L0 revalidated: portfolio track records updated + sig refreshed (agreement ${execution.portfolio.agreement})`
+            : `L0 hit: portfolio track records updated (agreement ${execution.portfolio.agreement})`,
+      };
+    }
+    // A revalidated hit with no race outcome (e.g. a legacy recipe) still refreshes the stale sig.
+    if (revalidated && existing) {
+      const refreshed: LockTarget = {
+        ...existing,
+        target: step.target ?? existing.target,
+        match: { url_glob: match.url_glob, sig: match.sig },
+        ...(now ? { last_seen: new Date(now()).toISOString() } : {}),
+      };
+      return {
+        healed: false,
+        fail: false,
+        target: refreshed,
+        note: "L0 revalidated: refreshed sig",
+      };
+    }
     return { healed: false, fail: false, note: "L0 hit: recipe replayed (no write)" };
   }
 
@@ -212,27 +360,31 @@ export function decideLockWrite(input: WriteDecisionInput): WriteDecision {
     return { healed: false, fail: false, note: "no durable selector (no write)" };
   }
 
-  const recipeOpts = {
-    inferStrategy,
-    ...(now ? { now } : {}),
-    ...(kind ? { kind } : {}),
-    ...(pinnedLabel !== undefined ? { pinnedLabel } : {}),
-  };
-
   // First learn: no existing recipe for this step yet.
   if (!existing) {
     const target = recipeFromExecution(step, execution, match, recipeOpts);
     return { healed: false, fail: false, target, note: "first learn: new recipe" };
   }
 
-  // Existing recipe present (L0 missed → L1 re-resolved). Did the winning selector drift?
-  const merged = mergeWinningRecipe(existing, step, execution, match, recipeOpts);
-  const drifted = existing.selector !== merged.selector || existing.strategy !== merged.strategy;
+  // Existing recipe present (L0 missed → L1 re-resolved). Fold the resolution into the portfolio;
+  // it is a heal only when the top-ranked winner strategy actually changed.
+  const { target: merged, winnerChanged: drifted } = mergeWinningRecipe(
+    existing,
+    step,
+    execution,
+    match,
+    recipeOpts,
+  );
 
   if (!drifted) {
-    // Same winning recipe (the selector still resolves; only the page/signature changed). Not a
-    // heal → no write, per mermaid (a) ("recipe differed from lock? no" → skip the write).
-    return { healed: false, fail: false, note: "recipe unchanged (no write)" };
+    // Same winning strategy (it still resolves; only the page/signature changed or track records
+    // ticked). Not a heal — but DO persist the re-ranked portfolio so track records accumulate.
+    return {
+      healed: false,
+      fail: false,
+      target: merged,
+      note: "recipe unchanged (portfolio updated)",
+    };
   }
 
   // A real heal (drift). Always surface it; persist only under auto; fail only under frozen.

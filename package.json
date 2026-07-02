@@ -10,9 +10,12 @@
   "scripts": {
     "flightplan": "bun run src/cli/index.ts",
     "fixtures": "bun run examples/fixtures/server.ts",
-    "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit",
-    "test": "bun test"
+    "check": "bun run scripts/check.ts",
+    "lint": "bun run scripts/check.ts lint",
+    "lint:fix": "biome check --write . && oxlint --type-aware --fix",
+    "format": "biome format --write .",
+    "typecheck": "bun run scripts/check.ts typecheck",
+    "test": "bun run scripts/check.ts test"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.86",
@@ -23,8 +26,11 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
     "@types/bun": "latest",
     "chrome-launcher": "1.2.1",
+    "oxlint": "^1.72.0",
+    "oxlint-tsgolint": "^0.24.0",
     "typescript": "^5"
   }
 }

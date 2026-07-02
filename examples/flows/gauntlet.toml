@@ -31,8 +31,7 @@ text = "Billing address"
 [[steps]]
 id = "save_billing_address"
 do = "click"
-target = "the Save button inside the Billing address panel"
-intent = "save the billing address, not the search filters or the draft message"
+target = "the Save button inside the Billing address panel, not the search filters or the draft message"
 
 [[steps.assert]]
 type = "visible"

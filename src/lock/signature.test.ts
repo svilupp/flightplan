@@ -7,8 +7,9 @@
 // `capturePageSignature` composes the driver's two signatures around the snapshot URL.
 
 import { describe, expect, test } from "bun:test";
-import { makeSnapshot, MockDriver } from "../driver/index.ts";
+import { MockDriver, makeSnapshot } from "../driver/index.ts";
 import { capturePageSignature } from "../ladder/page-signature.ts";
+import { computeMaskedTextHash } from "./masked-text.ts";
 import {
   computeMatchSignature,
   deriveUrlGlob,
@@ -50,6 +51,25 @@ describe("signatureMatches", () => {
     expect(signatureMatches("http://h/p|TEXT", a)).toBe(true);
     expect(signatureMatches("http://h/p|NOPE", a)).toBe(false);
   });
+
+  describe("struct-only mode (Layer 2 [cache] signature = 'struct-only')", () => {
+    test("matches despite a text diff when the struct component is unchanged", () => {
+      const textDrift = computeMatchSignature("http://h/p|CHANGED", "/p|STRUCT");
+      expect(signatureMatches(a, textDrift, "struct-only")).toBe(true);
+      // ...whereas full mode would NOT match (the text component drifted).
+      expect(signatureMatches(a, textDrift, "full")).toBe(false);
+    });
+
+    test("still mismatches when the struct component itself changes", () => {
+      const structDrift = computeMatchSignature("http://h/p|TEXT", "/p|DIFFERENT");
+      expect(signatureMatches(a, structDrift, "struct-only")).toBe(false);
+    });
+
+    test("falls back to text equality when a side has no struct component (legacy sig)", () => {
+      expect(signatureMatches("http://h/p|TEXT", a, "struct-only")).toBe(true);
+      expect(signatureMatches("http://h/p|NOPE", a, "struct-only")).toBe(false);
+    });
+  });
 });
 
 describe("urlGlobMatches", () => {
@@ -79,32 +99,61 @@ describe("deriveUrlGlob", () => {
 });
 
 describe("capturePageSignature", () => {
-  test("composes the driver's text + structure sigs and returns the snapshot URL", async () => {
-    const text = "http://localhost:3000/p|TEXTHASH";
+  test("composes the snapshot masked-text hash + the driver's structure sig, returns the URL", async () => {
     const struct = "/p|STRUCTHASH";
-    const driver = new MockDriver().setSignature(text).setStructureSignature(struct);
-    const snapshot = makeSnapshot({ url: "http://localhost:3000/p" });
+    // Layer 1: the TEXT component is now computed INSIDE flightplan from the snapshot's a11y tree
+    // (masked), NOT the driver's raw text signature. Only the struct component comes from the driver.
+    const driver = new MockDriver().setSignature("IGNORED|texthash").setStructureSignature(struct);
+    const snapshot = makeSnapshot({
+      url: "http://localhost:3000/p",
+      accessibilityTree: [{ role: "button", ref: "n1", name: "Save" }],
+    });
 
     const { sig, url } = await capturePageSignature(driver, snapshot);
 
-    // sig is exactly the composite of the driver's two signatures.
-    expect(sig).toBe(computeMatchSignature(text, struct));
-    expect(splitMatchSignature(sig)).toEqual({ text, struct });
+    const expectedText = computeMaskedTextHash(snapshot);
+    expect(sig).toBe(computeMatchSignature(expectedText, struct));
+    expect(splitMatchSignature(sig)).toEqual({ text: expectedText, struct });
     // url comes from the snapshot (the page the tier resolved against).
     expect(url).toBe("http://localhost:3000/p");
+    // The driver's RAW text signature was NOT consulted (masked text is computed locally).
+    const textModeCall = driver
+      .callsTo("captureStateSignature")
+      .some((c) => (c.args[0] as { mode?: string } | undefined)?.mode !== "structure");
+    expect(textModeCall).toBe(false);
   });
 
-  test("sources the struct component from mode:'structure' (not the text sig)", async () => {
-    const driver = new MockDriver()
-      .setSignature("http://h/p|TEXT")
-      .setStructureSignature("/p|STRUCT");
-    const { sig } = await capturePageSignature(driver, makeSnapshot({ url: "http://h/p" }));
-    // The two components are distinct → the driver's structure channel was used.
-    expect(splitMatchSignature(sig)).toEqual({ text: "http://h/p|TEXT", struct: "/p|STRUCT" });
+  test("sources the struct component from mode:'structure'", async () => {
+    const driver = new MockDriver().setStructureSignature("/p|STRUCT");
+    const snapshot = makeSnapshot({
+      url: "http://h/p",
+      accessibilityTree: [{ role: "link", ref: "n1", name: "Home" }],
+    });
+    const { sig } = await capturePageSignature(driver, snapshot);
+    const expectedText = computeMaskedTextHash(snapshot);
+    expect(splitMatchSignature(sig)).toEqual({ text: expectedText, struct: "/p|STRUCT" });
     // And the driver was actually asked for the structure mode.
     const structCall = driver
       .callsTo("captureStateSignature")
       .some((c) => (c.args[0] as { mode?: string } | undefined)?.mode === "structure");
     expect(structCall).toBe(true);
+  });
+
+  test("ignore_regions are threaded into BOTH the masked-text hash and the struct maskSelectors", async () => {
+    const driver = new MockDriver().setStructureSignature("/p|STRUCT");
+    const snapshot = makeSnapshot({
+      url: "http://h/p",
+      accessibilityTree: [{ role: "button", ref: "n1", name: "Save" }],
+    });
+    await capturePageSignature(driver, snapshot, { ignoreRegions: ["#feed", "role:timer"] });
+    // The struct call carried the ignore_regions as maskSelectors.
+    const structCall = driver
+      .callsTo("captureStateSignature")
+      .find((c) => (c.args[0] as { mode?: string } | undefined)?.mode === "structure");
+    expect(structCall).toBeDefined();
+    expect((structCall!.args[0] as { maskSelectors?: string[] }).maskSelectors).toEqual([
+      "#feed",
+      "role:timer",
+    ]);
   });
 });

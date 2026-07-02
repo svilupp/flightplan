@@ -406,7 +406,7 @@ function contextsPage(): string {
         r.textContent = 'Frame confirmed';
         document.body.appendChild(r);
       }
-    <\/script>
+    </script>
   </body></html>`;
 
   return page(

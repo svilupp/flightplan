@@ -52,7 +52,12 @@ describe("buildHandoff — compact projection + signals", () => {
     expect(h.intent).toBe("pick A");
     expect(h.action).toBe("click");
     expect(h.topMatches).toHaveLength(2);
-    expect(h.topMatches[0]).toEqual({ role: "button", name: "A", selector: "role:button:A", score: 0.9 });
+    expect(h.topMatches[0]).toEqual({
+      role: "button",
+      name: "A",
+      selector: "role:button:A",
+      score: 0.9,
+    });
     expect(h.failureReason).toBe("covered");
     expect(h.coveringElement?.className).toBe("banner");
   });

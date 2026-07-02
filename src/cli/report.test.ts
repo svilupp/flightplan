@@ -1,12 +1,13 @@
 // Flightplan — `flightplan report` tests (offline).
 //
-// Drives the report command over the committed test inputs the metrics harness already ships:
-// the 4 REAL `.flightplan-runs/` dirs (the green campaign) and the 6 synthetic
-// `src/metrics/__fixtures__/*` run dirs. Asserts the human output surfaces the key campaign
-// metrics (tier histogram, hit-rates, cost, exit-criteria markers), that `--json` parses to a
-// CampaignMetrics-shaped payload with the projection + lock cross-check attached, that single and
-// multiple run dirs both work, that a campaign-root directory expands to its child run dirs, and
-// that a missing dir fails with exit 2 + a clear message and no throw.
+// Drives the report command over committed, tracked test inputs so the suite is HERMETIC (it does
+// NOT depend on the gitignored `.flightplan-runs/` dir): the committed green-campaign fixture under
+// `src/cli/__fixtures__/green-campaign/` (4 run dirs — two wizard runs + async + rerender) and the
+// 6 synthetic `src/metrics/__fixtures__/*` run dirs. Asserts the human output surfaces the key
+// campaign metrics (tier histogram, hit-rates, cost, exit-criteria markers), that `--json` parses
+// to a CampaignMetrics-shaped payload with the projection + lock cross-check attached, that single
+// and multiple run dirs both work, that a campaign-root directory expands to its child run dirs,
+// and that a missing dir fails with exit 2 + a clear message and no throw.
 //
 // All offline: no Chrome, no network, no SDK. Mirrors `explain.test.ts`'s capture helper.
 
@@ -14,7 +15,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import { loadRun } from "./explain.ts";
 import { parseArgs } from "./index.ts";
 import {
   buildReportData,
@@ -23,24 +24,27 @@ import {
   formatReport,
   runReport,
 } from "./report.ts";
-import { loadRun } from "./explain.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
-const realRunsDir = join(repoRoot, ".flightplan-runs");
+// The committed, tracked green-campaign fixture (4 run dirs), replacing the old dependency on the
+// gitignored `.flightplan-runs/` dir so this suite is hermetic in a fresh clone / CI.
+const campaignDir = join(here, "__fixtures__", "green-campaign");
 const fixturesDir = join(repoRoot, "src", "metrics", "__fixtures__");
 
-function realRunDirs(): string[] {
-  return readdirSync(realRunsDir, { withFileTypes: true })
+function campaignRunDirs(): string[] {
+  return readdirSync(campaignDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
-    .map((d) => join(realRunsDir, d.name))
+    .map((d) => join(campaignDir, d.name))
     .sort();
 }
 
 const fixture = (name: string): string => join(fixturesDir, name);
 
 /** Capture console.log/console.error around a call (mirrors explain.test.ts). */
-async function capture(fn: () => Promise<number>): Promise<{ code: number; out: string; err: string }> {
+async function capture(
+  fn: () => Promise<number>,
+): Promise<{ code: number; out: string; err: string }> {
   const out: string[] = [];
   const err: string[] = [];
   const origLog = console.log;
@@ -57,12 +61,14 @@ async function capture(fn: () => Promise<number>): Promise<{ code: number; out: 
 }
 
 // ---------------------------------------------------------------------------
-// 1) The 4 real .flightplan-runs dirs — the green campaign report.
+// 1) The committed green-campaign fixture (4 run dirs) — the green campaign report.
 // ---------------------------------------------------------------------------
 
-describe("report — the 4 real .flightplan-runs dirs (green campaign)", () => {
+describe("report — the committed green-campaign fixture (4 run dirs)", () => {
   test("exit 0 and the human report surfaces the campaign metrics", async () => {
-    const { code, out } = await capture(() => runReport(parseArgs(["report", ...realRunDirs()])));
+    const { code, out } = await capture(() =>
+      runReport(parseArgs(["report", ...campaignRunDirs()])),
+    );
     expect(code).toBe(0);
 
     // Header + run counts.
@@ -91,18 +97,18 @@ describe("report — the 4 real .flightplan-runs dirs (green campaign)", () => {
   });
 
   test("a campaign-root directory expands to its child run dirs", async () => {
-    // `report .flightplan-runs` (the parent dir, no run.jsonl of its own) → all 4 children.
-    const targets = await expandRunInputs([realRunsDir]);
+    // `report <green-campaign>` (the parent dir, no run.jsonl of its own) → all 4 children.
+    const targets = await expandRunInputs([campaignDir]);
     expect(targets.length).toBe(4);
 
-    const { code, out } = await capture(() => runReport(parseArgs(["report", realRunsDir])));
+    const { code, out } = await capture(() => runReport(parseArgs(["report", campaignDir])));
     expect(code).toBe(0);
     expect(out).toContain("Runs:     4");
   });
 
   test("--json parses to a CampaignMetrics-shaped payload with projection + stability", async () => {
     const { code, out } = await capture(() =>
-      runReport(parseArgs(["report", realRunsDir, "--json"])),
+      runReport(parseArgs(["report", campaignDir, "--json"])),
     );
     expect(code).toBe(0);
 

@@ -13,7 +13,7 @@
 // This module is deliberately untyped at the payload level (`JsonlValue`) — the typed event
 // shaping lives in `writers.ts`. Keep it dependency-light: only `node:fs/promises`.
 
-import { open, type FileHandle } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 
 /**
  * A JSON-serializable event object. Any non-null object is accepted — the writer only requires

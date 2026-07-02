@@ -21,8 +21,8 @@
 
 import type { InteractiveElement } from "../driver/index.ts";
 import type { Strategy } from "../types.ts";
-import type { BatchActionVerb, StrategyCandidate } from "./types.ts";
 import { isInteractiveRole } from "./fuzzy.ts";
+import type { BatchActionVerb, StrategyCandidate } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Selector escaping
@@ -76,7 +76,7 @@ export function labelSelectorForElement(el: InteractiveElement): string | undefi
   if (ariaLabel && ariaLabel.trim().length > 0) {
     return `[aria-label='${escapeAttrValue(ariaLabel)}']`;
   }
-  const placeholder = attrs["placeholder"];
+  const placeholder = attrs.placeholder;
   if (placeholder && placeholder.trim().length > 0) {
     return `[placeholder='${escapeAttrValue(placeholder)}']`;
   }

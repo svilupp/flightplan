@@ -9,25 +9,34 @@
 // and our `LockMatch`/`LockTarget` are distinct from the ladder's in-memory `CachedRecipe`.
 // Canonical reference: PLAN.md §4 / §5 Phase 3.
 
-// --- on-disk types ---
-export type {
-  LockCandidate,
-  LockFile,
-  LockMatch,
-  LockPinnedChoice,
-  LockTarget,
-} from "./types.ts";
-export { LOCK_VERSION } from "./types.ts";
-
+// --- runtime composition ---
+export {
+  type ComposeCollision,
+  type ComposedEntry,
+  type ComposedLock,
+  composeLocks,
+  type ImportedLock,
+  lookupComposed,
+  type TargetProvenance,
+} from "./compose.ts";
+// --- the L0 LockHook factory ---
+export { type CreateLockHookOptions, createLockHook } from "./hook.ts";
+// --- masked-text signature component (L0 cache-hit quality — Layer 1 + 2) ---
+export {
+  computeMaskedTextHash,
+  DEFAULT_MASK_ROLES,
+  type MaskedTextOptions,
+} from "./masked-text.ts";
+// --- advisory-note volatile-token sanitizer (v003-4) ---
+export { sanitizeNote, VOLATILE_PLACEHOLDER } from "./note-sanitize.ts";
 // --- read / parse ---
 export {
   emptyLock,
-  loadLockFile,
   LockFileSchema,
   LockParseError,
+  loadLockFile,
   parseLockFile,
 } from "./parse.ts";
-
 // --- recipe model + converters ---
 export {
   assertDurableSelector,
@@ -39,16 +48,33 @@ export {
   rankLockCandidates,
   recipeFromExecution,
 } from "./recipe.ts";
-
+// --- the per-run lock session (read → compose → hook → write-back) ---
+export {
+  LockSession,
+  type OpenLockSessionOptions,
+  openLockSession,
+  type RecordResolutionResult,
+  type SessionImport,
+} from "./session.ts";
 // --- page signatures (L0 validation) ---
 export {
+  type CacheOptions,
   computeMatchSignature,
   deriveUrlGlob,
   signatureMatches,
   splitMatchSignature,
   urlGlobMatches,
 } from "./signature.ts";
-
+// --- on-disk types ---
+export type {
+  LockCandidate,
+  LockFile,
+  LockMatch,
+  LockPinnedChoice,
+  LockTarget,
+  TargetMemory,
+} from "./types.ts";
+export { LOCK_VERSION, NOTE_TTL_DAYS } from "./types.ts";
 // --- write / serialize + write policy ---
 export {
   decideLockWrite,
@@ -59,26 +85,3 @@ export {
   type WriteDecisionInput,
   writeLockFile,
 } from "./write.ts";
-
-// --- runtime composition ---
-export {
-  composeLocks,
-  type ComposeCollision,
-  type ComposedEntry,
-  type ComposedLock,
-  type ImportedLock,
-  lookupComposed,
-  type TargetProvenance,
-} from "./compose.ts";
-
-// --- the L0 LockHook factory ---
-export { createLockHook, type CreateLockHookOptions } from "./hook.ts";
-
-// --- the per-run lock session (read → compose → hook → write-back) ---
-export {
-  LockSession,
-  openLockSession,
-  type OpenLockSessionOptions,
-  type RecordResolutionResult,
-  type SessionImport,
-} from "./session.ts";

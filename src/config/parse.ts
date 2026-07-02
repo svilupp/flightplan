@@ -41,11 +41,9 @@ export function parseToml(text: string, path?: string): unknown {
     return parseTomlRaw(text);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    throw new TomlParseError(
-      `Failed to parse TOML${path ? ` (${path})` : ""}: ${detail}`,
-      path,
-      { cause: err },
-    );
+    throw new TomlParseError(`Failed to parse TOML${path ? ` (${path})` : ""}: ${detail}`, path, {
+      cause: err,
+    });
   }
 }
 
@@ -78,7 +76,9 @@ export async function loadConfigFile(path: string): Promise<LoadedConfigFile> {
 }
 
 /** Compact, human-readable rendering of a zod issue list for error messages. */
-export function formatIssues(issues: ReadonlyArray<{ path: PropertyKey[]; message: string }>): string {
+export function formatIssues(
+  issues: ReadonlyArray<{ path: PropertyKey[]; message: string }>,
+): string {
   return issues
     .map((i) => {
       const where = i.path.length > 0 ? i.path.map(String).join(".") : "<root>";

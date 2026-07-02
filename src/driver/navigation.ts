@@ -28,10 +28,7 @@ export function resolveWaitForNavigation(
  * force `waitForNavigation`. Returns a `Step` carrying the resolved `waitForNavigation` plus
  * the selector/timeout. Used for `click` (the canonical navigating action).
  */
-export function clickStep(
-  selector: string | string[],
-  opts?: ActionOpts,
-): Step {
+export function clickStep(selector: string | string[], opts?: ActionOpts): Step {
   const step: Step = {
     action: "click",
     selector,

@@ -13,21 +13,15 @@
 // byte-identical to pre-redaction behavior.
 
 import type { z } from "zod";
-import type { ModelRoleName } from "../types.ts";
-import { extractUsageCost } from "./cost.ts";
-import type { CostAccumulator } from "./cost.ts";
-import type { BudgetTracker } from "./budget.ts";
-import { roleModel } from "./registry.ts";
-import type { ResolvedRegistry } from "./registry.ts";
+import type { AiCallEvent, AiCallRole } from "../artifacts/events.ts";
 import type { Redactor } from "../redaction/index.ts";
-import type { AiCallEvent } from "../artifacts/events.ts";
-import type {
-  AiCallContext,
-  AiCallResult,
-  AiCallSink,
-  AiMessage,
-  GenerateFn,
-} from "./types.ts";
+import type { ModelRoleName } from "../types.ts";
+import type { BudgetTracker } from "./budget.ts";
+import type { CostAccumulator } from "./cost.ts";
+import { extractUsageCost } from "./cost.ts";
+import type { ResolvedRegistry } from "./registry.ts";
+import { roleModel } from "./registry.ts";
+import type { AiCallContext, AiCallResult, AiCallSink, AiMessage, GenerateFn } from "./types.ts";
 
 /**
  * Role-aware per-attempt wall-clock ceiling (ms), passed as `GenerateRequest.timeoutMs` so
@@ -41,6 +35,11 @@ export const DEFAULT_TIMEOUT_MS_BY_ROLE: Record<ModelRoleName, number> = {
   resolver: 20_000,
   vision: 25_000,
   advisor: 40_000,
+  // The L5 planner (PLAN_v003 v003-6): cheap `planner` sits in the per-divergence hot path so it
+  // escalates quickly like the resolver; the capable `planner_capable` arm gets advisor-tier
+  // headroom since it is a rarely-reached escalation.
+  planner: 25_000,
+  planner_capable: 40_000,
 };
 
 /** The runtime slice `aiCall` consumes (a subset of `AiRuntime`). */
@@ -61,11 +60,17 @@ export interface AiCallRuntime {
   timeoutMsByRole?: Partial<Record<ModelRoleName, number>>;
 }
 
+/**
+ * Coerce a `modelRole` into the `AiCallRole` it should be LOGGED as when no explicit `callRole` was
+ * given. `planner_capable` (the escalation arm — a model role, not a call role) logs as `planner`;
+ * every other model role is already a valid call role.
+ */
+function modelRoleToCallRole(role: ModelRoleName): AiCallRole {
+  return role === "planner_capable" ? "planner" : role;
+}
+
 /** Invoke the optional `onAiCall` observer, swallowing any error (telemetry never breaks a run). */
-function notifyAiCall(
-  rt: AiCallRuntime,
-  payload: Omit<AiCallEvent, "ts" | "type">,
-): void {
+function notifyAiCall(rt: AiCallRuntime, payload: Omit<AiCallEvent, "ts" | "type">): void {
   if (!rt.onAiCall) return;
   try {
     rt.onAiCall(payload);
@@ -113,7 +118,8 @@ function failureOutcome(err: unknown): string {
   // either a DOMException/Error named "TimeoutError" (spec) or "AbortError" (some fetch shims),
   // or an AI SDK wrapper whose message mentions "timed out" / "timeout". Distinguish "hung" from
   // a genuine provider error/refusal so `ai.jsonl` telemetry can tell them apart.
-  if (name === "TimeoutError" || name === "AbortError" || /timed?\s*out/i.test(msg)) return "timeout";
+  if (name === "TimeoutError" || name === "AbortError" || /timed?\s*out/i.test(msg))
+    return "timeout";
   return "error";
 }
 
@@ -129,7 +135,11 @@ export async function aiCall<S extends z.ZodType>(
   ctx: AiCallContext<S>,
 ): Promise<AiCallResult<z.infer<S>>> {
   const modelRole: ModelRoleName = ctx.modelRole;
-  const callRole = ctx.callRole ?? modelRole;
+  // The LOGGED role is always a valid `AiCallRole`. `callRole` (when given) already is; when it is
+  // omitted we fall back to `modelRole`, coercing `planner_capable` (a model role, not a call role)
+  // to `planner` so the escalation arm logs under the same call role as the cheap arm (PLAN_v003
+  // v003-6). Every other `ModelRoleName` is itself a valid `AiCallRole`.
+  const callRole: AiCallRole = ctx.callRole ?? modelRoleToCallRole(modelRole);
   const entry = roleModel(rt.registry, modelRole);
   const models = [entry.model, ...entry.fallbacks];
 
@@ -138,7 +148,7 @@ export async function aiCall<S extends z.ZodType>(
 
   // (2) Invoke the seam (fallback iteration is internal). On failure: emit + rethrow.
   const timeoutMs = rt.timeoutMsByRole?.[modelRole] ?? DEFAULT_TIMEOUT_MS_BY_ROLE[modelRole];
-  let result;
+  let result: Awaited<ReturnType<GenerateFn>>;
   try {
     result = await rt.generate({
       modelRole,
@@ -148,6 +158,9 @@ export async function aiCall<S extends z.ZodType>(
       timeoutMs,
       ...(ctx.prompt !== undefined ? { prompt: ctx.prompt } : {}),
       ...(ctx.messages !== undefined ? { messages: ctx.messages } : {}),
+      // Prompt caching (PLAN_v003 v003-6): pass the cacheable-prefix marker straight through; the
+      // provider owns the SDK cache-control breakpoint. Omitted → no caching (byte-identical).
+      ...(ctx.cache !== undefined ? { cache: ctx.cache } : {}),
     });
   } catch (err) {
     const failurePayload = {
@@ -169,7 +182,7 @@ export async function aiCall<S extends z.ZodType>(
   rt.cost.add(modelRole, result.model, cost);
 
   // (4) Validate/type the output (defense-in-depth; the GenerateFn already validated it).
-  const output = ctx.schema.parse(result.output) as z.infer<S>;
+  const output = ctx.schema.parse(result.output);
   const derived = ctx.deriveOutcome?.(output);
 
   // (5) Emit ONE ai_call event (model/tokens/cost/outcome + already-redacted prompt/response when a

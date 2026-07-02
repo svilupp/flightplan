@@ -24,51 +24,57 @@
 //
 // Canonical references: PLAN.md §3 (driver lifecycle), §4 (RunSummary / verdict), §5 Phase 2.
 
-import { loadFlowFile } from "../flow/load.ts";
-import { resolveImports, type ImportGraph } from "../flow/imports.ts";
-import { applyTemplatingDeep, resolveInputs, type TemplateContext } from "../flow/template.ts";
-import type { Assertion, AiJudgeAssertion, FlowFile, Step } from "../flow/types.ts";
-import type { ConnectConfig, ResolvedConfig } from "../config/types.ts";
+import {
+  type AiRuntime,
+  type BudgetLimitName,
+  createAiRuntime,
+  createOpenRouterGenerate,
+  isBudgetExceeded,
+  type RecentAction,
+} from "../ai/index.ts";
+import type { ModelUsage } from "../artifacts/index.ts";
+import {
+  type AiCallEvent,
+  type Clock as ArtifactClock,
+  type ArtifactWriters,
+  createRun,
+  type LadderTier,
+  openArtifactWriters,
+  type RunSummary,
+  type StepSummary,
+  writeSummary,
+} from "../artifacts/index.ts";
+import {
+  type AssertClock,
+  type AssertContext,
+  type AssertionResult,
+  runAssertions,
+} from "../assert/index.ts";
+import type { CacheConfig, ConnectConfig, ResolvedConfig } from "../config/types.ts";
 import { BrowserPilotDriver } from "../driver/browser-pilot-driver.ts";
 import type { Driver } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
+import { type ImportGraph, resolveImports } from "../flow/imports.ts";
+import { describeTarget } from "../flow/normalize-target.ts";
+import { loadFlowFileFlattened } from "../flow/run.ts";
+import { applyTemplatingDeep, resolveInputs, type TemplateContext } from "../flow/template.ts";
+import type { AiJudgeAssertion, Assertion, FlowFile, Step } from "../flow/types.ts";
 import {
   createLadder,
   type LadderResult,
   type ResolveContext,
+  resolveVisionBatch,
   type StepExecution,
 } from "../ladder/index.ts";
 import {
+  type CacheOptions,
+  LockParseError,
   type LockSession,
   type LockWriteMode,
-  type SessionImport,
   openLockSession,
   resolveLockWriteMode,
+  type SessionImport,
 } from "../lock/index.ts";
-import {
-  type AssertContext,
-  type AssertionResult,
-  type AssertClock,
-  runAssertions,
-} from "../assert/index.ts";
-import {
-  createAiRuntime,
-  createOpenRouterGenerate,
-  isBudgetExceeded,
-  type AiRuntime,
-  type BudgetLimitName,
-} from "../ai/index.ts";
-import {
-  createRun,
-  openArtifactWriters,
-  writeSummary,
-  type AiCallEvent,
-  type ArtifactWriters,
-  type Clock as ArtifactClock,
-  type LadderTier,
-  type RunSummary,
-  type StepSummary,
-} from "../artifacts/index.ts";
 import { createRedactor, gatherSecretValues, type Redactor } from "../redaction/index.ts";
 import {
   aiCallEventAttrs,
@@ -80,20 +86,24 @@ import {
   resolutionAttemptEventAttrs,
   runEndAttrs,
   runSpanAttrs,
+  type SpanHandle,
   stepEndAttrs,
   stepSpanAttrs,
   TELEMETRY_EVENTS,
   TELEMETRY_SPAN_NAMES,
-  type SpanHandle,
 } from "../telemetry/index.ts";
 import type {
-  AdvisoryVerdict,
   AdvisoryIntentChangedVerdict,
+  AdvisoryVerdict,
   AdvisoryVerdictKind,
   RunVerdict,
-  Strategy,
 } from "../types.ts";
-import type { ModelUsage } from "../artifacts/index.ts";
+import {
+  type Divergence,
+  detectDivergence,
+  isPathMutatingStep,
+  runPathRepair,
+} from "./path-repair.ts";
 import type { RunClock, RunOptions, RunResult } from "./types.ts";
 
 /** The default API-key env var when `[ai].api_key_env` is unset (PLAN.md §4 / §8 risk #5). */
@@ -190,6 +200,13 @@ interface RunState {
   }>;
   /** The materialized `proposed-patches/` file path, set on an `intent_changed` verdict. */
   proposedPatchPath: string | null;
+  /**
+   * L5 path-repair accounting (PLAN_v003 v003-6). `replanCount` is how many divergences the planner
+   * repaired (one per divergence that produced repair steps); `repairedSteps` is the ids of the
+   * synthetic repair steps that were spliced in + executed. Both are surfaced in the run summary.
+   */
+  replanCount: number;
+  repairedSteps: string[];
 }
 
 /** A fresh, empty {@link RunState}. */
@@ -206,6 +223,8 @@ function freshRunState(): RunState {
     advisoryVerdict: null,
     advisorySteps: [],
     proposedPatchPath: null,
+    replanCount: 0,
+    repairedSteps: [],
   };
 }
 
@@ -240,6 +259,25 @@ interface RunServices {
   screenshotPaths: string[];
   /** Monotonic frame index for unique screenshot filenames. */
   shotIndex: { n: number };
+  /**
+   * L0 cache-hit-quality tuning from `[cache]` config (L0 cache-hit quality — Layer 2). Threaded
+   * into each ladder step's `ResolveContext.cache` (flow-level defaults; a per-step `cache` mode
+   * overrides `signature`). Undefined when no `[cache]` block is set → default matching.
+   */
+  cache?: CacheOptions;
+  /**
+   * The L5 path-repair planner policy (PLAN_v003 v003-6). Present ALWAYS in a resolved config
+   * (`enabled` defaulted true), but the divergence/replan machinery is guarded so it only fires when
+   * an AI runtime is present AND `[plan].enabled` AND a real recorded expectation diverges — a
+   * no-AI-runtime run is byte-identical to before.
+   */
+  plan: {
+    enabled: boolean;
+    /** The durable flow goal (defaults to the flow `description`) — the prompt-cache key + anchor. */
+    goal: string;
+    escalateConfidence?: number;
+    escalateAttempts?: number;
+  };
 }
 
 /**
@@ -335,8 +373,8 @@ function buildAssertContext(
   // `ai_judge` assertion here, so the cast to `AiJudgeAssertion` is sound (and sidesteps the
   // contravariant-param mismatch between the seam's `Assertion` slot and `judge`'s narrower param).
   if (runtime) {
-    const judge = runtime.judge;
-    ctx.aiJudge = (assertion, opts) => judge(assertion as AiJudgeAssertion, opts);
+    const active = runtime;
+    ctx.aiJudge = (assertion, opts) => active.judge(assertion as AiJudgeAssertion, opts);
   }
   return ctx;
 }
@@ -376,6 +414,9 @@ async function emitLadderTrace(
   };
   if (exec.selectorUsed !== undefined) browserAction.selectorUsed = exec.selectorUsed;
   if (exec.strategy != null) browserAction.strategy = exec.strategy;
+  // L0 portfolio health (DESIGN §3.4): surface the winning strategy's agreement count so
+  // report/explain can show how many remembered strategies corroborate the pick (e.g. "3/4").
+  if (exec.portfolio !== undefined) browserAction.agreement = exec.portfolio.agreement;
   if (exec.failureReason !== undefined) browserAction.failureReason = exec.failureReason;
   if (exec.coveringElement !== undefined) {
     browserAction.coveringElement = JSON.stringify(exec.coveringElement);
@@ -393,7 +434,7 @@ async function emitLadderTrace(
       outcome: attemptOutcome(attempt.ok, attempt.escalated),
       durationMs: attempt.durationMs ?? 0,
     };
-    if (attempt.strategy != null) ev.strategy = attempt.strategy as Strategy;
+    if (attempt.strategy != null) ev.strategy = attempt.strategy;
     await writers.trace.emitResolutionAttempt(ev);
     span.event(
       TELEMETRY_EVENTS.resolutionAttempt,
@@ -506,6 +547,7 @@ async function performStepAction(
   runtime: AiRuntime | undefined,
   services: RunServices,
   span: SpanHandle,
+  preResolved?: LadderResult,
 ): Promise<StepActionOutcome> {
   switch (step.do) {
     case "goto": {
@@ -536,6 +578,17 @@ async function performStepAction(
       // after-phase handling. Treat the action as a no-op success here.
       return { ok: true };
     }
+    case "run": {
+      // `run` steps are flattened into concrete child steps at LOAD time (flow/run.ts,
+      // PLAN_v002 v002-8) — one reaching the dispatcher means the caller skipped
+      // `loadFlowFileFlattened`. Fail the step loudly rather than silently no-op.
+      return {
+        ok: false,
+        error:
+          `run step \`${step.id}\` reached the runner unflattened — flows must be loaded via ` +
+          `loadFlowFileFlattened`,
+      };
+    }
     case "click":
     case "fill":
     case "select":
@@ -553,10 +606,22 @@ async function performStepAction(
       // not reached (P5_DESIGN.md §1 / validation follow-up).
       ctx.sleep = (ms) => clock.sleep(ms);
       if (session) ctx.lock = session.hook;
+      // L0 cache-hit quality (Layer 2): thread `[cache]` tuning. A per-step `cache` mode overrides
+      // the flow-level `signature`; `ignore_regions` stays flow-level. No `[cache]` + no step
+      // override → `ctx.cache` unset → default full-signature matching (behavior unchanged).
+      const stepCache = "cache" in step ? step.cache : undefined;
+      const mergedCache = mergeStepCache(services.cache, stepCache);
+      if (mergedCache) ctx.cache = mergedCache;
       // Wire the L2/L3/L4 AI tiers (Phase 4). Absent → the orchestrator returns the failed L1
       // result with the handoff (AI-less runs behave exactly as in P2/P3).
       if (runtime) ctx.ai = runtime.hooks;
-      const result = await ladder.resolveStep(step, ctx);
+      // Vision batching (PLAN_v003 §4 v003-3): when this step was part of a ≥2-step vision batch, its
+      // resolution (screenshot + vision call + act) already ran up-front in `resolveVisionBatch`; we
+      // consume that pre-resolved `LadderResult` here instead of a second per-step ladder call. All
+      // downstream handling (trace emit, lock write-back, settle, error/advisory) is IDENTICAL to a
+      // single-step resolve — only the resolve+act was hoisted. A group of size 1 or any broken
+      // safety condition never sets `preResolved`, so the normal single-step path runs unchanged.
+      const result = preResolved ?? (await ladder.resolveStep(step, ctx));
       const selectorOrIntent = ladderSelectorOrIntent(step);
       await emitLadderTrace(
         writers,
@@ -578,6 +643,9 @@ async function performStepAction(
         if (session) {
           const rec = session.recordResolution(step, exec, {
             resolvedAtL0: exec.tier === "L0",
+            // Layer 3: a revalidated L0 hit carries a fresh signature basis for the stale lock;
+            // pass the flag so the write policy refreshes the stored sig (auto) without a heal.
+            ...(exec.revalidated ? { revalidated: true } : {}),
             ...(step.do === "ai_pick" ? { kind: "ai_pick" as const } : {}),
             ...(exec.pinnedLabel !== undefined ? { pinnedLabel: exec.pinnedLabel } : {}),
           });
@@ -605,21 +673,123 @@ async function performStepAction(
   }
 }
 
-/** The NL intent/target string a ladder step was resolving (for the browser_action event). */
+/**
+ * Map the on-disk `[cache]` config (snake_case) to the ladder's `CacheOptions` (camelCase), or
+ * `undefined` when the block is absent/empty (→ default matching). L0 cache-hit quality, Layer 2.
+ */
+function cacheOptionsFromConfig(cache: CacheConfig | undefined): CacheOptions | undefined {
+  if (!cache) return undefined;
+  const out: CacheOptions = {};
+  if (cache.ignore_regions && cache.ignore_regions.length > 0) {
+    out.ignoreRegions = cache.ignore_regions;
+  }
+  if (cache.signature !== undefined) out.signature = cache.signature;
+  return out.ignoreRegions !== undefined || out.signature !== undefined ? out : undefined;
+}
+
+/**
+ * Merge a per-step `cache` mode over the flow-level cache options (L0 cache-hit quality, Layer 2).
+ * The step override only touches the `signature` match mode; `ignore_regions` stays flow-level.
+ * Returns `undefined` when neither source contributes anything.
+ */
+function mergeStepCache(
+  flow: CacheOptions | undefined,
+  stepMode: "full" | "struct-only" | undefined,
+): CacheOptions | undefined {
+  if (stepMode === undefined) return flow;
+  return { ...(flow ?? {}), signature: stepMode };
+}
+
+/** The NL description a ladder step was resolving (for the browser_action event). */
 function ladderSelectorOrIntent(step: Step): string {
-  if ("intent" in step && step.intent) return step.intent;
-  if ("target" in step && step.target) return step.target;
-  return step.id;
+  const target = "target" in step ? step.target : undefined;
+  return describeTarget(target) ?? step.id;
 }
 
 // ---------------------------------------------------------------------------
 // The main loop over steps
 // ---------------------------------------------------------------------------
 
+/** Default `on_fail.max`: how many times a step may be RE-ENTERED via a jump before we give up. */
+const DEFAULT_ON_FAIL_MAX = 1;
+
+/** A snapshot of the failure-bearing run-state fields, so an `on_fail` jump can roll them back. */
+interface StateSnapshot {
+  failedStep: string | null;
+  verdictFailed: boolean;
+  failedAssertionsLen: number;
+  healedStepsLen: number;
+}
+
+function snapshotState(state: RunState): StateSnapshot {
+  return {
+    failedStep: state.failedStep,
+    verdictFailed: state.verdictFailed,
+    failedAssertionsLen: state.failedAssertions.length,
+    healedStepsLen: state.healedSteps.length,
+  };
+}
+
+/**
+ * Roll back the failure-bearing state to a pre-step snapshot. Used when an `on_fail` jump RECOVERS
+ * a step that would otherwise have failed the run: the recovered attempt's assertion failures and
+ * verdict flags are discarded (the recovery path is now in control). Heals are NOT rolled back —
+ * a healed recipe is legitimately learned regardless of the subsequent jump.
+ */
+function restoreState(state: RunState, snap: StateSnapshot): void {
+  state.failedStep = snap.failedStep;
+  state.verdictFailed = snap.verdictFailed;
+  state.failedAssertions.length = snap.failedAssertionsLen;
+}
+
+// ---------------------------------------------------------------------------
+// Vision batching (PLAN_v003 §4 v003-3): group consecutive same-page vision targets
+// ---------------------------------------------------------------------------
+
+/**
+ * Is this step a member of a vision batch — a locator-targeting verb explicitly hinted `tier_hint =
+ * vision`? Only these steps can share one screenshot + one vision call. A `tier_hint = vision` step
+ * (batched or single) still runs the free/deterministic L0+L1 tiers first, then — if it must
+ * escalate — skips the L2 text tier and climbs STRAIGHT to L3 vision (pillar c; see the AI-climb in
+ * `ladder/orchestrator.ts`'s `nextAiHook`).
+ */
+function isVisionBatchable(step: Step): step is Step & { tier_hint: "vision" } {
+  // The `&&` chain: a hinted targeting verb, AND — to keep a group to pure targeting actions on ONE
+  // unchanged page (the batch resolver's single up-front screenshot + snapshot precondition) — a
+  // step WITHOUT per-step assertions (whose before/after must bracket ITS own action) and WITHOUT an
+  // `on_fail` (whose jump needs per-step dispatch). Such steps fall to the single-step path instead.
+  return (
+    LADDER_VERBS.has(step.do) &&
+    "tier_hint" in step &&
+    step.tier_hint === "vision" &&
+    !("assert" in step && step.assert && step.assert.length > 0) &&
+    !("on_fail" in step && step.on_fail)
+  );
+}
+
+/**
+ * The length of the MAXIMAL run of consecutive {@link isVisionBatchable} steps starting at `start`.
+ * Any non-vision-hinted step (incl. a page-navigating `goto`/`wait`/`press`, a standalone `assert`,
+ * or a targeting step WITHOUT the hint) breaks the run — so a navigation/mutation between two
+ * vision-hinted steps SPLITS the batch (they resolve on different pages, never one screenshot).
+ * Returns 0 when the step at `start` is not batchable.
+ */
+function visionBatchRunLength(steps: Step[], start: number): number {
+  let end = start;
+  while (end < steps.length && isVisionBatchable(steps[end]!)) end += 1;
+  return end - start;
+}
+
 /**
  * Execute the ordered step list (already templated + resume-trimmed). Mutates `state`. Stops
  * early when `state.aborted` is set (eager assertion fail with fail_on_assertion, or a hard
  * error). Each step: step_start → before-assertions → action → after-assertions → step_end.
+ *
+ * The loop is INDEX-driven with a jump table (`id → index`) so a step's `on_fail = { goto, max }`
+ * can redirect control to another step (or retry `self`) instead of failing the run. A per-target
+ * re-entry counter (bounded by `max`, default {@link DEFAULT_ON_FAIL_MAX}) prevents infinite loops;
+ * the global `max_steps` budget is the ultimate backstop (every step attempt, including re-entries,
+ * counts against it). With no `on_fail` anywhere the loop walks 0..N-1 exactly as before.
  */
 async function executeSteps(
   steps: Step[],
@@ -634,14 +804,40 @@ async function executeSteps(
   maxSteps: number | undefined,
   services: RunServices,
 ): Promise<void> {
+  // Jump table: step id → index. Ids are unique (enforced by the linter); on a duplicate the first
+  // wins (matches steps/unique-ids' first-seen attribution). Absent-id steps are simply not targets.
+  const idToIndex = new Map<string, number>();
+  steps.forEach((s, i) => {
+    if (!idToIndex.has(s.id)) idToIndex.set(s.id, i);
+  });
+  // Per-step re-entry counter: how many times control has JUMPED into each step id. Bounded by the
+  // failing step's `on_fail.max` so a self-retry / recovery loop can never spin forever.
+  const reentries = new Map<string, number>();
+  // Vision batching (PLAN_v003 §4 v003-3): pre-resolved `LadderResult`s keyed by step id, populated
+  // ONCE when the loop first reaches the head of a ≥2-step same-page vision batch (the shared
+  // screenshot + vision call + acts all happen there). Each entry is consumed (deleted) when its
+  // step runs, so an `on_fail` jump BACK into a batched step re-resolves it freshly against the now-
+  // changed page rather than replaying a stale pre-resolved pick. Empty when no step is vision-hinted.
+  const batchResults = new Map<string, LadderResult>();
+
+  // L5 path-repair (PLAN_v003 v003-6): a bounded, redaction-safe recent-action history handed to the
+  // planner as context, and a set of divergences already repaired (so a re-detected divergence on
+  // the SAME diverged step id does not replan again in one pass). Empty/unused when the planner is
+  // off or no AI runtime is present.
+  const recent: RecentAction[] = [];
+  const repairedDivergences = new Set<string>();
+
   let stepsAttempted = 0;
-  for (const step of steps) {
+  let cursor = 0;
+  while (cursor < steps.length) {
     if (state.aborted) break;
+    const step = steps[cursor]!;
 
     // (0) max_steps budget (Phase 4). The tracker does NOT enforce this — the runner loop does.
     // The (maxSteps+1)-th step is never started: the run fails fast with the partial evidence
     // already gathered (verdict `inconclusive`, exit 3). Unlimited when `max_steps` is unset, so
-    // AI-less runs that set no budget are byte-identical to before.
+    // AI-less runs that set no budget are byte-identical to before. Re-entries from `on_fail` jumps
+    // count too — the budget is the global backstop against a runaway jump loop.
     if (maxSteps !== undefined && stepsAttempted >= maxSteps) {
       state.budgetExceeded = "max_steps";
       state.aborted = true;
@@ -649,12 +845,36 @@ async function executeSteps(
     }
     stepsAttempted += 1;
 
+    // Snapshot the failure-bearing state so a successful `on_fail` jump can roll it back (the
+    // recovered attempt must not leave a `failed` verdict or a stray failed-assertion behind).
+    const preStep = snapshotState(state);
+
+    // Attempt an `on_fail` jump for THIS step: returns the target index when the jump is taken
+    // (failure-bearing state already rolled back), or `null` when we should fail normally.
+    const tryOnFail = (): number | null => {
+      const onFail = "on_fail" in step ? step.on_fail : undefined;
+      if (!onFail) return null;
+      // `goto = "self"` (or the step's own id) means retry this same step.
+      const targetId = onFail.goto === "self" ? step.id : onFail.goto;
+      const targetIndex = idToIndex.get(targetId);
+      if (targetIndex === undefined) return null; // unknown target (the linter flags this) → fail
+      const max = onFail.max ?? DEFAULT_ON_FAIL_MAX;
+      const entered = reentries.get(targetId) ?? 0;
+      if (entered >= max) return null; // re-entry budget exhausted → fail the run normally
+      reentries.set(targetId, entered + 1);
+      restoreState(state, preStep);
+      return targetIndex;
+    };
+
     const stepStart = clock.now();
     const startPayload: Parameters<ArtifactWriters["run"]["emitStepStart"]>[0] = {
       stepId: step.id,
       do: step.do,
     };
-    if ("intent" in step && step.intent) startPayload.intent = step.intent;
+    {
+      const targetDesc = "target" in step ? describeTarget(step.target) : undefined;
+      if (targetDesc) startPayload.intent = targetDesc;
+    }
     await writers.run.emitStepStart(startPayload);
 
     // Open the per-step telemetry span (NOOP when telemetry is disabled). Make it the active span
@@ -664,11 +884,19 @@ async function executeSteps(
       stepId: step.id,
       do: step.do,
     };
-    if ("intent" in step && step.intent) stepSpanAttrPayload.intent = step.intent;
-    const stepSpan = services.runSpan.child(TELEMETRY_SPAN_NAMES.step, stepSpanAttrs(stepSpanAttrPayload));
+    {
+      const targetDesc = "target" in step ? describeTarget(step.target) : undefined;
+      if (targetDesc) stepSpanAttrPayload.intent = targetDesc;
+    }
+    const stepSpan = services.runSpan.child(
+      TELEMETRY_SPAN_NAMES.step,
+      stepSpanAttrs(stepSpanAttrPayload),
+    );
     services.activeSpan.current = stepSpan;
     const endStep = (ok: boolean, durationMs: number, healed: boolean, tier?: LadderTier): void => {
-      stepSpan.end(stepEndAttrs({ ok, healed, repaired: false, durationMs, ...(tier ? { tier } : {}) }));
+      stepSpan.end(
+        stepEndAttrs({ ok, healed, repaired: false, durationMs, ...(tier ? { tier } : {}) }),
+      );
       services.activeSpan.current = services.runSpan;
     };
 
@@ -686,14 +914,20 @@ async function executeSteps(
         services.redactor,
       );
       if (before.anyFailed && assertCtx.failOnAssertion && assertCtx.mode === "eager") {
-        // Eager + fail: a failed precondition aborts the run before acting (failedStep/verdictFailed
-        // were already set by runAndRecordAssertions for these failing before-assertions).
+        // Eager + fail: a failed precondition would abort the run before acting (failedStep/
+        // verdictFailed were already set by runAndRecordAssertions). An `on_fail` on this step can
+        // recover instead of aborting: roll the state back and jump.
+        const jump = tryOnFail();
         await emitStepEnd(writers, step.id, false, clock.now() - stepStart, {
           healed: false,
           error: "precondition (before-assertion) failed",
         });
         recordStepSummary(state, step, false, undefined, "precondition (before) failed", false);
         endStep(false, clock.now() - stepStart, false);
+        if (jump !== null) {
+          cursor = jump;
+          continue;
+        }
         state.aborted = true;
         break;
       }
@@ -701,6 +935,39 @@ async function executeSteps(
       // (2) the step action.
       let action: StepActionOutcome;
       try {
+        // Vision batching (PLAN_v003 §4 v003-3): when the loop reaches the HEAD of a ≥2-step run of
+        // consecutive same-page vision-hinted targeting steps (and an AI runtime is wired), resolve
+        // the whole run through ONE screenshot + ONE vision call via `resolveVisionBatch`, caching a
+        // `LadderResult` per step. Each grouped step then flows through the SAME `performStepAction`
+        // + assertion + write-back path below, just consuming its cached result instead of a second
+        // ladder call. A lone hint (run length 1), a runtime-less run, or a broken safety condition
+        // never populates the cache → the normal per-step path runs unchanged. Kept inside this
+        // `try` so a `BudgetExceededError` from the shared screenshot/vision call maps to
+        // `inconclusive` via the same handler as a single-step AI call.
+        if (
+          runtime &&
+          !batchResults.has(step.id) &&
+          isVisionBatchable(step) &&
+          visionBatchRunLength(steps, cursor) >= 2
+        ) {
+          const groupLen = visionBatchRunLength(steps, cursor);
+          const group = steps.slice(cursor, cursor + groupLen);
+          const ctx: ResolveContext = { driver, now: () => clock.now() };
+          ctx.sleep = (ms) => clock.sleep(ms);
+          if (session) ctx.lock = session.hook;
+          ctx.ai = runtime.hooks;
+          // Wrap the bound batch hook in an arrow (the hook is `this`-free, but referencing it bare
+          // trips oxlint `unbound-method`); this is the `BatchVisionResolve` the ladder injects.
+          const groupResults = await resolveVisionBatch(group, ctx, (s, c) =>
+            runtime.hooks.resolveBatchL3(s, c),
+          );
+          group.forEach((g, i) => {
+            const r = groupResults[i];
+            if (r) batchResults.set(g.id, r);
+          });
+        }
+        const preResolved = batchResults.get(step.id);
+        if (preResolved) batchResults.delete(step.id); // one-shot: re-entry re-resolves fresh
         action = await performStepAction(
           step,
           driver,
@@ -711,6 +978,7 @@ async function executeSteps(
           runtime,
           services,
           stepSpan,
+          preResolved,
         );
       } catch (err) {
         // A budget overflow propagates from the AI tiers — re-throw so the per-step budget handler
@@ -777,6 +1045,13 @@ async function executeSteps(
       const stepOk = action.ok && !afterFailed;
       const durationMs = clock.now() - stepStart;
       const healed = action.healed ?? false;
+
+      // `on_fail` recovery: a step that would FAIL THE RUN (a failed action, or a failing
+      // after-assertion under fail_on_assertion) can jump instead of failing. A hard infra error
+      // (state.runError) is NEVER recoverable — it always aborts with verdict `error`.
+      const wouldFailRun = !action.ok || (afterFailed && assertCtx.failOnAssertion);
+      const jump = wouldFailRun && !state.runError ? tryOnFail() : null;
+
       await emitStepEnd(writers, step.id, stepOk, durationMs, {
         healed,
         ...(action.tier ? { tier: action.tier } : {}),
@@ -785,15 +1060,98 @@ async function executeSteps(
       recordStepSummary(state, step, stepOk, action.tier, action.error, healed);
       endStep(stepOk, durationMs, healed, action.tier);
 
+      if (jump !== null) {
+        // Recovered: state already rolled back in tryOnFail(). Redirect and keep going.
+        cursor = jump;
+        continue;
+      }
+
+      // (3.75) L4 `intent_changed` → planner (PLAN_v003 v003-6, SECOND trigger, additive). When a
+      // step FAILS and the advisor classified it `intent_changed` (the step no longer matches the
+      // app), the planner may repair the path in place. On a successful repair we RECOVER like an
+      // `on_fail` jump: roll back the failure-bearing state, splice the repair steps after this step,
+      // and redirect the cursor to the first one. `on_fail` (above) still takes precedence.
+      if (
+        wouldFailRun &&
+        !state.runError &&
+        stepsAttempted <= steps.length + 1 && // guard is soft; max_steps is the real backstop
+        runtime &&
+        services.plan.enabled &&
+        action.advisory?.kind === "intent_changed" &&
+        !repairedDivergences.has(step.id)
+      ) {
+        const ctx: ResolveContext = { driver, now: () => clock.now() };
+        ctx.sleep = (ms) => clock.sleep(ms);
+        if (session) ctx.lock = session.hook;
+        if (services.cache) ctx.cache = services.cache;
+        const currentUrl = await driver.currentUrl().catch(() => "");
+        const recovered = await runRepairAndSplice(
+          steps,
+          cursor,
+          { nextStep: step, currentUrl },
+          ctx,
+          runtime,
+          services,
+          recent,
+          repairedDivergences,
+          state,
+        );
+        if (recovered) {
+          rebuildJumpTable(idToIndex, steps); // splice invalidated the jump table
+          // Roll back this step's failure so the recovery path (the spliced steps) is in control.
+          restoreState(state, preStep);
+          cursor += 1; // the first spliced repair step now sits at cursor+1.
+          continue;
+        }
+      }
+
       // Abort policy:
       //   - EAGER: stop at the first step that fails the verdict (failed action, or a failed
       //     after-assertion when fail_on_assertion). This is the fail-fast path.
       //   - DEFERRED: keep going; collect every failure and fail at the end.
       //   - A hard infra error (state.runError) ALWAYS aborts regardless of mode.
-      if (assertCtx.mode === "eager" && (!action.ok || (afterFailed && assertCtx.failOnAssertion))) {
+      if (
+        assertCtx.mode === "eager" &&
+        (!action.ok || (afterFailed && assertCtx.failOnAssertion))
+      ) {
         state.aborted = true;
       }
       if (state.runError) state.aborted = true;
+
+      // Record this step in the planner's recent-action history (redaction-safe: ids + verbs only,
+      // never a fill value). Kept bounded so the volatile suffix stays small.
+      recordRecentAction(recent, step, stepOk);
+
+      // (4) L5 PATH REPAIR (PLAN_v003 v003-6). ENABLED-BY-DEFAULT, but inert unless BOTH an AI
+      // runtime is present AND `[plan].enabled`. After a SUCCESSFUL navigating/mutating step, check
+      // whether the NEXT recorded step's page expectation still holds; on a divergence run the
+      // bounded cheap→escalate planner and SPLICE the repair steps into the stream (mirrors the
+      // `on_fail` cursor redirect). Kept inside this `try` so a planner `BudgetExceededError`
+      // (`max_replans` / `max_model_calls` / `max_cost_usd`) maps to `inconclusive` via the handler
+      // below. A no-AI-runtime run never enters here → byte-identical to before.
+      if (
+        !state.aborted &&
+        stepOk &&
+        runtime &&
+        services.plan.enabled &&
+        isPathMutatingStep(step)
+      ) {
+        const spliced = await maybeRepairPath(
+          steps,
+          cursor,
+          driver,
+          session,
+          clock,
+          runtime,
+          services,
+          recent,
+          repairedDivergences,
+          state,
+        );
+        if (spliced) rebuildJumpTable(idToIndex, steps); // splice invalidated the jump table
+      }
+
+      cursor += 1;
     } catch (err) {
       // A budget overflow anywhere in the step (action OR a routed ai_judge assertion): fail fast
       // with `inconclusive`, recording this step as partial evidence (a step_end + summary row).
@@ -813,6 +1171,135 @@ async function executeSteps(
       throw err; // unexpected — propagate to runFlow's harness-error handler
     }
   }
+}
+
+/**
+ * Rebuild the step-id → index jump table after a path-repair splice mutated `steps` (PLAN_v003
+ * v003-6). First-seen wins (mirrors the initial build) so an `on_fail.goto` still resolves. Called
+ * only after a splice — the common (no-repair) path never touches the table.
+ */
+function rebuildJumpTable(idToIndex: Map<string, number>, steps: Step[]): void {
+  idToIndex.clear();
+  steps.forEach((s, i) => {
+    if (!idToIndex.has(s.id)) idToIndex.set(s.id, i);
+  });
+}
+
+/** Max recent actions kept for the planner's history block (bounded → the volatile suffix stays small). */
+const RECENT_ACTION_WINDOW = 8;
+
+/**
+ * Push a step's outcome onto the planner's recent-action history (PLAN_v003 v003-6). Redaction-safe:
+ * only the id + verb + a short NL intent (never a fill VALUE) are recorded. Bounded to the last
+ * {@link RECENT_ACTION_WINDOW} actions.
+ */
+function recordRecentAction(recent: RecentAction[], step: Step, ok: boolean): void {
+  const intent = "target" in step ? describeTarget(step.target) : undefined;
+  recent.push({ id: step.id, do: step.do, ok, ...(intent ? { intent } : {}) });
+  if (recent.length > RECENT_ACTION_WINDOW) recent.splice(0, recent.length - RECENT_ACTION_WINDOW);
+}
+
+/**
+ * L5 path repair (PLAN_v003 v003-6): after a successful navigating/mutating step at `cursor`, detect
+ * whether the NEXT recorded step diverges and, if so, run the bounded cheap→escalate planner and
+ * SPLICE the validated repair steps into `steps` right after `cursor`. Returns `true` when steps
+ * were inserted (so the caller rebuilds the jump table). The caller guards on runtime + `[plan]
+ * .enabled`. Budget errors (`max_replans` via `noteReplan`, or a planner-call ceiling) PROPAGATE so
+ * the runner maps them to `inconclusive`.
+ */
+async function maybeRepairPath(
+  steps: Step[],
+  cursor: number,
+  driver: Driver,
+  session: LockSession | undefined,
+  clock: RunClock,
+  runtime: AiRuntime,
+  services: RunServices,
+  recent: RecentAction[],
+  repairedDivergences: Set<string>,
+  state: RunState,
+): Promise<boolean> {
+  const nextStep = steps[cursor + 1];
+  if (!nextStep) return false; // nothing after this step to diverge from.
+  // Only replan ONCE per diverged step id per pass (avoid re-detecting the same divergence).
+  if (repairedDivergences.has(nextStep.id)) return false;
+
+  const ctx: ResolveContext = { driver, now: () => clock.now() };
+  ctx.sleep = (ms) => clock.sleep(ms);
+  if (session) ctx.lock = session.hook;
+  if (services.cache) ctx.cache = services.cache;
+
+  const divergence = await detectDivergence(driver, nextStep, session, ctx, services.cache);
+  if (!divergence) return false;
+
+  return runRepairAndSplice(
+    steps,
+    cursor,
+    divergence,
+    ctx,
+    runtime,
+    services,
+    recent,
+    repairedDivergences,
+    state,
+  );
+}
+
+/**
+ * Charge the run-level replan budget, run the bounded planner loop, and splice its repair steps into
+ * `steps` after `cursor`. Shared by the divergence trigger and the L4 `intent_changed` trigger.
+ * `noteReplan()` is charged BEFORE any planner call so `max_replans` fail-fasts to `inconclusive`.
+ * Returns `true` when repair steps were inserted.
+ */
+async function runRepairAndSplice(
+  steps: Step[],
+  cursor: number,
+  divergence: Divergence,
+  ctx: ResolveContext,
+  runtime: AiRuntime,
+  services: RunServices,
+  recent: RecentAction[],
+  repairedDivergences: Set<string>,
+  state: RunState,
+): Promise<boolean> {
+  // Mark handled up-front so a give_up (or a mid-loop budget throw) does not re-trigger this pass.
+  repairedDivergences.add(divergence.nextStep.id);
+  // Run-level hard stop. Throws BudgetExceededError('max_replans') → the runner maps it to
+  // `inconclusive` (checked BEFORE spending any planner call, and NEVER swallowed below).
+  runtime.budget.noteReplan();
+
+  let repair: Awaited<ReturnType<typeof runPathRepair>>;
+  try {
+    repair = await runPathRepair({
+      runtime,
+      goal: services.plan.goal,
+      divergence,
+      ctx,
+      recent: [...recent],
+      ...(services.plan.escalateConfidence !== undefined
+        ? { escalateConfidence: services.plan.escalateConfidence }
+        : {}),
+      ...(services.plan.escalateAttempts !== undefined
+        ? { escalateAttempts: services.plan.escalateAttempts }
+        : {}),
+    });
+  } catch (err) {
+    // A budget ceiling (`max_model_calls` / `max_cost_usd`) MUST propagate → `inconclusive`.
+    if (isBudgetExceeded(err)) throw err;
+    // ANY OTHER planner failure (a malformed model response, a driver hiccup while gathering the
+    // page) is BEST-EFFORT recovery — it must NEVER turn a failed/passed run into an `error`. Degrade
+    // to "no repair": the diverged/failed step stays as it was.
+    return false;
+  }
+
+  if (repair.decision !== "repaired" || repair.steps.length === 0) return false;
+
+  // Splice the validated, id-namespaced repair steps into the stream right after `cursor` so the
+  // loop executes them next through the NORMAL ladder (they count against `max_steps`).
+  steps.splice(cursor + 1, 0, ...repair.steps);
+  state.replanCount += 1;
+  for (const s of repair.steps) state.repairedSteps.push(s.id);
+  return true;
 }
 
 /** Emit a step_end event. `healed` is set when the step's recipe drifted + self-healed (P3). */
@@ -900,7 +1387,8 @@ async function runHookFlow(
   services: RunServices,
 ): Promise<void> {
   const resolvedPath = hookPath.startsWith("/") ? hookPath : `${baseDir}/${hookPath}`;
-  const loaded = await loadFlowFile(resolvedPath);
+  // Hooks flatten their own `run` steps too (a setup/teardown module may compose flows).
+  const loaded = await loadFlowFileFlattened(resolvedPath, { env });
   const inputs = resolveInputs(loaded.flow.inputs, undefined, env, {});
   const { steps } = templateFlow(loaded.flow, inputs, env);
   // Open the hook module's OWN lock session (its sidecar `<module>.lock.toml`). The hook's steps
@@ -913,6 +1401,8 @@ async function runHookFlow(
     mode: lockMode,
     inferStrategy: selectorUsedToStrategy,
     now: () => clock.now(),
+    // Redact an AI-emitted note before persisting it to the hook module's lock (DESIGN §4).
+    redactNote: (note: string) => services.redactor.redactText(note),
   });
   // `max_steps` is a main-flow budget, so hook steps are not counted against it (maxSteps undefined).
   await executeSteps(
@@ -952,19 +1442,21 @@ async function runHookFlow(
  */
 export async function runFlow(opts: RunOptions): Promise<RunResult> {
   const clock = opts.clock ?? systemRunClock;
-  const env = opts.env ?? (process.env as Record<string, string | undefined>);
+  const env = opts.env ?? process.env;
   const artifactClock: ArtifactClock = () => clock.now();
 
   // --- (1) load + import-resolve + template ---
-  const loaded = await loadFlowFile(opts.flowPath);
+  // Load with `run` steps flattened into namespaced child steps (PLAN_v002 v002-8) — the
+  // runner always executes against the final concrete step list.
+  const loaded = await loadFlowFileFlattened(opts.flowPath, { env });
   // Resolve the import graph (root node carries this flow's resolved inputs).
   const graph = await resolveImports(loaded, { env });
   const rootNode = graph.nodes.get(graph.rootPath);
   const inputs = rootNode?.inputs ?? resolveInputs(loaded.flow.inputs, undefined, env, {});
   const { steps: allSteps } = templateFlow(loaded.flow, inputs, env);
 
-  // Resume support: trim to the steps at/after `fromStep`.
-  const steps = trimFromStep(allSteps, opts.fromStep);
+  // Resume/slice support: trim to the `--from`/`--to` debugging range (both inclusive).
+  const steps = trimStepRange(allSteps, opts.fromStep, opts.toStep);
 
   // --- (2) connect config + artifact run dir + writers ---
   const connectCfg = resolveConnectConfig(opts.config);
@@ -1010,6 +1502,21 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     screenshotsDir: runDir.screenshotsDir,
     screenshotPaths: [],
     shotIndex: { n: 0 },
+    ...(cacheOptionsFromConfig(opts.config.cache)
+      ? { cache: cacheOptionsFromConfig(opts.config.cache) }
+      : {}),
+    // L5 path-repair planner policy (PLAN_v003 v003-6). `enabled` defaults TRUE via the resolved
+    // config; the goal defaults to the flow `description` when `[flow].goal` is unset.
+    plan: {
+      enabled: opts.config.plan.enabled,
+      goal: resolveFlowGoal(loaded.flow),
+      ...(opts.config.plan.escalate_confidence !== undefined
+        ? { escalateConfidence: opts.config.plan.escalate_confidence }
+        : {}),
+      ...(opts.config.plan.escalate_attempts !== undefined
+        ? { escalateAttempts: opts.config.plan.escalate_attempts }
+        : {}),
+    },
   };
 
   // The ai_call telemetry bridge (Risk R5): mirror each emitted `ai_call` onto the ACTIVE step span
@@ -1060,19 +1567,50 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   // identical to before (the namespaceFor lookup only fires after a bare-key miss).
   const imported = buildSessionImports(graph);
   const stepNamespaces = buildStepNamespaceMap(graph);
-  const session = await openLockSession({
-    lockPath,
-    source: loaded.path,
-    sourceHash: loaded.sourceHash,
-    description: loaded.flow.description,
-    mode: lockMode,
-    inferStrategy: selectorUsedToStrategy,
-    now: () => clock.now(),
-    ...(imported.length > 0 ? { imported } : {}),
-    ...(stepNamespaces.size > 0
-      ? { hookOptions: { namespaceFor: (step: Step) => stepNamespaces.get(step.id) } }
-      : {}),
-  });
+  // Under `--frozen` the committed lock is authoritative: a malformed `*.lock.toml` is a hard
+  // failure (a `LockParseError`) — we must NOT silently re-resolve fresh (which would mask a garbage
+  // committed artifact with a `drift_count=0` pass). Map it to a `runError` (verdict `error`, exit 2)
+  // and abort the step loop. In auto/no-write modes `openLockSession` still auto-heals + warns.
+  let session: LockSession | undefined;
+  try {
+    session = await openLockSession({
+      lockPath,
+      source: loaded.path,
+      sourceHash: loaded.sourceHash,
+      description: loaded.flow.description,
+      mode: lockMode,
+      inferStrategy: selectorUsedToStrategy,
+      now: () => clock.now(),
+      // Redact an AI-emitted note-to-future-self BEFORE it is persisted to the lock (DESIGN §4):
+      // secrets always masked, PII when `mask_text` on; identity when redaction is off.
+      redactNote: (note: string) => redactor.redactText(note),
+      ...(imported.length > 0 ? { imported } : {}),
+      ...(stepNamespaces.size > 0
+        ? { hookOptions: { namespaceFor: (step: Step) => stepNamespaces.get(step.id) } }
+        : {}),
+    });
+  } catch (err) {
+    if (err instanceof LockParseError) {
+      state.runError = `malformed lock under --frozen: ${err.message}`;
+      state.aborted = true;
+    } else {
+      throw err;
+    }
+  }
+
+  // Surface import step-id collisions (H6): when two imported modules define the SAME step id, the
+  // root step-namespace map binds to the graph-iteration-first module silently (see
+  // buildStepNamespaceMap). This does NOT change binding — it just makes the ambiguity observable so
+  // a maintainer can disambiguate (a run-time warning, per the brief). `onWarn` defaults to stderr.
+  const onWarn = opts.onWarn ?? ((m: string) => console.error(m));
+  for (const c of collectImportStepCollisions(graph)) {
+    onWarn(
+      `flightplan: import step-id collision on "${c.stepId}": bound to "${c.boundModule}" ` +
+        `(also defined by ${c.otherModules.map((m) => `"${m}"`).join(", ")}). ` +
+        `A root reference to "${c.stepId}" resolves against "${c.boundModule}"; ` +
+        `rename the step or reference it via its module namespace to disambiguate.`,
+    );
+  }
 
   // --- (3) build the driver (factory) then connect; teardown ALWAYS in finally ---
   const driver = (opts.driverFactory ?? defaultDriverFactory)(connectCfg);
@@ -1138,7 +1676,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     // --- (5.5) persist learned/healed recipes (auto mode only; frozen/no-write never write) ---
     // Heals are written even when a later step/assertion failed (the recipe is still valid); a
     // harness error skips the flush (the in-memory state is unreliable).
-    if (!state.runError) {
+    if (!state.runError && session) {
       try {
         const written = await session.flush();
         for (const path of written) {
@@ -1311,6 +1849,47 @@ function buildStepNamespaceMap(graph: ImportGraph): Map<string, string> {
   return map;
 }
 
+/** A single import step-id collision: a step id defined by more than one imported module. */
+interface ImportStepCollision {
+  /** The colliding step id (e.g. `submit`). */
+  stepId: string;
+  /** The module (flow id) a root reference actually binds to (graph-iteration-first — see
+   * {@link buildStepNamespaceMap}). */
+  boundModule: string;
+  /** The other module(s) that also define this step id (whose definitions are shadowed). */
+  otherModules: string[];
+}
+
+/**
+ * Detect import step-id collisions (H6): step ids defined by MORE THAN ONE imported module. Mirrors
+ * {@link buildStepNamespaceMap}'s iteration so the reported `boundModule` is exactly the module a
+ * root reference binds to (first-registered wins) — the shadowing is silent otherwise. Reporting
+ * only; binding behavior is unchanged. Empty when there are no imports or no collisions.
+ */
+function collectImportStepCollisions(graph: ImportGraph): ImportStepCollision[] {
+  const byStep = new Map<string, string[]>();
+  for (const node of graph.nodes.values()) {
+    if (node.path === graph.rootPath || node.relation !== "import") continue;
+    const moduleId = node.loaded.flow.id;
+    for (const step of node.loaded.flow.steps) {
+      const mods = byStep.get(step.id);
+      // Only record each module ONCE per step id (a module repeating an id is a separate concern).
+      if (mods) {
+        if (!mods.includes(moduleId)) mods.push(moduleId);
+      } else {
+        byStep.set(step.id, [moduleId]);
+      }
+    }
+  }
+  const collisions: ImportStepCollision[] = [];
+  for (const [stepId, mods] of byStep) {
+    if (mods.length > 1) {
+      collisions.push({ stepId, boundModule: mods[0]!, otherModules: mods.slice(1) });
+    }
+  }
+  return collisions;
+}
+
 /**
  * Act on the captured L4 advisor verdicts (Phase 4). `heal` writes the advisor's recipe to the lock
  * ONLY when a validated `signatureBasis` from a deeper ACTING tier is available (otherwise the
@@ -1399,6 +1978,60 @@ export function trimFromStep(steps: Step[], fromStep: string | undefined): Step[
   return idx >= 0 ? steps.slice(idx) : steps;
 }
 
+/**
+ * Slice the (already-flattened, namespaced) step list to the `--from`/`--to` debugging range
+ * (PLAN_v002 v002-7). Both ends are INCLUSIVE — `toStep` still runs, then execution stops before
+ * the next step. Either flag may be used alone; combined, `fromStep` must resolve to an index at
+ * or before `toStep`'s (equal ids/indices are a valid 1-step slice).
+ *
+ * Unlike {@link trimFromStep}'s legacy silent-fallback-to-all-steps behavior (kept as-is for
+ * back-compat — it has no error path today), this helper throws on an unknown `--to` id, and on
+ * an unknown `--from` id when `--to` is also given, since a silent full-flow fallback would
+ * defeat the point of a debugging slice. `runFlow` calls this instead of `trimFromStep` whenever
+ * `toStep` is set.
+ */
+export function trimStepRange(
+  steps: Step[],
+  fromStep: string | undefined,
+  toStep: string | undefined,
+): Step[] {
+  if (!fromStep && !toStep) return steps;
+
+  let fromIdx = 0;
+  if (fromStep) {
+    fromIdx = steps.findIndex((s) => s.id === fromStep);
+    if (fromIdx < 0) {
+      throw new Error(`--from: no step with id "${fromStep}" in the flattened step list`);
+    }
+  }
+
+  let toIdx = steps.length - 1;
+  if (toStep) {
+    toIdx = steps.findIndex((s) => s.id === toStep);
+    if (toIdx < 0) {
+      throw new Error(`--to: no step with id "${toStep}" in the flattened step list`);
+    }
+  }
+
+  if (fromIdx > toIdx) {
+    throw new Error(
+      `--from "${fromStep}" (step ${fromIdx + 1}) comes after --to "${toStep}" ` +
+        `(step ${toIdx + 1}) in the flow — the range is empty. Swap them or drop one flag.`,
+    );
+  }
+
+  return steps.slice(fromIdx, toIdx + 1);
+}
+
+/**
+ * The durable flow GOAL for the L5 path-repair planner (PLAN_v003 v003-6). Uses `[flow].goal` when
+ * the author set it, else defaults to the flow `description` (both are always present — description
+ * is a required header field). Load-bearing for non-local repairs and the prompt-cache key.
+ */
+export function resolveFlowGoal(flow: FlowFile): string {
+  return flow.goal ?? flow.description;
+}
+
 /** Directory of a file path (no node:path import needed — last slash split). */
 function dirOf(path: string): string {
   const i = path.lastIndexOf("/");
@@ -1444,6 +2077,8 @@ function buildSummary(
     total_cost_usd: usage.total_cost_usd,
     model_usage: usage.model_usage,
     proposed_patch_path: state.proposedPatchPath,
+    replan_count: state.replanCount,
+    repaired_steps: [...state.repairedSteps],
     steps: state.stepSummaries,
   };
 }
@@ -1474,4 +2109,3 @@ function limitsSummary(config: ResolvedConfig): Record<string, number | string |
   if (r.assert_timeout_ms !== undefined) out.assert_timeout_ms = r.assert_timeout_ms;
   return out;
 }
-

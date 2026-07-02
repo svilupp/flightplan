@@ -57,10 +57,9 @@ export function connectMode(cfg: ConnectConfig): "attach" | "launch" {
  * "Prefer explicit `wsUrl`" — autodiscover is the convenience fallback and can throw
  * `multiple-local-browsers` on multi-profile machines (FINDINGS §1 / PLAN §8 risk #3).
  */
-export function attachWsResolutionSource(cfg: Extract<ConnectConfig, { mode: "attach" }>):
-  | "explicit-ws"
-  | "browser-url"
-  | "autodiscover" {
+export function attachWsResolutionSource(
+  cfg: Extract<ConnectConfig, { mode: "attach" }>,
+): "explicit-ws" | "browser-url" | "autodiscover" {
   if (cfg.wsUrl) return "explicit-ws";
   if (cfg.browserURL) return "browser-url";
   return "autodiscover";

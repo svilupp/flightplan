@@ -1,6 +1,6 @@
 version = 1
 source = "examples/flows/drift.toml"
-source_hash = "sha256:562efcb5ade7b597c4a25c3437df567ae45ba10300e6757469ca0a2e99190186"
+source_hash = "sha256:417d57bc268d05cf4c9d6e33456bf94ee17aaa58dee18180c6506d5c16f8d585"
 description = "Create an order on the drift fixture and assert the deterministic result"
 
 [[targets]]

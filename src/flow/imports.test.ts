@@ -1,4 +1,4 @@
-// Import-resolution tests: string/array/table forms, cycle detection, `with` clause.
+// Import-resolution tests: string/array forms, run-path refs, cycle detection.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   extractRefs,
+  FlowValidationError,
   ImportCycleError,
+  isRunFlowPath,
   loadFlowFile,
   parseFlowFile,
   resolveImports,
@@ -33,24 +35,25 @@ describe("extractRefs", () => {
   });
 
   test("normalizes array-of-strings form", () => {
-    const { flow: f } = parseFlowFile(
-      flow("a", `imports = ["./b.toml", "./c.toml"]`),
-      "a.toml",
-    );
+    const { flow: f } = parseFlowFile(flow("a", `imports = ["./b.toml", "./c.toml"]`), "a.toml");
     const refs = extractRefs(f);
     expect(refs.map((r) => r.modulePath)).toEqual(["./b.toml", "./c.toml"]);
   });
 
-  test("normalizes [[imports]] table form with `with`", () => {
-    const body = `[[imports]]\nmodule = "./b.toml"\nwith = { account = "x" }\n\n[[imports]]\nmodule = "./c.toml"`;
+  test("the removed [[imports]] table form is a schema error (v002-5)", () => {
+    const body = `[[imports]]\nmodule = "./b.toml"\nwith = { account = "x" }`;
+    expect(() => parseFlowFile(flow("a", body), "a.toml")).toThrow(FlowValidationError);
+  });
+
+  test("includes path-form run references (v002-6)", () => {
+    const body = `imports = "./lib.toml"\n\n[[steps]]\nid = "call"\ndo = "run"\nflow = "./child.toml"\n\n[[steps]]\nid = "call_id"\ndo = "run"\nflow = "lib.flow"`;
     const { flow: f } = parseFlowFile(flow("a", body), "a.toml");
     const refs = extractRefs(f);
-    expect(refs[0]).toEqual({
-      modulePath: "./b.toml",
-      relation: "import",
-      with: { account: "x" },
-    });
-    expect(refs[1]).toEqual({ modulePath: "./c.toml", relation: "import" });
+    // The import + the PATH-form run ref; the id-form ref adds no edge.
+    expect(refs.map((r) => [r.modulePath, r.relation])).toEqual([
+      ["./lib.toml", "import"],
+      ["./child.toml", "run"],
+    ]);
   });
 
   test("includes setup and teardown as references", () => {
@@ -60,9 +63,7 @@ describe("extractRefs", () => {
     );
     const refs = extractRefs(f);
     expect(refs.find((r) => r.relation === "setup")?.modulePath).toBe("./setup.toml");
-    expect(refs.find((r) => r.relation === "teardown")?.modulePath).toBe(
-      "./teardown.toml",
-    );
+    expect(refs.find((r) => r.relation === "teardown")?.modulePath).toBe("./teardown.toml");
   });
 });
 
@@ -110,43 +111,26 @@ describe("resolveImports", () => {
     expect(graph.order[graph.order.length - 1]).toBe(rootPath);
   });
 
-  test("passes `with` params into an imported module's inputs", async () => {
-    // Module declares an input with a default; the importer overrides it via `with`.
-    write(
-      "mod.toml",
-      flow("mod", `[inputs]\naccount = "default-account"`),
-    );
-    const rootPath = write(
-      "with-root.toml",
-      flow(
-        "with-root",
-        `[[imports]]\nmodule = "./mod.toml"\nwith = { account = "overridden" }`,
-      ),
-    );
-    const root = await loadFlowFile(rootPath);
-    const graph = await resolveImports(root, { env: {} });
-    const modNode = [...graph.nodes.values()].find(
-      (n) => n.loaded.flow.id === "mod",
-    )!;
-    expect(modNode.inputs.account).toBe("overridden");
-    expect(modNode.with).toEqual({ account: "overridden" });
-  });
-
-  test("`with` values are templated against the parent env", async () => {
-    write("mod2.toml", flow("mod2", `[inputs]\nacct = "fallback"`));
-    const rootPath = write(
-      "with-env-root.toml",
-      flow(
-        "with-env-root",
-        `[[imports]]\nmodule = "./mod2.toml"\nwith = { acct = "\${env.ACCT}" }`,
-      ),
-    );
+  test("resolves an imported module's declared inputs against env", async () => {
+    write("mod.toml", flow("mod", `[inputs]\naccount = "\${env.ACCT}"`));
+    const rootPath = write("inputs-root.toml", flow("inputs-root", `imports = "./mod.toml"`));
     const root = await loadFlowFile(rootPath);
     const graph = await resolveImports(root, { env: { ACCT: "from-env" } });
-    const modNode = [...graph.nodes.values()].find(
-      (n) => n.loaded.flow.id === "mod2",
-    )!;
-    expect(modNode.inputs.acct).toBe("from-env");
+    const modNode = [...graph.nodes.values()].find((n) => n.loaded.flow.id === "mod")!;
+    expect(modNode.inputs.account).toBe("from-env");
+  });
+
+  test("detects a cycle through a path-form run reference", async () => {
+    write(
+      "run-cyc-a.toml",
+      flow("run-cyc-a", "") + `[[steps]]\nid = "call"\ndo = "run"\nflow = "./run-cyc-b.toml"\n`,
+    );
+    write(
+      "run-cyc-b.toml",
+      flow("run-cyc-b", "") + `[[steps]]\nid = "call"\ndo = "run"\nflow = "./run-cyc-a.toml"\n`,
+    );
+    const root = await loadFlowFile(join(tmp, "run-cyc-a.toml"));
+    await expect(resolveImports(root)).rejects.toThrow(ImportCycleError);
   });
 
   test("throws when an imported module does not exist", async () => {
@@ -156,5 +140,18 @@ describe("resolveImports", () => {
     );
     const root = await loadFlowFile(rootPath);
     await expect(resolveImports(root)).rejects.toThrow();
+  });
+});
+
+describe("isRunFlowPath", () => {
+  test("path iff it contains '/' or ends '.toml' (v002-6)", () => {
+    expect(isRunFlowPath("./auth/google-login.toml")).toBe(true);
+    expect(isRunFlowPath("auth/login.toml")).toBe(true);
+    expect(isRunFlowPath("login.toml")).toBe(true);
+    expect(isRunFlowPath("/abs/path.toml")).toBe(true);
+    // Everything else is an imported flow id.
+    expect(isRunFlowPath("auth.google_login")).toBe(false);
+    expect(isRunFlowPath("checkout")).toBe(false);
+    expect(isRunFlowPath("shop.checkout.pay")).toBe(false);
   });
 });

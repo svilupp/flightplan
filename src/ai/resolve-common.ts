@@ -8,27 +8,94 @@
 // producing the SAME `StepExecution` shape so the runner's existing heal/learn path works
 // unchanged. This module factors that shared spine.
 
-import type { Step } from "../flow/types.ts";
-import { selectorUsedToStrategy } from "../driver/index.ts";
-import type { InteractiveElement } from "../driver/index.ts";
 import type { SnapshotNode } from "browser-pilot";
+import type { InteractiveElement } from "../driver/index.ts";
+import { selectorUsedToStrategy } from "../driver/index.ts";
+import { normalizeTarget } from "../flow/normalize-target.ts";
+import type { Step } from "../flow/types.ts";
 import type {
   BatchActionVerb,
   RankedCandidate,
   ResolveContext,
   StepExecution,
 } from "../ladder/index.ts";
-import type { LadderTier } from "../ladder/types.ts";
-import { buildHandoff } from "../ladder/index.ts";
-import { durableSelectorForElement, strategyForElement } from "../ladder/index.ts";
+import { buildHandoff, durableSelectorForElement, strategyForElement } from "../ladder/index.ts";
 import { actionVerbForStep, buildBatchStep } from "../ladder/l1.ts";
 import { capturePageSignature } from "../ladder/page-signature.ts";
+import type { LadderTier } from "../ladder/types.ts";
 
-/** The intent/target text used for fuzzy matching + the model prompt. */
+/** The NL query text used for fuzzy matching + the model prompt. */
 export function intentTextForStep(step: Step): string {
-  if ("intent" in step && step.intent) return step.intent;
-  if ("target" in step && step.target) return step.target;
-  return step.id;
+  const target = "target" in step ? step.target : undefined;
+  return normalizeTarget(target).nl ?? step.id;
+}
+
+/**
+ * The stored, FRESH advisory note for this step (the `note_in`, DESIGN §4), read from the L0 lock
+ * hook. The hook already applies decay (only a non-stale note is carried on the `CachedRecipe.note`),
+ * so this is `undefined` for a missing/decayed/absent note. Advisory only: it is fed into the AI
+ * prompt as extra context and NEVER gates routing or correctness. Any lookup error is swallowed
+ * (the note is optional context — never fail a resolution because we could not read a hint).
+ */
+export async function storedNoteForStep(
+  step: Step,
+  ctx: ResolveContext,
+): Promise<string | undefined> {
+  if (!ctx.lock) return undefined;
+  try {
+    const recipe = await ctx.lock.lookup(step, ctx);
+    const note = recipe?.note?.trim();
+    return note && note.length > 0 ? note : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The model-confidence at/above which a note is trusted even WITHOUT deterministic corroboration
+ * (PLAN_v003 §2 (e) / §6 v003-4: "persist a note only from a corroborated / high-confidence pick").
+ * The plan flags 0.8 as the intended bar (models emit confident-but-wrong notes below it), so a
+ * pick that clears this on its own is treated as high-confidence. This is DISTINCT from
+ * `L2_MIN_CONFIDENCE` (0.5), the far lower bar for ACTING on a pick — a pick can be good enough to
+ * click yet not good enough to leave a durable hint about.
+ */
+export const NOTE_CONFIDENCE_MIN = 0.8;
+
+/** The confidence/corroboration signals that decide whether an emitted note is trustworthy. */
+export interface NoteGate {
+  /** The model's self-reported confidence in this pick (0..1), if it gave one. */
+  confidence?: number;
+  /**
+   * True when the pick is CORROBORATED: the model chose the SAME candidate the deterministic fuzzy
+   * matcher independently ranked #1, and that candidate has a real (>0) fuzzy score. Deterministic
+   * ranking and the model agreeing is the strongest signal the note describes the RIGHT element.
+   */
+  corroborated: boolean;
+}
+
+/**
+ * Attach an AI-emitted note (the `note_out`, DESIGN §4) to a successful execution, so the lock
+ * write-back can SANITIZE + REDACT + persist it. Sparse AND confidence-gated (PLAN_v003 §6 v003-4):
+ * a note is attached ONLY when
+ *   - the execution actually resolved (`ok`) — a note without a green pick is discarded; AND
+ *   - the model returned non-empty note text; AND
+ *   - the pick is trustworthy: CORROBORATED (deterministic fuzzy #1 == the model's pick) OR
+ *     HIGH-CONFIDENCE (`confidence >= NOTE_CONFIDENCE_MIN`).
+ * An uncorroborated, low-confidence pick writes NO note — models emit confident-but-wrong notes when
+ * nothing corroborates them, and a wrong note actively misleads the next resolution. Mutates +
+ * returns `execution` for chaining.
+ */
+export function attachEmittedNote(
+  execution: StepExecution,
+  note: string | undefined,
+  gate: NoteGate,
+): StepExecution {
+  if (!execution.ok) return execution;
+  const trimmed = note?.trim();
+  if (!trimmed) return execution;
+  const trustworthy = gate.corroborated || (gate.confidence ?? 0) >= NOTE_CONFIDENCE_MIN;
+  if (trustworthy) execution.note = trimmed;
+  return execution;
 }
 
 /** The action verb an AI tier drives (defaults to `click` for non-targeting/ai_pick steps). */
@@ -198,8 +265,16 @@ export async function actOnPick(
   const { tier, chosen, elements, ranked, signatureBasis, intentText, action } = args;
   const element = elements.find((e) => e.ref === chosen.ref);
 
-  // Build the ordered selector array exactly like L1: durable selector first, ref as fallback.
-  const selectors = chosen.ref ? [chosen.selector, `ref:${chosen.ref}`] : [chosen.selector];
+  // Build the ordered selector array REF-FIRST. Unlike L1 (whose candidate carries a UNIQUE durable
+  // selector, so selector-first is safe), an AI-tier pick's `chosen.selector` comes from native
+  // ranking and, for a NAMELESS icon element, is the bare NON-UNIQUE `role:<role>` (e.g. `role:button`).
+  // The model chose THIS specific element by index off a FRESH snapshot taken microseconds earlier
+  // (the page is unchanged), so `ref:eN` is authoritative and non-stale — it MUST be probed first.
+  // browser-pilot's `findElement` honors caller ORDER, so a selector-first array would resolve the
+  // FIRST same-role element and return before the ref is ever tried (the candidate-ordering bug).
+  // `chosen.selector` stays as the fallback for a somehow-unresolvable/stale ref; when there is no
+  // ref at all we emit just the selector (never `ref:undefined`).
+  const selectors = chosen.ref ? [`ref:${chosen.ref}`, chosen.selector] : [chosen.selector];
   const batchStep = buildBatchStep(step, action, selectors);
   const result = await ctx.driver.batch([batchStep], { onFail: "stop" });
   const sr = result.steps[0];

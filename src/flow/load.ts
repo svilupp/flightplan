@@ -5,8 +5,8 @@
 // used later by lock validation to detect flow edits. Canonical reference: PLAN.md §4
 // (LockFile.source_hash) and §5 (Phase 1).
 
-import { parseToml } from "../config/parse.ts";
-import { formatIssues } from "../config/parse.ts";
+import { formatIssues, parseToml } from "../config/parse.ts";
+import { expandForEachInDoc, ForEachError } from "./normalize.ts";
 import { FlowFileSchema } from "./schema.ts";
 import type { FlowFile } from "./types.ts";
 
@@ -49,7 +49,23 @@ export function computeSourceHash(sourceText: string): string {
  * for callers that hold the text. Throws {@link FlowValidationError} on a schema violation.
  */
 export function parseFlowFile(sourceText: string, path: string): LoadedFlow {
-  const data = parseToml(sourceText, path);
+  const parsed = parseToml(sourceText, path);
+  // Load-time `for_each` expansion: rewrite the raw doc into concrete steps BEFORE zod validates,
+  // so the schema (and everything downstream) only ever sees concrete steps. A malformed
+  // `for_each` / misused loop token surfaces as a FlowValidationError (not a raw throw).
+  let data: unknown = parsed;
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    try {
+      data = expandForEachInDoc(parsed as Record<string, unknown>, path);
+    } catch (err) {
+      if (err instanceof ForEachError) {
+        throw new FlowValidationError(`Invalid flow file (${path}): ${err.message}`, path, [
+          { message: err.message },
+        ]);
+      }
+      throw err;
+    }
+  }
   const result = FlowFileSchema.safeParse(data);
   if (!result.success) {
     throw new FlowValidationError(

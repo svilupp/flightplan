@@ -9,9 +9,9 @@
 //
 // Canonical references: PLAN.md §4 (Assertion / RunLimits) and §5 Phase 2 (assert/).
 
-import type { AssertType } from "../types.ts";
 import type { Driver } from "../driver/types.ts";
 import type { Assertion } from "../flow/types.ts";
+import type { AssertType } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Clock — the injectable time/sleep seam (tests MUST NOT actually sleep)
