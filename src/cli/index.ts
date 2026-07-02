@@ -298,7 +298,10 @@ export async function runRun(args: ParsedArgs): Promise<number> {
     return 2;
   }
 
-  // Resolve the config from the flow's own layers (built-in → flow [config] → flow [run]).
+  // Resolve the config from the ENTRY flow's own layers (built-in → flow [config] → flow [run]).
+  // Only the entry flow contributes config here — imported flows supply steps, never config,
+  // so the entry flow's [connect] (or the attach-localhost:9222 default) is authoritative and
+  // imported flows' [connect] blocks are intentionally ignored.
   let config: ResolvedConfig;
   try {
     const loaded = await loadFlowFile(flowPath);

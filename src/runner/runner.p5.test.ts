@@ -765,6 +765,65 @@ url = "http://localhost:3000/next"
     expect(savedPaths.some((p) => p.includes("go"))).toBe(true);
     expect(result.summary.screenshot_paths.length).toBe(1);
   });
+
+  test("redact_media: secret SELECT and GOTO frames are ALSO skipped, not only fills (B7 gap)", async () => {
+    // `secret = true` is valid on select + goto too (schema), and their frames could render the
+    // secret value/url on screen. Before the B7 media fix `maybePersistScreenshot` fail-closed ONLY
+    // on `fill`, leaking secret select/goto frames to disk. Now ALL secret-capable verbs suppress
+    // the frame; a NON-secret step still persists.
+    const FLOW = `
+version = 1
+kind = "flow"
+id = "p5.redactmedia2"
+description = "redact media select/goto"
+
+[inputs]
+plan = "PLAN-SECRET-42"
+
+[[steps]]
+id = "pick_plan"
+do = "select"
+target = ["text:Plan", "the plan dropdown"]
+value = "\${inputs.plan}"
+secret = true
+
+[[steps]]
+id = "go_secret"
+do = "goto"
+url = "http://localhost:3000/secret"
+secret = true
+
+[[steps]]
+id = "go_public"
+do = "goto"
+url = "http://localhost:3000/public"
+`;
+    const { flowPath, outDir } = await writeFlow(FLOW);
+    const driver = new MockDriver();
+    driver.setSnapshot(
+      makeSnapshot({
+        url: "http://localhost:3000/plans",
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "combobox", name: "Plan" }),
+        ],
+      }),
+    );
+    driver.setBatchResult(makeSuccessBatch("role:combobox:Plan", "select"));
+    driver.setVideoPath("/fake/v.webm");
+
+    // record on + redact_media on (default) → secret select + secret goto frames NOT persisted.
+    const cfg = configWith({ browser: { record: true } });
+    const result = await runFlow(optsFor(flowPath, outDir, driver, cfg));
+
+    expect(result.summary.verdict).toBe("passed");
+    const savedPaths = driver.callsTo("saveScreenshot").map((c) => String(c.args[0]));
+    // Both secret-adjacent frames were skipped — this is the B7 gap (select + goto, not just fill).
+    expect(savedPaths.some((p) => p.includes("pick_plan"))).toBe(false);
+    expect(savedPaths.some((p) => p.includes("go_secret"))).toBe(false);
+    // The non-secret goto's frame WAS persisted.
+    expect(savedPaths.some((p) => p.includes("go_public"))).toBe(true);
+    expect(result.summary.screenshot_paths.length).toBe(1);
+  });
 });
 
 // ===========================================================================

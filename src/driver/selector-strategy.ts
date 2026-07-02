@@ -54,8 +54,15 @@ export function selectorUsedToStrategy(selectorUsed: string): Strategy | null {
   if (/\[\s*data-(testid|test-id|test|qa)\s*[~|^$*]?=/i.test(sel)) {
     return "testid";
   }
+  // Author-declared attribute hook (`[resolve] attributes`, e.g. `[data-cmd="c2"]`) — browser-pilot
+  // ranks extended `testIdAttributes` as the deterministic `testid` strategy, so any `[data-*=…]`
+  // hook maps to `testid` too (Fix 2 BONUS). data-testid/test/qa already matched above.
+  if (/\[\s*data-[\w-]+\s*[~|^$*]?=/i.test(sel)) {
+    return "testid";
+  }
 
-  // role/name — the `role:` special OR the generated [role][aria-label] pair.
+  // role/name — the `role:` special (incl. positional `role:button[2]`) OR the generated
+  // [role][aria-label] pair. A positional index maps to the deterministic `role_name` tier (Fix 2).
   if (/^role:/i.test(sel)) {
     return "role_name";
   }

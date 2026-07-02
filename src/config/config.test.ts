@@ -175,6 +175,64 @@ describe("resolution-order precedence", () => {
   });
 });
 
+describe("[timeouts] — action/nav ceilings (fixes 30s hangs)", () => {
+  test("built-in defaults supply action_ms=5000 and nav_ms=2000", () => {
+    const resolved = resolveConfigWithDefaults([]);
+    expect(resolved.timeouts.action_ms).toBe(5000);
+    expect(resolved.timeouts.nav_ms).toBe(2000);
+  });
+
+  test("an author can tune action_ms down to 2500ms; the unset nav_ms keeps its default", () => {
+    const resolved = resolveConfigWithDefaults([{ timeouts: { action_ms: 2500 } }]);
+    expect(resolved.timeouts.action_ms).toBe(2500);
+    // mergeable key-by-key: nav_ms was not set by the layer → still the built-in default.
+    expect(resolved.timeouts.nav_ms).toBe(2000);
+  });
+
+  test("a later layer wins per key (CLI/flow override)", () => {
+    const resolved = resolveConfigWithDefaults([
+      { timeouts: { action_ms: 3000, nav_ms: 1500 } },
+      { timeouts: { action_ms: 8000 } },
+    ]);
+    expect(resolved.timeouts.action_ms).toBe(8000);
+    expect(resolved.timeouts.nav_ms).toBe(1500);
+  });
+
+  test("loadConfigFile accepts a [timeouts] block", async () => {
+    const p = writeTmp(
+      "timeouts.toml",
+      `version = 1
+kind = "config"
+id = "x"
+description = "d"
+
+[timeouts]
+action_ms = 3000
+nav_ms = 1500
+`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.timeouts?.action_ms).toBe(3000);
+    expect(config.timeouts?.nav_ms).toBe(1500);
+  });
+
+  test("rejects a non-positive action_ms (strict)", async () => {
+    const p = writeTmp(
+      "timeouts-bad.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[timeouts]\naction_ms = 0\n`,
+    );
+    await expect(loadConfigFile(p)).rejects.toThrow(ConfigValidationError);
+  });
+
+  test("rejects an unknown key inside [timeouts] (strict)", async () => {
+    const p = writeTmp(
+      "timeouts-bad2.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[timeouts]\nbogus = 1\n`,
+    );
+    await expect(loadConfigFile(p)).rejects.toThrow(ConfigValidationError);
+  });
+});
+
 describe("mergeable vs replaceable", () => {
   test("model registry is MERGEABLE key-by-key (sibling roles survive)", () => {
     const base: Config = {

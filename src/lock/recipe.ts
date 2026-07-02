@@ -240,6 +240,15 @@ export function recipeFromExecution(
 
   if (opts.kind === "ai_pick") {
     target.kind = "ai_pick";
+    // NOTE (Task C fail-safe): an ai_pick's winning `durableSelector` can be NON-DISCRIMINATING
+    // (e.g. a role-only `role:button` when the picked element is an icon with no name/testid — see
+    // `strategy-array.ts`). We persist it as-is (it still round-trips + carries the advisory note),
+    // but the correctness guarantee lives at REPLAY time: `l0.ts`'s `classifyReplaySelector` detects
+    // that the selector resolves to >1 element on the live page and SKIPS L0 (→ re-resolve via
+    // vision) rather than clicking the wrong element. So a mis-discriminating pin can never mis-act.
+    // TODO(browser-pilot positional): when a UNIQUE positional selector (`role:button[N]`) can be
+    // derived for the picked element (see the TODO in `strategy-array.ts#roleNameSelectorForElement`),
+    // pin THAT here so an icon-only ai_pick stays deterministically L0-replayable.
     target.pinned_choice = {
       strategy: winner.strategy,
       selector: winner.selector,

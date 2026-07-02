@@ -173,6 +173,15 @@ export interface SnapshotOpts {
   roles?: string[];
   /** Opt-in DOM-attribute enrichment (Phase 7 Change 3a). Default off. */
   attributes?: boolean;
+  /**
+   * EXTRA DOM attribute names to capture onto `InteractiveElement.attributes` beyond the built-in
+   * set (`data-testid`/`data-test`/`data-qa`/`id`/`class`/`name`/`type`), forwarded to
+   * browser-pilot's `snapshot({ attributeNames })`. Only meaningful with `attributes: true`. Lets an
+   * author-declared hook (`[resolve] attributes`, e.g. `data-cmd`) surface on the snapshot so the
+   * ranker + `durableSelectorForElement` can turn a UNIQUE value into a `[data-cmd="c2"]` selector
+   * (Fix 2 BONUS). The driver also merges any construction-time `resolveAttributes` here. Default: none.
+   */
+  attributeNames?: string[];
 }
 
 /**
@@ -348,6 +357,14 @@ export interface ResolveAllOpts {
   strategies?: Strategy[];
   minConfidence?: number;
   snapshot?: PageSnapshot;
+  /**
+   * EXTRA DOM attribute names the ranker may use as deterministic hooks, in addition to the
+   * built-in `data-testid`/`data-test`/`data-qa` set (browser-pilot's `resolveAll({ testIdAttributes })`).
+   * A UNIQUE value produces a high-confidence `[attr="value"]` candidate (e.g. `[data-cmd="c2"]`),
+   * so an icon-only toolbar can resolve deterministically (Fix 2 BONUS). The driver merges any
+   * construction-time `resolveAttributes` here. Default: none (unchanged ranking).
+   */
+  testIdAttributes?: string[];
 }
 
 // ---------------------------------------------------------------------------

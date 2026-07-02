@@ -52,6 +52,21 @@ import type {
 /** Native-dialog policy: how the driver answers `alert`/`confirm`/`beforeunload` dialogs. */
 export type DialogPolicy = "dismiss" | "accept";
 
+/**
+ * Default actionability/click ceiling (ms) applied to every batch + single action when the
+ * caller/step sets none. It BOUNDS browser-pilot's own ~30s actionability default so a
+ * disabled/wrong leading selector fails fast (≈5s) and escalates instead of dead-hanging (the
+ * measured admin-crud 30s L0 stall). Overridable per driver via `BrowserPilotDriverOptions`
+ * (`[timeouts] action_ms`) and per action via a per-step `Step.timeout` (browser-pilot honors a
+ * step's own timeout over the batch-level default).
+ */
+export const DEFAULT_ACTION_TIMEOUT_MS = 5000;
+/**
+ * Default client-side navigation-SETTLE ceiling (ms) for the post-`goto`/`press`
+ * `waitForNavigation({ optional:true })` wait (`[timeouts] nav_ms`).
+ */
+export const DEFAULT_NAV_TIMEOUT_MS = 2000;
+
 /** Constructor options for `BrowserPilotDriver`. */
 export interface BrowserPilotDriverOptions {
   /**
@@ -60,6 +75,20 @@ export interface BrowserPilotDriverOptions {
    * `'accept'` confirms/OKs them.
    */
   dialogPolicy?: DialogPolicy;
+  /**
+   * Default actionability/click timeout (ms) applied to every `batch()` + single action when the
+   * caller/step sets none — the resolved `[timeouts] action_ms` (default
+   * {@link DEFAULT_ACTION_TIMEOUT_MS} = 5000). It becomes the batch-level `BatchOptions.timeout`,
+   * so it BOUNDS browser-pilot's ~30s actionability default (the measured 30s L0/click hang) while
+   * a per-step `Step.timeout` still overrides it. The runner passes `config.timeouts.action_ms`.
+   */
+  actionTimeoutMs?: number;
+  /**
+   * Default client-side navigation-settle timeout (ms) for the post-`goto`/`press`
+   * `waitForNavigation({ optional:true })` wait — the resolved `[timeouts] nav_ms` (default
+   * {@link DEFAULT_NAV_TIMEOUT_MS} = 2000). The runner passes `config.timeouts.nav_ms`.
+   */
+  navTimeoutMs?: number;
 }
 
 /** Internal record of how the connection was acquired (drives teardown semantics). */
@@ -80,6 +109,17 @@ type Connection = AttachConnection | LaunchConnection;
  */
 export class BrowserPilotDriver implements Driver {
   private readonly dialogPolicy: DialogPolicy;
+  /**
+   * Default actionability/click ceiling (ms) for batches + single actions (`[timeouts] action_ms`).
+   * Public + readonly so callers/diagnostics can observe the EFFECTIVE ceiling the runner threaded
+   * (an author's `[timeouts] action_ms` override, or {@link DEFAULT_ACTION_TIMEOUT_MS}).
+   */
+  readonly actionTimeoutMs: number;
+  /**
+   * Default client-side navigation-settle ceiling (ms) after goto/press (`[timeouts] nav_ms`).
+   * Public + readonly for the same reason as {@link actionTimeoutMs}.
+   */
+  readonly navTimeoutMs: number;
   private browser: Browser | undefined;
   private activePage: Page | undefined;
   private connection: Connection | undefined;
@@ -88,6 +128,8 @@ export class BrowserPilotDriver implements Driver {
 
   constructor(options: BrowserPilotDriverOptions = {}) {
     this.dialogPolicy = options.dialogPolicy ?? "dismiss";
+    this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
+    this.navTimeoutMs = options.navTimeoutMs ?? DEFAULT_NAV_TIMEOUT_MS;
   }
 
   // -------------------------------------------------------------------------
@@ -219,7 +261,8 @@ export class BrowserPilotDriver implements Driver {
     // quiescent for the next snapshot/assertion. `optional:true` → never throws if nothing
     // navigates (the common case: bp's goto already settled the top-level load).
     if (opts?.waitForNavigation ?? true) {
-      await page.waitForNavigation({ optional: true, timeout: opts?.timeout ?? 2000 });
+      // Bound the client-side settle to the configured nav ceiling (default 2000), not bp's ~30s.
+      await page.waitForNavigation({ optional: true, timeout: opts?.timeout ?? this.navTimeoutMs });
     }
   }
 
@@ -277,31 +320,39 @@ export class BrowserPilotDriver implements Driver {
     // DRIVER DEFAULT: any navigating step (click/submit/press) that did not set
     // `waitForNavigation` is defaulted to `true` so browser-pilot's `'auto'` never leaks.
     const settled = steps.map((s) => withNavigationDefault(s));
+    // BOUND THE ACTIONABILITY WAIT (fixes the measured 30s L0/L1 hang): default the batch-level
+    // `timeout` to the configured action ceiling (5000) so browser-pilot's ~30s default never
+    // applies to the L0 replay / L1 race / any batch. A per-step `Step.timeout` still WINS (bp
+    // reads `step.timeout ?? batchTimeout`), so a slow step's own `timeout_ms` overrides this.
     // OPT-IN RECORDING (Phase 5, Unit F): when a recording session is active, enable
     // browser-pilot's screenshot-frame `record` mode so per-step frames + a `recording.json`
-    // manifest land in the recording dir. INERT when not recording (`this.recording`
-    // undefined) → `effective === opts`, i.e. behaviour is byte-identical to before. A caller
-    // that already passed an explicit `record` wins (we never override it).
-    const effective: BatchOptions | undefined = this.recording
-      ? { ...opts, record: opts?.record ?? { outputDir: this.recording.dir } }
-      : opts;
-    return effective ? page.batch(settled, effective) : page.batch(settled);
+    // manifest land in the recording dir. A caller that already passed an explicit `record`/
+    // `timeout` wins (we only fill the gaps).
+    const effective: BatchOptions = { ...opts };
+    if (effective.timeout === undefined) effective.timeout = this.actionTimeoutMs;
+    if (this.recording && effective.record === undefined) {
+      effective.record = { outputDir: this.recording.dir };
+    }
+    return page.batch(settled, effective);
   }
 
   // --- single actions ---
 
   async click(sel: string | string[], opts?: ActionOpts): Promise<boolean> {
     // Route through a one-step batch so `waitForNavigation` (default true) is honoured —
-    // single-action `page.click` has no such option (its ActionOptions lacks the field).
+    // single-action `page.click` has no such option (its ActionOptions lacks the field). The
+    // batch-level `timeout` bounds the actionability wait to the action ceiling (5000, not bp's
+    // ~30s); `clickStep` still sets a per-step `Step.timeout` from `opts.timeout`, which wins.
     const page = this.requirePage();
-    const result = await page.batch([clickStep(sel, opts)]);
+    const result = await page.batch([clickStep(sel, opts)], { timeout: this.actionTimeoutMs });
     return firstStepSucceeded(result);
   }
 
   async fill(sel: string | string[], value: string, opts?: FillOpts): Promise<boolean> {
     const page = this.requirePage();
-    const fillOpts: { timeout?: number; optional?: boolean; blur?: boolean; verify?: boolean } = {};
-    if (opts?.timeout !== undefined) fillOpts.timeout = opts.timeout;
+    const fillOpts: { timeout?: number; optional?: boolean; blur?: boolean; verify?: boolean } = {
+      timeout: opts?.timeout ?? this.actionTimeoutMs,
+    };
     if (opts?.optional !== undefined) fillOpts.optional = opts.optional;
     if (opts?.blur !== undefined) fillOpts.blur = opts.blur;
     if (opts?.verify !== undefined) fillOpts.verify = opts.verify;
@@ -310,8 +361,9 @@ export class BrowserPilotDriver implements Driver {
 
   async type(sel: string | string[], text: string, opts?: TypeOpts): Promise<boolean> {
     const page = this.requirePage();
-    const typeOpts: { timeout?: number; optional?: boolean; blur?: boolean; delay?: number } = {};
-    if (opts?.timeout !== undefined) typeOpts.timeout = opts.timeout;
+    const typeOpts: { timeout?: number; optional?: boolean; blur?: boolean; delay?: number } = {
+      timeout: opts?.timeout ?? this.actionTimeoutMs,
+    };
     if (opts?.optional !== undefined) typeOpts.optional = opts.optional;
     if (opts?.blur !== undefined) typeOpts.blur = opts.blur;
     if (opts?.delay !== undefined) typeOpts.delay = opts.delay;
@@ -324,18 +376,18 @@ export class BrowserPilotDriver implements Driver {
     opts?: ActionOpts,
   ): Promise<boolean> {
     const page = this.requirePage();
-    const actionOpts = passThroughActionOpts(opts);
+    const actionOpts = passThroughActionOpts(opts, this.actionTimeoutMs);
     return page.select(sel, value, actionOpts);
   }
 
   async check(sel: string | string[], opts?: ActionOpts): Promise<boolean> {
     const page = this.requirePage();
-    return page.check(sel, passThroughActionOpts(opts));
+    return page.check(sel, passThroughActionOpts(opts, this.actionTimeoutMs));
   }
 
   async hover(sel: string | string[], opts?: ActionOpts): Promise<boolean> {
     const page = this.requirePage();
-    return page.hover(sel, passThroughActionOpts(opts));
+    return page.hover(sel, passThroughActionOpts(opts, this.actionTimeoutMs));
   }
 
   async press(
@@ -348,17 +400,19 @@ export class BrowserPilotDriver implements Driver {
     const page = this.requirePage();
     if (opts?.modifiers && opts.modifiers.length > 0) {
       await page.press(key, { modifiers: opts.modifiers });
-      // best-effort settle after a modified keypress
-      await page.waitForNavigation({ optional: true, timeout: 2000 });
+      // best-effort settle after a modified keypress, bounded by the nav ceiling (not bp's ~30s)
+      await page.waitForNavigation({ optional: true, timeout: this.navTimeoutMs });
       return true;
     }
-    const result = await page.batch([pressStep(key, true)]);
+    const result = await page.batch([pressStep(key, true)], { timeout: this.actionTimeoutMs });
     return firstStepSucceeded(result);
   }
 
   async submit(sel?: string | string[], opts?: SubmitOpts): Promise<boolean> {
     const page = this.requirePage();
     const sopts = submitOptions(opts);
+    // Bound submit's actionability wait to the action ceiling (5000) when the caller set none.
+    if (sopts.timeout === undefined) sopts.timeout = this.actionTimeoutMs;
     // browser-pilot's submit signature requires a selector; when none is given, submit the
     // ambient form via the empty-string selector (browser-pilot resolves the active form).
     const selector = sel ?? "";
@@ -460,10 +514,19 @@ export class BrowserPilotDriver implements Driver {
 // pure helpers (module-private)
 // ---------------------------------------------------------------------------
 
-/** Build the `ActionOptions` (optional/timeout) browser-pilot single-actions accept. */
-function passThroughActionOpts(opts?: ActionOpts): { timeout?: number; optional?: boolean } {
-  const out: { timeout?: number; optional?: boolean } = {};
-  if (opts?.timeout !== undefined) out.timeout = opts.timeout;
+/**
+ * Build the `ActionOptions` (optional/timeout) browser-pilot single-actions accept. The action
+ * `timeout` defaults to `defaultTimeoutMs` (the driver's `[timeouts] action_ms`) so a missing/
+ * non-actionable target fails fast (≈5s) instead of at bp's ~30s default; a caller-supplied
+ * `opts.timeout` (per-step override) still wins.
+ */
+function passThroughActionOpts(
+  opts: ActionOpts | undefined,
+  defaultTimeoutMs: number,
+): { timeout?: number; optional?: boolean } {
+  const out: { timeout?: number; optional?: boolean } = {
+    timeout: opts?.timeout ?? defaultTimeoutMs,
+  };
   if (opts?.optional !== undefined) out.optional = opts.optional;
   return out;
 }

@@ -9,7 +9,7 @@
 // NOT import the (deleted) `computeStructureSignature`.
 
 import { describe, expect, test } from "bun:test";
-import type { InteractiveElement, PageSnapshot, SnapshotNode } from "../driver/index.ts";
+import type { BatchStep, InteractiveElement, PageSnapshot, SnapshotNode } from "../driver/index.ts";
 import {
   MockDriver,
   makeFailureBatch,
@@ -297,5 +297,227 @@ describe("L0 — Layer 3 per-target revalidation on signature miss", () => {
     expect(r.ok).toBe(true);
     expect(r.revalidated).toBeUndefined(); // matched by struct-only signature, not Layer 3
     expect(driver.callsTo("batch")).toHaveLength(1);
+  });
+});
+
+describe("L0 — actionability + discrimination gate (Tasks B/C)", () => {
+  /** The first selector browser-pilot was handed in the (single) replay batch, if any. */
+  function firstReplaySelector(driver: MockDriver): string | undefined {
+    const call = driver.callsTo("batch")[0];
+    if (!call) return undefined;
+    const sel = (call.args[0] as BatchStep[])[0]?.selector;
+    return Array.isArray(sel) ? sel[0] : sel;
+  }
+
+  test("Task C: non-discriminating recipe (role-only over many buttons) → clean MISS, never replays", async () => {
+    // An ai_pick persisted a NON-DISCRIMINATING `role:button` over an icon toolbar. A warm replay
+    // would race `role:button`, match all buttons, and click the FIRST (Bold) — mis-acting. The gate
+    // must SKIP L0 (escalate → vision) instead of blindly replaying the wrong element.
+    const tree: SnapshotNode[] = [
+      {
+        role: "main",
+        ref: "n1",
+        children: [
+          { role: "button", ref: "n2", name: "Bold" },
+          { role: "button", ref: "n3", name: "Italic" },
+        ],
+      },
+    ];
+    const elements: InteractiveElement[] = [
+      makeInteractiveElement({ ref: "e2", role: "button", name: "Bold" }),
+      makeInteractiveElement({ ref: "e3", role: "button", name: "Italic" }),
+    ];
+    const url = "http://localhost:3000/icon-editor";
+    const structSig = "/icon-editor|s";
+    const snap = makeSnapshot({ url, accessibilityTree: tree, interactiveElements: elements });
+    const sig = computeMatchSignature(computeMaskedTextHash(snap), structSig);
+    const driver = new MockDriver()
+      .setSnapshot(snap)
+      .setStructureSignature(structSig)
+      // If it (wrongly) replayed, bp would report clicking the first button — this must NOT happen.
+      .setBatchResult(makeSuccessBatch("role:button"));
+    const recipe: CachedRecipe = {
+      selector: "role:button",
+      strategy: "role_name",
+      match: { url_glob: "http://localhost:3000/icon-editor*", sig },
+      strategies: [{ kind: "role_name", selector: "role:button", greens: 3 }],
+    };
+    const iconStep: Step = { id: "pick-italic", do: "ai_pick", target: "the italic button" };
+    const r = await resolveL0(iconStep, { driver, now: () => 0, lock: hookFor(recipe) });
+    expect(r.ok).toBe(false);
+    expect(r.escalate).toBe(true);
+    expect(r.replayed).toBeUndefined(); // gated BEFORE any replay → no page mutation
+    expect(driver.callsTo("batch")).toHaveLength(0); // never mis-clicked
+  });
+
+  test("Fix 1 target-identity: a RIVAL-element sibling is dropped — the PRIMARY leads, never the rival", async () => {
+    // The polluted portfolio carries a fuzzy sibling (`role:button:Submit`) that resolves to a
+    // DIFFERENT element than the recipe's PRIMARY (`[data-testid='save']` → the Save button). The
+    // replay must LEAD WITH THE PRIMARY and DROP the rival — never resolve/click the wrong element
+    // (the measured admin-crud bug where a rival `bulk-delete` won the `check_row_u2` race).
+    const tree: SnapshotNode[] = [
+      {
+        role: "main",
+        ref: "n1",
+        children: [
+          { role: "button", ref: "n2", name: "Save" },
+          { role: "button", ref: "n3", name: "Submit" },
+        ],
+      },
+    ];
+    const elements: InteractiveElement[] = [
+      makeInteractiveElement({
+        ref: "e2",
+        role: "button",
+        name: "Save",
+        attributes: { "data-testid": "save" },
+      }),
+      makeInteractiveElement({ ref: "e3", role: "button", name: "Submit" }),
+    ];
+    const url = "http://localhost:3000/admin";
+    const structSig = "/admin|s";
+    const snap = makeSnapshot({ url, accessibilityTree: tree, interactiveElements: elements });
+    const sig = computeMatchSignature(computeMaskedTextHash(snap), structSig);
+    const driver = new MockDriver()
+      .setSnapshot(snap)
+      .setStructureSignature(structSig)
+      .setBatchResult(makeSuccessBatch("[data-testid='save']"));
+    const recipe: CachedRecipe = {
+      selector: "[data-testid='save']", // PRIMARY → the Save button (the recipe's intended element)
+      strategy: "testid",
+      match: { url_glob: "http://localhost:3000/admin*", sig },
+      strategies: [
+        { kind: "testid", selector: "[data-testid='save']", greens: 5 },
+        { kind: "role_name", selector: "role:button:Submit", greens: 1 }, // RIVAL (different element)
+      ],
+    };
+    const r = await resolveL0(
+      { id: "s1", do: "click", target: "Save" },
+      { driver, now: () => 0, lock: hookFor(recipe) },
+    );
+    expect(r.ok).toBe(true);
+    expect(driver.callsTo("batch")).toHaveLength(1);
+    // The PRIMARY leads; the rival `role:button:Submit` was DROPPED (never sent to the batch).
+    const sent = (driver.callsTo("batch")[0]!.args[0] as BatchStep[])[0]!.selector as string[];
+    expect(firstReplaySelector(driver)).toBe("[data-testid='save']");
+    expect(sent).not.toContain("role:button:Submit");
+    // The rival is stamped as drift so it sinks and never leads a future replay.
+    expect(r.portfolio?.drifted.map((d) => d.selector)).toContain("role:button:Submit");
+  });
+
+  test("Fix 1 compound primary: a scoped hint leads ALONE on a sig miss; a resolvable rival never wins", async () => {
+    // The admin-crud `check_row_u2` shape: PRIMARY is a compound scoped hint
+    // `[data-row-id='u2'] [data-testid='row-check']` (not AX-identity-resolvable), and the polluted
+    // portfolio carries a fuzzy sibling `[data-testid='bulk-delete']` that DOES uniquely resolve to a
+    // DIFFERENT element. Every warm step here hits a signature MISS (table re-renders). The replay
+    // must LEAD WITH THE PRECISE SCOPED PRIMARY and DROP bulk-delete — not race to the rival.
+    const tree: SnapshotNode[] = [
+      {
+        role: "main",
+        ref: "n1",
+        children: [
+          { role: "checkbox", ref: "n2", name: "" },
+          { role: "button", ref: "n3", name: "Delete selected" },
+        ],
+      },
+    ];
+    const elements: InteractiveElement[] = [
+      makeInteractiveElement({ ref: "e2", role: "checkbox", name: "" }),
+      makeInteractiveElement({
+        ref: "e3",
+        role: "button",
+        name: "Delete selected",
+        attributes: { "data-testid": "bulk-delete" },
+      }),
+    ];
+    const url = "http://localhost:3100/admin-crud";
+    const structSig = "/admin-crud|q65dns";
+    const snap = makeSnapshot({ url, accessibilityTree: tree, interactiveElements: elements });
+    const driver = new MockDriver()
+      .setSnapshot(snap)
+      .setStructureSignature(structSig)
+      .setBatchResult(makeSuccessBatch("[data-row-id='u2'] [data-testid='row-check']"));
+    const recipe: CachedRecipe = {
+      selector: "[data-row-id='u2'] [data-testid='row-check']",
+      strategy: "testid",
+      // STALE sig → signature MISS (as every warm admin-crud step sees).
+      match: { url_glob: "http://localhost:3100/admin-crud*", sig: "text:STALE|x;struct:/x|y" },
+      strategies: [
+        { kind: "testid", selector: "[data-row-id='u2'] [data-testid='row-check']", greens: 1 },
+        { kind: "testid", selector: '[data-testid="bulk-delete"]', greens: 0 },
+      ],
+    };
+    const iconStep: Step = {
+      id: "check_row_u2",
+      do: "click",
+      target: ["[data-row-id='u2'] [data-testid='row-check']", "the checkbox on Bruno's row"],
+    };
+    const r = await resolveL0(iconStep, { driver, now: () => 0, lock: hookFor(recipe) });
+    expect(r.ok).toBe(true);
+    expect(r.revalidated).toBe(true);
+    expect(driver.callsTo("batch")).toHaveLength(1);
+    const sent = (driver.callsTo("batch")[0]!.args[0] as BatchStep[])[0]!.selector as string[];
+    // The scoped primary leads ALONE; the rival bulk-delete is dropped (never sent to the batch).
+    expect(firstReplaySelector(driver)).toBe("[data-row-id='u2'] [data-testid='row-check']");
+    expect(sent).not.toContain('[data-testid="bulk-delete"]');
+    expect(r.portfolio?.drifted.map((d) => d.selector)).toContain('[data-testid="bulk-delete"]');
+  });
+
+  test("Fix 2 positional: a `role:button[N]` primary is DISCRIMINATING and replays at L0", async () => {
+    // An ai_pick over an icon toolbar persisted a POSITIONAL `role:button[2]` (the 2nd icon). It
+    // resolves to exactly ONE element (not the non-discriminating `role:button` mis-click) and warm
+    // replays deterministically at L0 with zero model calls.
+    const tree: SnapshotNode[] = [
+      {
+        role: "main",
+        ref: "n1",
+        children: [
+          { role: "button", ref: "n2", name: "" },
+          { role: "button", ref: "n3", name: "" },
+          { role: "button", ref: "n4", name: "" },
+        ],
+      },
+    ];
+    const elements: InteractiveElement[] = [
+      makeInteractiveElement({ ref: "e2", role: "button", name: "" }),
+      makeInteractiveElement({ ref: "e3", role: "button", name: "" }),
+      makeInteractiveElement({ ref: "e4", role: "button", name: "" }),
+    ];
+    const url = "http://localhost:3100/icon-editor";
+    const structSig = "/icon-editor|5lzjpx";
+    const snap = makeSnapshot({ url, accessibilityTree: tree, interactiveElements: elements });
+    const sig = computeMatchSignature(computeMaskedTextHash(snap), structSig);
+    const driver = new MockDriver()
+      .setSnapshot(snap)
+      .setStructureSignature(structSig)
+      .setBatchResult(makeSuccessBatch("role:button[2]"));
+    const recipe: CachedRecipe = {
+      selector: "role:button[2]",
+      strategy: "role_name",
+      match: { url_glob: "http://localhost:3100/icon-editor*", sig },
+      strategies: [{ kind: "role_name", selector: "role:button[2]", greens: 2 }],
+    };
+    const iconStep: Step = { id: "click_italic", do: "ai_pick", target: "the italic icon" };
+    const r = await resolveL0(iconStep, { driver, now: () => 0, lock: hookFor(recipe) });
+    expect(r.ok).toBe(true);
+    expect(r.escalate).toBe(false);
+    expect(r.durableSelector).toBe("role:button[2]");
+    expect(driver.callsTo("batch")).toHaveLength(1);
+    expect(firstReplaySelector(driver)).toBe("role:button[2]");
+  });
+
+  test("non-regression: a GOOD unique-enabled warm hit replays with the ORIGINAL lead unchanged", async () => {
+    // The winner uniquely resolves to an enabled element → the gate is a no-op (order preserved).
+    const driver = validDriver();
+    const recipe: CachedRecipe = {
+      selector: "role:button:Create order",
+      strategy: "role_name",
+      match: { url_glob: "http://localhost:3000/drift*", sig: matchingSig() },
+      strategies: [{ kind: "role_name", selector: "role:button:Create order", greens: 4 }],
+    };
+    const r = await resolveL0(step, { driver, now: () => 0, lock: hookFor(recipe) });
+    expect(r.ok).toBe(true);
+    expect(driver.callsTo("batch")).toHaveLength(1);
+    expect(firstReplaySelector(driver)).toBe("role:button:Create order");
   });
 });

@@ -17,7 +17,8 @@ import type { AiCallEvent, AiCallRole } from "../artifacts/events.ts";
 import type { Redactor } from "../redaction/index.ts";
 import type { ModelRoleName } from "../types.ts";
 import type { BudgetTracker } from "./budget.ts";
-import type { CostAccumulator } from "./cost.ts";
+import { isBudgetExceeded } from "./budget.ts";
+import type { CostAccumulator, UsageCost } from "./cost.ts";
 import { extractUsageCost } from "./cost.ts";
 import type { ResolvedRegistry } from "./registry.ts";
 import { roleModel } from "./registry.ts";
@@ -109,8 +110,14 @@ function redactedFields(
   };
 }
 
-/** Classify a generate failure into an `ai_call` outcome label (without importing the SDK). */
-function failureOutcome(err: unknown): string {
+/**
+ * Classify a generate/parse failure into an `ai_call` outcome label (without importing the SDK).
+ * The labels distinguish the failure classes `ai.jsonl` telemetry cares about — and, load-bearing
+ * for robustness, `"unparseable"` names the class the L4 advisor / `ai_judge` must DEGRADE on
+ * (never crash): the AI SDK's "No object generated: could not parse the response" family plus a
+ * local zod validation failure.
+ */
+export function failureOutcome(err: unknown): string {
   const name = (err as { name?: string })?.name ?? "";
   const msg = err instanceof Error ? err.message : String(err);
   if (name === "AI_NoOutputGeneratedError" || /no output generated/i.test(msg)) return "no_output";
@@ -120,7 +127,60 @@ function failureOutcome(err: unknown): string {
   // a genuine provider error/refusal so `ai.jsonl` telemetry can tell them apart.
   if (name === "TimeoutError" || name === "AbortError" || /timed?\s*out/i.test(msg))
     return "timeout";
+  // The model produced output that could not be parsed into / validated against the schema. This is
+  // the crash observed in the field (z-ai/glm-5.2 advisor: "No object generated: could not parse the
+  // response") plus a zod `ZodError` from `aiCall`'s defense-in-depth re-parse. A terminal classifier
+  // MUST degrade gracefully on this class rather than aborting the whole flow run.
+  if (
+    name === "AI_NoObjectGeneratedError" ||
+    name === "AI_TypeValidationError" ||
+    name === "ZodError" ||
+    /no object generated|could not parse|failed to parse|type validation|did not match (the )?schema|response did not match/i.test(
+      msg,
+    )
+  )
+    return "unparseable";
   return "error";
+}
+
+/** Build the `ai_call` payload for a recorded FAILURE (no successful output). */
+function failurePayload(
+  callRole: AiCallRole,
+  model: string,
+  purpose: string,
+  outcome: string,
+  cost: UsageCost | undefined,
+): Omit<AiCallEvent, "ts" | "type"> {
+  return {
+    role: callRole,
+    model,
+    purpose,
+    inputTokens: cost?.inputTokens ?? 0,
+    outputTokens: cost?.outputTokens ?? 0,
+    cost_usd: cost?.cost_usd ?? 0,
+    outcome,
+  };
+}
+
+/** Assemble the DEGRADED {@link AiCallResult} from a caller-supplied `fallback`. */
+function degradedResult<S extends z.ZodType>(
+  ctx: AiCallContext<S>,
+  model: string,
+  err: unknown,
+  outcome: string,
+  cost: UsageCost | undefined,
+): AiCallResult<z.infer<S>> {
+  // `fallback` is only reached when the caller provided it (guarded at every call site).
+  const output = ctx.fallback!({ error: err, outcome });
+  return {
+    output,
+    model,
+    cost_usd: cost?.cost_usd ?? 0,
+    inputTokens: cost?.inputTokens ?? 0,
+    outputTokens: cost?.outputTokens ?? 0,
+    degraded: true,
+    failureOutcome: outcome,
+  };
 }
 
 /**
@@ -142,11 +202,14 @@ export async function aiCall<S extends z.ZodType>(
   const callRole: AiCallRole = ctx.callRole ?? modelRoleToCallRole(modelRole);
   const entry = roleModel(rt.registry, modelRole);
   const models = [entry.model, ...entry.fallbacks];
+  const primaryModel = models[0] ?? "unknown";
 
   // (1) Pre-check + count the model call. Throws BudgetExceededError('max_model_calls').
   rt.budget.noteModelCall();
 
-  // (2) Invoke the seam (fallback iteration is internal). On failure: emit + rethrow.
+  // (2) Invoke the seam (fallback iteration is internal). On failure: record it, then DEGRADE (when
+  // the caller supplied `fallback`) or rethrow (the historical contract — the caller escalates).
+  // Budget errors ALWAYS propagate (never swallowed by the graceful path).
   const timeoutMs = rt.timeoutMsByRole?.[modelRole] ?? DEFAULT_TIMEOUT_MS_BY_ROLE[modelRole];
   let result: Awaited<ReturnType<GenerateFn>>;
   try {
@@ -163,17 +226,13 @@ export async function aiCall<S extends z.ZodType>(
       ...(ctx.cache !== undefined ? { cache: ctx.cache } : {}),
     });
   } catch (err) {
-    const failurePayload = {
-      role: callRole,
-      model: models[0] ?? "unknown",
-      purpose: ctx.purpose,
-      inputTokens: 0,
-      outputTokens: 0,
-      cost_usd: 0,
-      outcome: failureOutcome(err),
-    };
-    await rt.aiWriter.emitAiCall(failurePayload);
-    notifyAiCall(rt, failurePayload);
+    if (isBudgetExceeded(err)) throw err;
+    const outcome = failureOutcome(err);
+    const payload = failurePayload(callRole, primaryModel, ctx.purpose, outcome, undefined);
+    await rt.aiWriter.emitAiCall(payload);
+    notifyAiCall(rt, payload);
+    // Generate failed → no output was produced → no cost accrues.
+    if (ctx.fallback) return degradedResult(ctx, primaryModel, err, outcome, undefined);
     throw err;
   }
 
@@ -181,8 +240,24 @@ export async function aiCall<S extends z.ZodType>(
   const cost = extractUsageCost(result.usage, entry.pricing);
   rt.cost.add(modelRole, result.model, cost);
 
-  // (4) Validate/type the output (defense-in-depth; the GenerateFn already validated it).
-  const output = ctx.schema.parse(result.output);
+  // (4) Validate/type the output (defense-in-depth; the GenerateFn already validated it). A parse
+  // failure here is the same "unparseable" class as a provider parse failure. When the caller opted
+  // into graceful degradation, RECORD it (the call was paid for → real cost) + degrade; otherwise
+  // preserve the historical behavior (throw so the tier escalates / per-target falls back — and do
+  // NOT emit a spurious event, which the batch-vision fallback contract relies on).
+  let output: z.infer<S>;
+  try {
+    output = ctx.schema.parse(result.output);
+  } catch (err) {
+    if (!ctx.fallback) throw err;
+    const outcome = failureOutcome(err);
+    const payload = failurePayload(callRole, result.model, ctx.purpose, outcome, cost);
+    await rt.aiWriter.emitAiCall(payload);
+    notifyAiCall(rt, payload);
+    // The paid-but-unparseable call still counts toward the cost ceiling (may throw → propagates).
+    rt.budget.addCost(cost.cost_usd);
+    return degradedResult(ctx, result.model, err, outcome, cost);
+  }
   const derived = ctx.deriveOutcome?.(output);
 
   // (5) Emit ONE ai_call event (model/tokens/cost/outcome + already-redacted prompt/response when a

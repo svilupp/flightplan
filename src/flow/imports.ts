@@ -13,6 +13,10 @@
 // so a downstream consumer has the per-module input scope (a `run` site's `with` overrides
 // are applied at flatten time, not here — nothing executes at import time).
 //
+// Config note: imports contribute steps/hooks only — an imported flow's [config] / [connect]
+// blocks are intentionally ignored. The ENTRY flow's connect config (or the default: attach to
+// localhost:9222) is authoritative for the whole run (see src/cli/index.ts config layering).
+//
 // Canonical reference: PLAN.md §5 (Phase 1, "import resolution"), PLAN_v002 §3.
 
 import { dirname, isAbsolute, resolve as resolvePath } from "node:path";

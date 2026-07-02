@@ -6,7 +6,9 @@
 # Resolution stays deterministic (L1) — only the assertions wait.
 #
 # Fixture contract: ../fixtures/README.md §02. Lints clean; runnable against the fixture server
-# on http://localhost:3000 (Mode B headless Chrome).
+# on http://localhost:3000. With no [connect] block, flightplan attaches to a running Chrome
+# over CDP at localhost:9222 (start it with --remote-debugging-port=9222); see the commented
+# [connect] override below to self-launch instead.
 
 version = 1
 kind = "flow"
@@ -20,6 +22,12 @@ base_url = "http://localhost:3000"
 max_steps = 20
 assertions = "eager"
 assert_timeout_ms = 5000
+
+# Override the default attach (CDP on localhost:9222) — e.g. have flightplan launch its own
+# headless Chrome instead. Only the ENTRY flow's [connect] applies; imports' are ignored.
+# [connect]
+# mode = "launch"
+# headless = true
 
 [[steps]]
 id = "open_async"

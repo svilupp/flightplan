@@ -14,11 +14,22 @@ import { isBudgetExceeded } from "./budget.ts";
 import type { AiCallRuntime } from "./call.ts";
 import { aiCall } from "./call.ts";
 import { AI_MIN_OUTPUT_TOKENS } from "./resolver-l2.ts";
-import { JudgeSchema } from "./schemas.ts";
-import type { AiMessage } from "./types.ts";
+import { JudgeSchema, type JudgeVerdict } from "./schemas.ts";
+import type { AiCallFailure, AiMessage } from "./types.ts";
 
 /** Default modalities when an `ai_judge` omits `inputs` (PROPOSAL: extracted text). */
 const DEFAULT_INPUTS = ["text"] as const;
+
+/**
+ * FAIL-SAFE default when the judge model's output cannot be parsed. DELIBERATE CHOICE: for a QA
+ * harness, a judge we cannot read is INCONCLUSIVE, and an inconclusive judge must NOT silently pass
+ * (that would turn a broken oracle into a false green). So we fail CLOSED — `pass:false` with a
+ * reason that names the degradation — so the assertion surfaces rather than masking a regression.
+ * This only changes the UNPARSEABLE case; a successfully parsed judge keeps its real pass/fail.
+ */
+function judgeFailSafe(failure: AiCallFailure): JudgeVerdict {
+  return { pass: false, reason: `model output ${failure.outcome} (could not be parsed)` };
+}
 
 /** Gather the requested textual context from a snapshot (the `source`/`text` modalities). */
 function gatherTextContext(snapshot: PageSnapshot, inputs: readonly string[]): string {
@@ -80,8 +91,7 @@ export async function judge(
   };
 
   try {
-    let pass: boolean;
-    let reason: string | undefined;
+    let res: Awaited<ReturnType<typeof aiCall<typeof JudgeSchema>>>;
 
     if (useVision) {
       // Consume a screenshot budget unit FIRST (throws BudgetExceededError('max_screenshots')).
@@ -100,34 +110,45 @@ export async function judge(
           ],
         },
       ];
-      const res = await aiCall(rt, {
+      res = await aiCall(rt, {
         modelRole: "vision",
         callRole: "judge",
         purpose,
         schema: JudgeSchema,
         maxOutputTokens: AI_MIN_OUTPUT_TOKENS, // ≥512 — Gemini thinking tokens (FINDINGS §3)
         messages,
+        fallback: judgeFailSafe, // unparseable judge output → fail closed (see judgeFailSafe)
       });
-      pass = res.output.pass;
-      reason = res.output.reason;
     } else {
       const snapshot = await opts.driver.snapshot();
       const context = gatherTextContext(snapshot, inputs);
-      const res = await aiCall(rt, {
+      res = await aiCall(rt, {
         modelRole: "resolver", // a text judge runs on the cheap text model
         callRole: "judge",
         purpose,
         schema: JudgeSchema,
         maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
         prompt: buildJudgePrompt(assertion.prompt, context),
+        fallback: judgeFailSafe, // unparseable judge output → fail closed (see judgeFailSafe)
       });
-      pass = res.output.pass;
-      reason = res.output.reason;
     }
 
+    const { pass, reason } = res.output;
+    if (res.degraded) {
+      // The model output was unparseable → the judge is INCONCLUSIVE. `judgeFailSafe` already set
+      // pass=false; report it as a distinct fail-closed message so it isn't mistaken for a real
+      // content "fail".
+      return {
+        ...base,
+        pass: false,
+        message: `ai_judge: inconclusive — ${reason ?? "model output could not be parsed"} (failing safe: pass=false)`,
+      };
+    }
     return { ...base, pass, message: reason ?? (pass ? "ai_judge: pass" : "ai_judge: fail") };
   } catch (err) {
     if (isBudgetExceeded(err)) throw err; // budgets fail the run fast
+    // A non-model failure (e.g. the driver screenshot/snapshot threw) — still fail closed, never
+    // crash the assertion phase.
     return {
       ...base,
       pass: false,

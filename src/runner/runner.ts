@@ -72,6 +72,7 @@ import {
   type LockSession,
   type LockWriteMode,
   openLockSession,
+  type RecordResolutionResult,
   resolveLockWriteMode,
   type SessionImport,
 } from "../lock/index.ts";
@@ -114,12 +115,15 @@ export const DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY";
 // ---------------------------------------------------------------------------
 
 /**
- * The default connect config when neither the flow nor config sets `connect`: Mode B launch,
- * HEADLESS, so the fixtures run self-contained (no BYO Chrome needed). PLAN.md §3 + the brief.
+ * The default connect config when neither the flow nor config sets `connect`: Mode A attach
+ * to a general CDP endpoint at localhost:9222 (Chrome's conventional remote-debugging port).
+ * A flow opts into a launched browser (or another endpoint) via an explicit `[connect]` block.
+ * Note: `connect` is taken from the ENTRY flow only — imported flows' `[connect]` blocks are
+ * intentionally ignored (imports contribute steps, never config).
  */
 export const DEFAULT_CONNECT_CONFIG: ConnectConfig = {
-  mode: "launch",
-  headless: true,
+  mode: "attach",
+  browserURL: "localhost:9222",
 };
 
 /**
@@ -281,11 +285,29 @@ interface RunServices {
 }
 
 /**
+ * The step verbs that can carry `secret === true` (flow schema): a secret `fill`/`select` VALUE, or
+ * a secret `goto` URL. A frame captured on any of these could render the secret on screen, so
+ * `redact_media` fail-closes on ALL of them (B7) — not just `fill` (the earlier gap that left secret
+ * `select`/`goto` frames persisted). Kept in sync with the schema's `secret?: boolean` verbs.
+ */
+const SECRET_CAPABLE_VERBS = new Set<Step["do"]>(["fill", "select", "goto"]);
+
+/** True when this step both CAN carry a secret (schema) AND is flagged `secret === true`. */
+function isSecretStep(step: Step): boolean {
+  return (
+    SECRET_CAPABLE_VERBS.has(step.do) &&
+    "secret" in step &&
+    (step as { secret?: boolean }).secret === true
+  );
+}
+
+/**
  * Persist a per-step screenshot frame when recording is on, honoring `redact_media`. v0 fail-closed
- * policy (P5_DESIGN.md §6 / Risk V2): when redaction is active AND the step is a `secret:true` fill,
- * SKIP persisting the frame entirely (the in-memory L3 vision base64 is untouched — resolution still
- * works). Collects the written path into `services.screenshotPaths` and emits an `artifact_created`
- * telemetry event. Never throws — media capture must never break a run.
+ * policy (P5_DESIGN.md §6 / Risk V2): when redaction is active AND the step carries `secret:true`
+ * (any of fill / select / goto — {@link isSecretStep}), SKIP persisting the frame entirely (the
+ * in-memory L3 vision base64 is untouched — resolution still works). Collects the written path into
+ * `services.screenshotPaths` and emits an `artifact_created` telemetry event. Never throws — media
+ * capture must never break a run.
  */
 async function maybePersistScreenshot(
   driver: Driver,
@@ -294,12 +316,7 @@ async function maybePersistScreenshot(
   span: SpanHandle,
 ): Promise<void> {
   if (!services.record || !driver.saveScreenshot) return;
-  if (
-    services.redactMedia &&
-    services.redactor.enabled &&
-    step.do === "fill" &&
-    step.secret === true
-  ) {
+  if (services.redactMedia && services.redactor.enabled && isSecretStep(step)) {
     return; // fail-closed: never persist a secret-adjacent frame to disk.
   }
   const idx = services.shotIndex.n++;
@@ -343,7 +360,7 @@ function templateFlow(
 // Connect config + assertion config
 // ---------------------------------------------------------------------------
 
-/** Pick the connect config: flow/config `connect` if present, else Mode B headless launch. */
+/** Pick the connect config: flow/config `connect` if present, else attach to CDP at localhost:9222. */
 export function resolveConnectConfig(config: ResolvedConfig): ConnectConfig {
   return config.connect ?? DEFAULT_CONNECT_CONFIG;
 }
@@ -511,10 +528,17 @@ interface StepActionOutcome {
   ok: boolean;
   tier?: LadderTier;
   error?: string;
-  /** True when the step's recipe drifted and self-healed (Phase 3). */
-  healed?: boolean;
-  /** True when a heal under `--frozen` must fail the run (drift not persisted in CI). */
-  driftFail?: boolean;
+  /**
+   * DEFERRED lock write-back for a successful ladder resolution. Present only when the action
+   * resolved+acted (`exec.ok`) AND a lock session is active. The caller invokes it to credit the
+   * resolution against the lock (learn / re-rank / heal) — but ONLY once the FULL step outcome is a
+   * pass (action ok AND assertions ok), so a wrong-but-clickable selector never earns a green and
+   * climbs the portfolio on a step whose assertions fail (measured admin-crud regression). The
+   * returned {@link RecordResolutionResult} drives the heal/drift accounting; invoking it more than
+   * once would double-count, so the caller calls it exactly once per step. Absent → no write-back
+   * (goto/wait/press/assert, a failed action, or a session-less run).
+   */
+  creditResolution?: () => RecordResolutionResult;
   /**
    * The TERMINAL L4 advisor verdict, when the step exhausted the ladder and the advisor classified
    * it (Phase 4). The step still counts as failed (the advisor never resolves+acts); the runner
@@ -634,28 +658,35 @@ async function performStepAction(
       );
       const exec = result.execution;
       if (exec.ok) {
-        // Write-back: learn/heal the recipe per the lock write policy (no-op without a session).
-        // For ai_pick, forward `kind:'ai_pick'` so a `pinned_choice` is persisted, threading the
-        // chosen candidate's human-readable name (`exec.pinnedLabel`, set by the AI acting tiers)
-        // into the pin's `label` so a healed/replayed pin stays legible.
-        let healed = false;
-        let driftFail = false;
-        if (session) {
-          const rec = session.recordResolution(step, exec, {
-            resolvedAtL0: exec.tier === "L0",
-            // Layer 3: a revalidated L0 hit carries a fresh signature basis for the stale lock;
-            // pass the flag so the write policy refreshes the stored sig (auto) without a heal.
-            ...(exec.revalidated ? { revalidated: true } : {}),
-            ...(step.do === "ai_pick" ? { kind: "ai_pick" as const } : {}),
-            ...(exec.pinnedLabel !== undefined ? { pinnedLabel: exec.pinnedLabel } : {}),
-          });
-          healed = rec.healed;
-          driftFail = rec.fail;
-        }
+        // Write-back is DEFERRED (not run here): learning/healing the recipe per the lock write
+        // policy must be gated on the FULL step outcome (action ok AND assertions ok), NOT bare
+        // action success — otherwise a WRONG-but-clickable selector earns a green and climbs the
+        // per-step portfolio, so the next warm run replays the wrong pick (measured admin-crud
+        // regression). We hand the caller a one-shot thunk that performs the write-back; the run
+        // loop invokes it only after the step's after-assertions pass (a step with NO assertions
+        // still credits on action success, exactly as before). For ai_pick, forward
+        // `kind:'ai_pick'` so a `pinned_choice` is persisted, threading the chosen candidate's
+        // human-readable name (`exec.pinnedLabel`, set by the AI acting tiers) into the pin's
+        // `label` so a healed/replayed pin stays legible.
+        const creditResolution = session
+          ? (): RecordResolutionResult =>
+              session.recordResolution(step, exec, {
+                resolvedAtL0: exec.tier === "L0",
+                // Layer 3: a revalidated L0 hit carries a fresh signature basis for the stale lock;
+                // pass the flag so the write policy refreshes the stored sig (auto) without a heal.
+                ...(exec.revalidated ? { revalidated: true } : {}),
+                ...(step.do === "ai_pick" ? { kind: "ai_pick" as const } : {}),
+                ...(exec.pinnedLabel !== undefined ? { pinnedLabel: exec.pinnedLabel } : {}),
+              })
+          : undefined;
         // Let the AX tree settle after a DOM-mutating action so the NEXT step's single L1
         // snapshot is fresh (no real delay under a FakeClock — tests stay instant).
         await clock.sleep(LADDER_SETTLE_MS);
-        return { ok: true, tier: exec.tier, healed, driftFail };
+        return {
+          ok: true,
+          tier: exec.tier,
+          ...(creditResolution ? { creditResolution } : {}),
+        };
       }
       // The step could not resolve+act. With AI wired this may be a TERMINAL L4 advisor verdict
       // (the advisor classified the failure but never acts); without AI it is an L1 escalation the
@@ -1010,17 +1041,6 @@ async function executeSteps(
         });
       }
 
-      // Heal accounting (Phase 3). A self-heal is reported via `healed`/`drift_count` and, under
-      // `--frozen`, fails the run (the committed lock is stale). The flow still proceeds (a heal
-      // is not a step failure) — frozen drift fails the verdict but does not abort the loop.
-      if (action.healed) {
-        state.healedSteps.push(step.id);
-        if (action.driftFail) {
-          state.verdictFailed = true;
-          if (state.failedStep === null) state.failedStep = step.id;
-        }
-      }
-
       // (3) after-phase assertions (validation). Run even if the action failed? No — if the action
       // failed there is nothing meaningful to validate; record the failure and stop the step.
       let afterFailed = false;
@@ -1044,7 +1064,31 @@ async function executeSteps(
 
       const stepOk = action.ok && !afterFailed;
       const durationMs = clock.now() - stepStart;
-      const healed = action.healed ?? false;
+
+      // (3.6) Credit the lock write-back + heal accounting — GATED on the FULL step outcome.
+      // recordResolution learns/re-ranks/heals the per-step portfolio; crediting it on bare action
+      // success (as before this fix) let a WRONG-but-clickable selector earn a green and climb the
+      // portfolio when the step's assertions then FAILED, so the next warm run replayed the wrong
+      // pick (measured admin-crud regression). We now invoke the deferred `creditResolution` ONLY
+      // when `stepOk` — action ok AND no failing after-assertion. A step with NO after-assertions
+      // has `afterFailed === false`, so `stepOk === action.ok` and it credits on action success
+      // exactly as before (behavior-identical for the passing / no-assertion case; a clean L0 warm
+      // pass stays byte-stable because the write-back still runs on a pass). Heal/drift accounting
+      // is derived from the credit result here (moved from before the assertions) so a heal is only
+      // counted + persisted when the healed selector actually produced a passing step; under
+      // `--frozen` a credited drift still fails the run via `rec.fail`.
+      let healed = false;
+      if (stepOk && action.creditResolution) {
+        const rec = action.creditResolution();
+        healed = rec.healed;
+        if (rec.healed) {
+          state.healedSteps.push(step.id);
+          if (rec.fail) {
+            state.verdictFailed = true;
+            if (state.failedStep === null) state.failedStep = step.id;
+          }
+        }
+      }
 
       // `on_fail` recovery: a step that would FAIL THE RUN (a failed action, or a failing
       // after-assertion under fail_on_assertion) can jump instead of failing. A hard infra error
@@ -1613,7 +1657,12 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   }
 
   // --- (3) build the driver (factory) then connect; teardown ALWAYS in finally ---
-  const driver = (opts.driverFactory ?? defaultDriverFactory)(connectCfg);
+  // An injected `driverFactory` (tests) keeps the pure `(connectCfg) => Driver` seam; the default
+  // production factory additionally receives the resolved `[timeouts]` so an author's action_ms/
+  // nav_ms override reaches BrowserPilotDriver instead of its own 5000/2000 fallback defaults.
+  const driver = opts.driverFactory
+    ? opts.driverFactory(connectCfg)
+    : defaultDriverFactory(connectCfg, opts.config.timeouts);
   const assertCtx = buildAssertContext(driver, opts.config, clock, runtime);
 
   // The produced video path (opt-in `[browser] record`), collected in the finally before teardown.
@@ -1962,9 +2011,21 @@ function intentChangedPatchBody(step: Step, verdict: AdvisoryIntentChangedVerdic
   ].join("\n");
 }
 
-/** The production driver factory (a fresh BrowserPilotDriver). */
-function defaultDriverFactory(_cfg: ConnectConfig): Driver {
-  return new BrowserPilotDriver();
+/**
+ * The production driver factory (a fresh BrowserPilotDriver). Threads the resolved `[timeouts]`
+ * ceilings so an author's `action_ms`/`nav_ms` override reaches the driver instead of silently
+ * falling back to the driver's own 5000/2000 DEFAULTS. `connectCfg` is unused here (the driver
+ * receives it via `connect()`), but kept in the signature so this matches the `DriverFactory` seam.
+ */
+export function defaultDriverFactory(
+  _cfg: ConnectConfig,
+  timeouts?: { action_ms: number; nav_ms: number },
+): Driver {
+  if (!timeouts) return new BrowserPilotDriver();
+  return new BrowserPilotDriver({
+    actionTimeoutMs: timeouts.action_ms,
+    navTimeoutMs: timeouts.nav_ms,
+  });
 }
 
 // ---------------------------------------------------------------------------

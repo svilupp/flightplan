@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import type { AiCallEvent } from "../artifacts/events.ts";
 import { createRedactor, REDACTED } from "../redaction/index.ts";
-import { BudgetTracker, resolveBudgetLimits } from "./budget.ts";
+import { BudgetExceededError, BudgetTracker, resolveBudgetLimits } from "./budget.ts";
 import type { AiCallRuntime } from "./call.ts";
 import { aiCall } from "./call.ts";
 import { CostAccumulator } from "./cost.ts";
@@ -131,5 +131,103 @@ describe("aiCall — redaction threading", () => {
     const ev = sink.events[0]!;
     expect(ev.redactedPrompt).toBeUndefined();
     expect(ev.redactedResponse).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Graceful degradation — a malformed / unparseable model response must NEVER
+// throw a run-aborting exception when a `fallback` is opted in.
+// ---------------------------------------------------------------------------
+
+/** A GenerateFn that always rejects with `err` (a generation failure). */
+function rejectingGenerate(err: unknown): GenerateFn {
+  return async () => {
+    throw err;
+  };
+}
+
+/** The AI SDK's "could not parse" crash class, reproduced without importing the SDK. */
+const NO_OBJECT_ERR = new Error("No object generated: could not parse the response.");
+
+describe("aiCall — graceful degradation on unparseable / non-conforming output", () => {
+  test("generation failure + fallback → returns a typed degraded result, does NOT throw", async () => {
+    const sink = new RecordingSink();
+    const rt = makeRt(rejectingGenerate(NO_OBJECT_ERR), sink);
+
+    const res = await aiCall(rt, {
+      ...textCtx,
+      fallback: ({ outcome }) => ({ answer: `degraded:${outcome}` }),
+    });
+
+    // No throw; the caller gets the typed fallback value flagged as degraded.
+    expect(res.degraded).toBe(true);
+    expect(res.failureOutcome).toBe("unparseable");
+    expect(res.output).toEqual({ answer: "degraded:unparseable" });
+    expect(res.cost_usd).toBe(0);
+    // The failure is still RECORDED on ai.jsonl (one event, failure outcome, zero cost).
+    expect(sink.events).toHaveLength(1);
+    expect(sink.events[0]!.outcome).toBe("unparseable");
+    expect(sink.events[0]!.cost_usd).toBe(0);
+  });
+
+  test("generation failure WITHOUT fallback → still throws (backward-compatible escalation contract)", async () => {
+    const sink = new RecordingSink();
+    const rt = makeRt(rejectingGenerate(NO_OBJECT_ERR), sink);
+
+    await expect(aiCall(rt, textCtx)).rejects.toBe(NO_OBJECT_ERR);
+    // The failure is recorded before the rethrow (unchanged behavior).
+    expect(sink.events).toHaveLength(1);
+    expect(sink.events[0]!.outcome).toBe("unparseable");
+  });
+
+  test("non-conforming output (schema-validation failure) + fallback → degrades, records real cost", async () => {
+    const sink = new RecordingSink();
+    // Generate SUCCEEDS but returns garbage that fails the `{ answer: string }` schema at aiCall's
+    // defense-in-depth parse (the offline analogue of a provider that returns a non-conforming body).
+    const { fn } = fakeGenerate({ not: "the answer shape" });
+    const rt = makeRt(fn, sink);
+
+    const res = await aiCall(rt, {
+      ...textCtx,
+      fallback: () => ({ answer: "safe-default" }),
+    });
+
+    expect(res.degraded).toBe(true);
+    expect(res.failureOutcome).toBe("unparseable");
+    expect(res.output).toEqual({ answer: "safe-default" });
+    // The call was paid for → real tokens/cost are recorded on the failure event (not zeroed).
+    expect(sink.events).toHaveLength(1);
+    expect(sink.events[0]!.outcome).toBe("unparseable");
+    expect(sink.events[0]!.inputTokens).toBe(10);
+    expect(sink.events[0]!.cost_usd).toBeGreaterThan(0);
+  });
+
+  test("non-conforming output WITHOUT fallback → throws AND emits no event (batch-vision fallback contract)", async () => {
+    const sink = new RecordingSink();
+    const { fn } = fakeGenerate({ not: "the answer shape" });
+    const rt = makeRt(fn, sink);
+
+    await expect(aiCall(rt, textCtx)).rejects.toBeInstanceOf(Error);
+    // A defense-in-depth parse failure with no fallback stays silent (resolveBatchL3 relies on this
+    // to fall back per-target without logging a spurious batch event).
+    expect(sink.events).toHaveLength(0);
+  });
+
+  test("a budget error is NEVER swallowed by the fallback path", async () => {
+    const sink = new RecordingSink();
+    const { fn } = fakeGenerate({ answer: "ok" });
+    // max_model_calls:0 makes the pre-check throw BudgetExceededError before generate runs.
+    const rt: AiCallRuntime = {
+      registry: resolveRegistry({}),
+      budget: new BudgetTracker(resolveBudgetLimits({ run: { max_model_calls: 0 } })),
+      cost: new CostAccumulator(),
+      generate: fn,
+      aiWriter: sink,
+    };
+
+    await expect(
+      aiCall(rt, { ...textCtx, fallback: () => ({ answer: "should-not-be-used" }) }),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+    expect(sink.events).toHaveLength(0);
   });
 });

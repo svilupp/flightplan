@@ -53,14 +53,88 @@ export function testidSelectorForElement(el: InteractiveElement): string | undef
   return undefined;
 }
 
-/** role_name selector: `role:Role:Name` (browser-pilot's interactive role+name special). */
-export function roleNameSelectorForElement(el: InteractiveElement): string | undefined {
+/**
+ * Extra context for deriving a DISCRIMINATING durable selector for an element that carries no
+ * testid / accessible name / label / scoped text (an icon-only `<button>`). Both fields are
+ * OPTIONAL and additive — callers that pass neither get the legacy behaviour verbatim.
+ *
+ *  - `siblings`       — every interactive element in the snapshot, DOM/AX order. Enables the
+ *    POSITIONAL `role:<role>[N]` selector (N = the element's 1-based index among same-role siblings)
+ *    and lets the attribute hook verify a value is UNIQUE before emitting it.
+ *  - `attributeNames` — author-declared deterministic attribute hooks (`[resolve] attributes`, e.g.
+ *    `data-cmd`). When one is present + unique on the element, it yields a `[data-cmd="c2"]` selector
+ *    (PREFERRED over positional, per Fix 2). Empty/absent → no attribute hook (default behaviour).
+ */
+export interface DurableContext {
+  siblings?: readonly InteractiveElement[];
+  attributeNames?: readonly string[];
+}
+
+/**
+ * role_name selector: `role:Role:Name` (browser-pilot's interactive role+name special). For a
+ * NAMELESS element with sibling context, derive the POSITIONAL `role:Role[N]` (Fix 2) — N = the
+ * element's 1-based index among same-role siblings in DOM order — which is DISCRIMINATING (resolves
+ * to exactly one element) and L0-replayable. Without context (legacy callers) a nameless element
+ * still yields the role-only `role:Role`; that is non-discriminating, so `l0.ts`'s replay gate skips
+ * it rather than mis-clicking.
+ */
+export function roleNameSelectorForElement(
+  el: InteractiveElement,
+  ctx?: DurableContext,
+): string | undefined {
   if (!el.role) return undefined;
   if (el.name && el.name.trim().length > 0) {
     return `role:${el.role}:${el.name}`;
   }
-  // Role-only is weak but still durable (e.g. a sole `role:button`).
+  // Nameless: prefer a POSITIONAL selector when we can compute a stable 1-based DOM index.
+  if (ctx?.siblings) {
+    const n = positionalIndex(el, el.role, ctx.siblings);
+    if (n > 0) return `role:${el.role}[${n}]`;
+  }
   return `role:${el.role}`;
+}
+
+/**
+ * A unique author-declared ATTRIBUTE-hook selector (`[data-cmd="c2"]`) for an element (Fix 2 BONUS,
+ * config-gated by `[resolve] attributes`). Returns the first declared attribute the element carries
+ * whose value is UNIQUE across `ctx.siblings` (so it resolves to exactly one element). When no
+ * siblings are supplied the value is trusted as unique (the author declared it a deterministic hook).
+ * Returns `undefined` when no attribute names are declared or none apply — the default (unchanged).
+ */
+export function attributeSelectorForElement(
+  el: InteractiveElement,
+  ctx?: DurableContext,
+): string | undefined {
+  const names = ctx?.attributeNames;
+  if (!names || names.length === 0) return undefined;
+  const attrs = el.attributes;
+  if (!attrs) return undefined;
+  for (const name of names) {
+    const value = attrs[name];
+    if (value === undefined || value.length === 0) continue;
+    if (ctx?.siblings) {
+      const count = ctx.siblings.filter((s) => s.attributes?.[name] === value).length;
+      if (count !== 1) continue; // not unique on this page → not a discriminating hook
+    }
+    return `[${name}="${escapeAttrValue(value)}"]`;
+  }
+  return undefined;
+}
+
+/** The element's 1-based index among same-role siblings (matched by ref), DOM/AX order; 0 if absent. */
+function positionalIndex(
+  el: InteractiveElement,
+  role: string,
+  siblings: readonly InteractiveElement[],
+): number {
+  const target = role.toLowerCase();
+  let n = 0;
+  for (const s of siblings) {
+    if ((s.role ?? "").toLowerCase() !== target) continue;
+    n += 1;
+    if (s.ref !== undefined && s.ref === el.ref) return n;
+  }
+  return 0;
 }
 
 /**
@@ -112,15 +186,24 @@ export function structuralFingerprintForElement(el: InteractiveElement): string 
 // ---------------------------------------------------------------------------
 
 /**
- * The best DURABLE (re-resolvable, never `ref:eN`) selector for an element, in §4 priority.
- * Used to re-derive a stable selector when bp's `selectorUsed` was a bare ref, and to give each
+ * The best DURABLE (re-resolvable, never `ref:eN`) selector for an element, in §4 priority. Used to
+ * re-derive a stable selector when bp's `selectorUsed` was a bare ref, and to give each
  * `RankedCandidate` a persistable selector. Falls back to the structural fingerprint token so a
  * durable selector is ALWAYS derivable (the lock invariant: never persist a ref).
+ *
+ * `ctx` (optional, additive — Fix 2) supplies sibling + author-attribute context so an element with
+ * NO testid/name/label/text (an icon-only `<button>`) still gets a DISCRIMINATING durable selector:
+ * a unique attribute hook (`[data-cmd="c2"]`, PREFERRED) or a positional `role:<role>[N]`, both
+ * L0-replayable. Without `ctx` the result is byte-identical to before.
  */
-export function durableSelectorForElement(el: InteractiveElement): string | undefined {
+export function durableSelectorForElement(
+  el: InteractiveElement,
+  ctx?: DurableContext,
+): string | undefined {
   return (
     testidSelectorForElement(el) ??
-    roleNameSelectorForElement(el) ??
+    attributeSelectorForElement(el, ctx) ??
+    roleNameSelectorForElement(el, ctx) ??
     labelSelectorForElement(el) ??
     scopedTextSelectorForElement(el) ??
     structuralFingerprintForElement(el)
@@ -128,9 +211,12 @@ export function durableSelectorForElement(el: InteractiveElement): string | unde
 }
 
 /** The `Strategy` an element's best durable selector represents (matches `durableSelectorForElement`). */
-export function strategyForElement(el: InteractiveElement): Strategy {
+export function strategyForElement(el: InteractiveElement, ctx?: DurableContext): Strategy {
   if (testidSelectorForElement(el)) return "testid";
-  if (roleNameSelectorForElement(el)) return "role_name";
+  // A unique author-declared attribute hook rides the deterministic `testid` tier (bp's ranker
+  // treats extended `testIdAttributes` as the testid strategy).
+  if (attributeSelectorForElement(el, ctx)) return "testid";
+  if (roleNameSelectorForElement(el, ctx)) return "role_name";
   if (labelSelectorForElement(el)) return "label";
   if (scopedTextSelectorForElement(el)) return "scoped_text";
   return "structural_fingerprint";

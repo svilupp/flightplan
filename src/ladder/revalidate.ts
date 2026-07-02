@@ -38,9 +38,21 @@ interface ParsedSelector {
   /** role_name: `role:Role:Name` (or role-only `role:Role`). */
   role?: string;
   name?: string;
+  /**
+   * POSITIONAL index (1-based, DOM order) from a `role:Role[N]` / `role:Role:Name[N]` selector
+   * (browser-pilot's positional special selector). When set, the selector resolves to the Nth
+   * same-role (and same-name, when `name` is set) element in DOM order — DISCRIMINATING even for a
+   * nameless icon `role:button` (Fix 2: an ai_pick over an icon toolbar persists `role:button[N]`).
+   */
+  index?: number;
   /** testid: the `data-testid`/`data-test`/`data-qa` value from `[data-testid='…']`. */
   testid?: string;
-  /** label: the `aria-label`/`placeholder` value from `[aria-label='…']` / `[placeholder='…']`. */
+  /**
+   * A single-attribute `[key='value']` identity — `aria-label`/`placeholder`/`name` (the `label`
+   * strategy) OR any author-declared attribute hook such as `[data-cmd='c2']` (Fix 2 BONUS: a
+   * `[resolve] attributes` extension surfaces `data-cmd` on the snapshot, and a UNIQUE value yields
+   * this discriminating selector). `key` is matched against `el.attributes[key]`.
+   */
   attr?: { key: string; value: string };
   /** scoped_text: `text:Name` (interactive-role-only). */
   text?: string;
@@ -48,22 +60,40 @@ interface ParsedSelector {
   fingerprint?: { role: string; name: string };
 }
 
+/** Pull a trailing 1-based `[N]` positional index off a selector body (mirrors browser-pilot). */
+function extractTrailingIndex(body: string): { body: string; index?: number } {
+  const m = /\[(\d+)\]\s*$/.exec(body);
+  if (!m) return { body };
+  const index = Number.parseInt(m[1] as string, 10);
+  return { body: body.slice(0, m.index).trim(), index };
+}
+
 /**
  * Parse a durable recipe selector into the identity it asserts. Returns `undefined` for a selector
- * we cannot map to an element-identity check (a bare CSS selector, a ref — refs are never stored).
- * Mirrors the shapes `strategy-array.ts` emits.
+ * we cannot map to an element-identity check (a bare descendant/compound CSS selector, a ref — refs
+ * are never stored). Mirrors the shapes `strategy-array.ts` emits.
  */
 export function parseDurableSelector(selector: string): ParsedSelector | undefined {
   const s = selector.trim();
 
-  // testid → `[data-testid='value']` / `[data-test=…]` / `[data-qa=…]`
-  const testid = /^\[\s*data-(?:testid|test|qa)\s*=\s*['"]?(.*?)['"]?\s*\]$/i.exec(s);
+  // testid → `[data-testid='value']` / `[data-test=…]` / `[data-qa=…]`. The value capture disallows
+  // `]` so a COMPOUND/descendant selector (`[data-row-id='u2'] [data-testid='row-check']`) does NOT
+  // match — it stays unparseable, so L0 treats it as a precise compound primary, never an identity.
+  const testid = /^\[\s*data-(?:testid|test|qa)\s*=\s*['"]?([^\]]*?)['"]?\s*\]$/i.exec(s);
   if (testid?.[1]) return { testid: testid[1] };
 
-  // label → `[aria-label='value']` / `[placeholder='value']`
-  const attr = /^\[\s*(aria-label|placeholder|name)\s*=\s*['"]?(.*?)['"]?\s*\]$/i.exec(s);
+  // label → `[aria-label='value']` / `[placeholder='value']` / `[name='value']`
+  const attr = /^\[\s*(aria-label|placeholder|name)\s*=\s*['"]?([^\]]*?)['"]?\s*\]$/i.exec(s);
   if (attr?.[1] && attr[2] !== undefined)
     return { attr: { key: attr[1].toLowerCase(), value: attr[2] } };
+
+  // generic single-attribute hook → `[data-cmd='c2']` / `[data-foo='bar']` (Fix 2 BONUS). A LONE
+  // `[key='value']` for an author-declared attribute; resolves to elements whose `attributes[key]`
+  // equals `value`. The `[^'"\]]` value class means compound/descendant CSS (a space + a second
+  // `[...]`, a `>` combinator) never matches this — those stay unparseable (a precise CSS primary).
+  const generic = /^\[\s*([\w-]+)\s*=\s*['"]?([^'"\]]*)['"]?\s*\]$/.exec(s);
+  if (generic?.[1] && generic[2] !== undefined)
+    return { attr: { key: generic[1].toLowerCase(), value: generic[2] } };
 
   // scoped_text → `text:Name`
   if (/^text:/i.test(s)) {
@@ -75,12 +105,17 @@ export function parseDurableSelector(selector: string): ParsedSelector | undefin
   const fp = /^(?:fingerprint|fp|structure):role=(.*?);name=(.*)$/i.exec(s);
   if (fp) return { fingerprint: { role: fp[1] ?? "", name: fp[2] ?? "" } };
 
-  // role_name → `role:Role:Name` (or role-only `role:Role`)
+  // role_name → `role:Role:Name` (or role-only `role:Role`), each optionally with a trailing
+  // positional `[N]` (browser-pilot `role:button[2]`, `role:button:"Bold"[2]`).
   if (/^role:/i.test(s)) {
-    const rest = s.slice(s.indexOf(":") + 1);
-    const sep = rest.indexOf(":");
-    if (sep < 0) return { role: rest };
-    return { role: rest.slice(0, sep), name: rest.slice(sep + 1) };
+    const { body: rawRest, index } = extractTrailingIndex(s.slice(s.indexOf(":") + 1));
+    const sep = rawRest.indexOf(":");
+    const withIndex = index !== undefined ? { index } : {};
+    if (sep < 0) return { role: rawRest, ...withIndex };
+    // Strip surrounding quotes on the name (browser-pilot's `role:button:"Bold"` form).
+    const rawName = rawRest.slice(sep + 1).trim();
+    const name = /^(['"]).*\1$/.test(rawName) ? rawName.slice(1, -1) : rawName;
+    return { role: rawRest.slice(0, sep), name, ...withIndex };
   }
 
   return undefined;
@@ -129,6 +164,11 @@ function expectedRoleName(p: ParsedSelector): { role?: string; name?: string } {
  * Does a parsed selector RESOLVE against the snapshot — i.e. hit EXACTLY ONE element whose role +
  * accessible name corroborate what the selector encodes? Returns that element, or undefined for a
  * miss (0 matches, >1 now-ambiguous matches, or a role/name mismatch). Shared by the whole race.
+ *
+ * A POSITIONAL selector (`role:Role[N]`) resolves to the Nth same-role (and same-name, when a name
+ * is encoded) element in DOM order — the snapshot's `interactiveElements` are AX-tree ordered, which
+ * matches browser-pilot's positional `role:Role[N]` DOM-order semantics — so a nameless icon
+ * `role:button[3]` is DISCRIMINATING (exactly one element) rather than ambiguous.
  */
 function resolveSelector(
   selector: string,
@@ -136,6 +176,16 @@ function resolveSelector(
 ): InteractiveElement | undefined {
   const parsed = parseDurableSelector(selector);
   if (!parsed) return undefined; // not an identity-bearing selector — can't resolve on it
+  // Positional: the Nth same-role (+ same-name) element in snapshot/DOM order (1-based).
+  if (parsed.index !== undefined && parsed.role !== undefined) {
+    const role = parsed.role.toLowerCase();
+    const sameRole = elements.filter(
+      (el) =>
+        (el.role ?? "").toLowerCase() === role &&
+        (parsed.name === undefined || (el.name ?? "") === parsed.name),
+    );
+    return sameRole[parsed.index - 1];
+  }
   const matches = elements.filter((el) => elementMatches(el, parsed));
   if (matches.length !== 1) return undefined; // absent or now-ambiguous
   const el = matches[0]!;
@@ -145,6 +195,19 @@ function resolveSelector(
   }
   if (exp.name !== undefined && (el.name ?? "") !== exp.name) return undefined;
   return el;
+}
+
+/**
+ * Resolve a durable selector to the SINGLE snapshot element it identifies, or `undefined` when it
+ * is not identity-bearing (compound/descendant CSS, a ref) or does not uniquely resolve. Exported
+ * so L0 (`l0.ts`) can anchor its replay on the recipe's PRIMARY strategy and reject any candidate
+ * that resolves to a DIFFERENT element (the target-identity gate — Fix 1). Pure; snapshot-only.
+ */
+export function resolveSelectorToElement(
+  selector: string,
+  elements: readonly InteractiveElement[],
+): InteractiveElement | undefined {
+  return resolveSelector(selector, elements);
 }
 
 /** A single strategy's outcome in the race: what element (if any) it resolved to. */

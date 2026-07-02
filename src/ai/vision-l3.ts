@@ -185,9 +185,17 @@ export async function resolveL3(
 // unchanged page, and send ONE multi-target prompt keyed by a stable per-target `key`. The model
 // answers each key with a geometry-anchored pick (its index into that target's numbered candidate
 // packet — the packet entry carries the concrete ref/selector, so the answer maps back to a real
-// element). STRICT-JSON parse (`BatchVisionSchema.strict()`): a response that is malformed, or is
-// MISSING/unparseable for some keys, cleanly falls back to a single-call-per-target `resolveL3` for
-// the AFFECTED targets only — a batch failure never breaks the whole run.
+// element).
+//
+// PARSE ROBUSTNESS (a malformed model response must never break the run): the call is validated
+// against a LENIENT envelope (`{ picks: [ ...unknown ] }`) so the provider does NOT reject the whole
+// batch over a single off-contract pick — the pre-fix `.strict()` schema forced ALL targets to fall
+// back on one bad key. The real per-pick contract (`BatchTargetPickSchema`) is then re-enforced
+// INDIVIDUALLY in `indexByKey` via `safeParse`: a malformed / missing / duplicated key is dropped
+// and resolved by a single-call-per-target `resolveL3` (its well-formed siblings still resolve from
+// the one batch call), and an entirely unparseable batch (no `picks` array at all) still throws
+// inside `aiCall` → the try/catch below falls EVERY target back per-target. Either way, one bad key
+// never throws out of the batch.
 
 /** One target's pick inside a batch response — the single-target decision shape plus its `key`. */
 const BatchTargetPickSchema = z
@@ -203,12 +211,28 @@ const BatchTargetPickSchema = z
 
 /**
  * The batch vision output: one `picks[]` entry per target, keyed back to the concrete target by
- * `key`. Strict (`.strict()`) so an off-contract shape is rejected at parse time and the whole
- * batch falls back per-target rather than acting on a hallucinated field.
+ * `key`. Strict (`.strict()`) — this is the IDEAL, fully-validated shape (kept for the public
+ * surface + its inferred type). The actual model call validates against {@link BatchVisionEnvelope}
+ * (a lenient envelope) and re-enforces THIS per-pick contract individually in {@link indexByKey}, so
+ * one off-contract pick can't reject the whole batch. See the PARSE ROBUSTNESS note above.
  */
 export const BatchVisionSchema = z.object({ picks: z.array(BatchTargetPickSchema) }).strict();
 
 export type BatchVisionOutput = z.infer<typeof BatchVisionSchema>;
+
+/** One validated per-target pick (the strict per-pick contract re-enforced in {@link indexByKey}). */
+type BatchTargetPick = z.infer<typeof BatchTargetPickSchema>;
+
+/**
+ * The LENIENT envelope actually handed to the batch model call. Only the OUTER shape is validated
+ * (`{ picks: [...] }`) and each pick is left UNKNOWN, so a single mis-typed / off-contract / non-
+ * object pick can NOT reject the whole batch at the provider's validation boundary (the real
+ * per-pick contract, {@link BatchTargetPickSchema}, is re-applied individually in {@link indexByKey}).
+ * The detailed pick shape is carried to the model by {@link buildBatchVisionPrompt}, not this schema.
+ * A response with no `picks` array still fails validation → the batch falls back per-target for ALL
+ * targets (the documented whole-batch fallback).
+ */
+const BatchVisionEnvelope = z.object({ picks: z.array(z.unknown()) });
 
 /** A step + its freshly-gathered candidates + prompt inputs, carried through the batch flow. */
 interface BatchTarget {
@@ -319,7 +343,8 @@ export async function resolveBatchL3(
       modelRole: "vision",
       callRole: "vision",
       purpose: `vision-batch:${targets.map((t) => t.step.id).join(",")}`,
-      schema: BatchVisionSchema,
+      // Lenient envelope (per-pick validation happens in `indexByKey`) — see PARSE ROBUSTNESS note.
+      schema: BatchVisionEnvelope,
       maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
       messages,
     });
@@ -349,15 +374,24 @@ function syntheticPrior(): StepExecution {
 }
 
 /**
- * Index the batch picks by `key`, keeping only UNAMBIGUOUS answers: a key that appears zero or >1
- * times is dropped (treated as "not cleanly answered") so it falls back per-target rather than
- * acting on a duplicated/ambiguous entry.
+ * Index the batch picks by `key`, keeping only VALID, UNAMBIGUOUS answers. Each raw (unknown) pick
+ * from the lenient envelope is re-validated INDIVIDUALLY against {@link BatchTargetPickSchema}:
+ *  - a pick that fails the per-pick contract (malformed / mis-typed / non-object) is DROPPED, so a
+ *    single bad key never throws and takes the whole batch down — its target simply falls back
+ *    per-target while its well-formed siblings resolve from the one batch call;
+ *  - a key that (after validation) appears zero or >1 times is likewise dropped (not cleanly
+ *    answered) so it falls back per-target rather than acting on a duplicated/ambiguous entry.
  */
-function indexByKey(picks: BatchVisionOutput["picks"]): Map<string, VisionPick> {
-  const counts = new Map<string, number>();
-  for (const p of picks) counts.set(p.key, (counts.get(p.key) ?? 0) + 1);
-  const map = new Map<string, VisionPick>();
+function indexByKey(picks: unknown[]): Map<string, VisionPick> {
+  const valid: BatchTargetPick[] = [];
   for (const p of picks) {
+    const parsed = BatchTargetPickSchema.safeParse(p);
+    if (parsed.success) valid.push(parsed.data);
+  }
+  const counts = new Map<string, number>();
+  for (const p of valid) counts.set(p.key, (counts.get(p.key) ?? 0) + 1);
+  const map = new Map<string, VisionPick>();
+  for (const p of valid) {
     if (counts.get(p.key) === 1) map.set(p.key, p);
   }
   return map;

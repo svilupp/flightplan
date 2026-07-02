@@ -242,6 +242,53 @@ describe("L4 advisor — produces each verdict kind, terminal + attached", () =>
 });
 
 // ---------------------------------------------------------------------------
+// L4 advisor — graceful degradation on an unparseable model response
+// ---------------------------------------------------------------------------
+
+/** A GenerateFn that rejects with the AI SDK's "could not parse" crash class. */
+function noObjectGenerate(): GenerateFn {
+  return async () => {
+    throw new Error("No object generated: could not parse the response.");
+  };
+}
+
+describe("L4 advisor — a malformed model response degrades to a safe flake, never crashes", () => {
+  test("generation parse failure → terminal flake verdict + recorded failure, does NOT throw", async () => {
+    const d = new MockDriver();
+    const sink = new RecordingSink();
+    const rt = buildRuntime(noObjectGenerate(), sink);
+
+    // Must resolve (not reject) — the run continues; the advisor never aborts it.
+    const exec = await rt.hooks.classifyL4(clickStep(), priorL1, ctxFor(d, rt.hooks));
+
+    expect(exec.ok).toBe(false);
+    expect(exec.tier).toBe("L4");
+    expect(exec.escalate).toBe(false); // still terminal
+    expect(exec.advisory?.kind).toBe("flake"); // safe, NON-acting classification
+    expect(exec.error).toContain("flake");
+    // The failure is recorded on ai.jsonl with the parse-failure outcome (not a fake "ok").
+    expect(sink.events).toHaveLength(1);
+    expect(sink.events[0]!.role).toBe("advisor");
+    expect(sink.events[0]!.outcome).toBe("unparseable");
+  });
+
+  test("garbage (schema-invalid) advisor output also degrades to flake", async () => {
+    const d = new MockDriver();
+    const sink = new RecordingSink();
+    // Generate succeeds but returns an object that is not any AdvisoryVerdict kind.
+    const { fn } = makeFakeGenerate([{ output: { kind: "not-a-real-kind", nonsense: true } }]);
+    const rt = buildRuntime(fn, sink);
+
+    const exec = await rt.hooks.classifyL4(clickStep(), priorL1, ctxFor(d, rt.hooks));
+
+    expect(exec.advisory?.kind).toBe("flake");
+    expect(exec.tier).toBe("L4");
+    expect(exec.escalate).toBe(false);
+    expect(sink.events[0]!.outcome).toBe("unparseable");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ai_judge routing
 // ---------------------------------------------------------------------------
 
@@ -298,6 +345,47 @@ describe("ai_judge — routing follows the modality", () => {
     expect(d.callsTo("screenshot")).toHaveLength(0);
     expect(calls[0]!.modelRole).toBe("resolver");
     expect(sink.events[0]!.role).toBe("judge");
+  });
+
+  test("unparseable judge output → fail-safe (pass=false, inconclusive), never crashes", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(makeSnapshot({ text: "Some page" }));
+    const sink = new RecordingSink();
+    // Judge model returns garbage that fails JudgeSchema at aiCall's parse.
+    const { fn } = makeFakeGenerate([{ output: { verdict: "maybe", nope: 1 } }]);
+    const rt = buildRuntime(fn, sink);
+
+    const result = await rt.judge(judgeAssertion({ inputs: ["text"] }), {
+      driver: d,
+      timeoutMs: 1000,
+      stepId: "s5",
+    });
+
+    // Fail CLOSED: an unreadable judge must NOT silently pass.
+    expect(result.type).toBe("ai_judge");
+    expect(result.pass).toBe(false);
+    expect(result.message).toContain("inconclusive");
+    // Recorded as a parse failure, not a fake "ok".
+    expect(sink.events).toHaveLength(1);
+    expect(sink.events[0]!.role).toBe("judge");
+    expect(sink.events[0]!.outcome).toBe("unparseable");
+  });
+
+  test("a text-judge generation failure also fails safe (pass=false)", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(makeSnapshot({ text: "Some page" }));
+    const sink = new RecordingSink();
+    const rt = buildRuntime(noObjectGenerate(), sink);
+
+    const result = await rt.judge(judgeAssertion({ inputs: ["text"] }), {
+      driver: d,
+      timeoutMs: 1000,
+      stepId: "s6",
+    });
+
+    expect(result.pass).toBe(false);
+    expect(result.message).toContain("inconclusive");
+    expect(sink.events[0]!.outcome).toBe("unparseable");
   });
 });
 

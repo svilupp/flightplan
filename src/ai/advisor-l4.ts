@@ -8,7 +8,7 @@
 
 import type { Step } from "../flow/types.ts";
 import type { ResolveContext, StepExecution } from "../ladder/index.ts";
-import type { AdvisoryVerdict } from "../types.ts";
+import type { AdvisoryFlakeVerdict, AdvisoryVerdict } from "../types.ts";
 import { isBudgetExceeded } from "./budget.ts";
 import type { AiCallRuntime } from "./call.ts";
 import { aiCall } from "./call.ts";
@@ -56,6 +56,23 @@ export function buildAdvisorPrompt(step: Step, prior: StepExecution): string {
     .join("\n");
 }
 
+/**
+ * The SAFE degraded verdict when the advisor model's response cannot be produced or parsed (the
+ * measured `z-ai/glm-5.2` "No object generated: could not parse the response" crash class). The
+ * advisor is a TERMINAL, NON-ACTING classifier, so a degraded verdict is always acceptable: we
+ * classify as `flake` — the only kind that acts on NOTHING (`heal` would write the lock, and
+ * `bug`/`intent_changed` assert product claims we have no evidence for). The step's REAL pass/fail
+ * is decided by its assertions, never by this verdict, so degrading here keeps the run correct while
+ * never aborting it. `detail` names the degradation (the classified failure outcome or an error
+ * message) so the trace/log make the low-confidence, non-informative nature explicit.
+ */
+function degradedAdvisorVerdict(detail: string): AdvisoryFlakeVerdict {
+  return {
+    kind: "flake",
+    reason: `advisor could not classify (${detail}); degraded to a non-acting flake — the step's real pass/fail is decided by its assertions`,
+  };
+}
+
 /** L4 advisor: classify the persistent failure into a TERMINAL verdict (never acts). */
 export async function classifyL4(
   rt: AiCallRuntime,
@@ -73,19 +90,30 @@ export async function classifyL4(
       maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
       prompt: buildAdvisorPrompt(step, prior),
       deriveOutcome: (v) => ({ outcome: v.kind, advisoryVerdict: v.kind }),
+      // A malformed / unparseable / hung advisor response must NEVER abort the run: degrade to a
+      // safe, non-acting `flake` verdict (recorded on `ai.jsonl` as the failure outcome) instead of
+      // throwing. `aiCall` returns this via `res.output` with `res.degraded === true`.
+      fallback: ({ outcome }) => degradedAdvisorVerdict(outcome),
     });
   } catch (err) {
-    if (isBudgetExceeded(err)) throw err;
-    // The advisor itself failed — surface a terminal result without a verdict (the runner fails it).
-    return {
+    if (isBudgetExceeded(err)) throw err; // budgets fail the run fast — never degraded
+    // With `fallback` wired above, a parse/generation failure degrades IN-BAND (never reaches here);
+    // this catch is a belt-and-suspenders guard for any other unexpected throw. Still terminal +
+    // non-acting: degrade to a `flake` rather than crashing the run.
+    const verdict = degradedAdvisorVerdict(err instanceof Error ? err.message : String(err));
+    const exec: StepExecution = {
       ok: false,
       tier: "L4",
       escalate: false,
-      candidates: prior.candidates,
-      error: `L4 advisor call failed: ${err instanceof Error ? err.message : String(err)}`,
+      advisory: verdict,
+      error: summarizeVerdict(verdict),
     };
+    if (prior.candidates) exec.candidates = prior.candidates;
+    return exec;
   }
 
+  // A successful call carries the model's real verdict; a degraded call carries the safe `flake`
+  // above. Both are valid `AdvisoryVerdict`s and flow through the SAME terminal construction.
   const verdict = res.output;
   const exec: StepExecution = {
     ok: false,

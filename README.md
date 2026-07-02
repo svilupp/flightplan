@@ -50,6 +50,44 @@ AI tiers (L2 resolver / L3 vision / L4 advisor, plus `ai_judge` / `ai_pick`) req
 OpenRouter key — see [`.env.example`](.env.example) and [`docs/plans/RUNNING.md`](docs/plans/RUNNING.md)
 for the full validation-campaign runbook.
 
+## Browser connection
+
+By default (no `[connect]` block) flightplan **attaches to a running Chrome over CDP at
+`localhost:9222`**. Start Chrome with remote debugging enabled first:
+
+```sh
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+# Linux
+google-chrome --remote-debugging-port=9222
+```
+
+Attach explicitly, or point at a different endpoint (`browserURL` accepts `host:port` or
+`http://host:port`; a missing port defaults to 9222; precedence is `wsUrl` → `browserURL` →
+`autodiscover`):
+
+```toml
+[connect]
+mode = "attach"
+browserURL = "localhost:9223"
+# wsUrl = "ws://localhost:9222/devtools/browser/<id>"   # most deterministic
+# autodiscover = { channel = "canary", userDataDir = "/path/to/profile" }
+```
+
+Or let flightplan launch its own Chrome:
+
+```toml
+[connect]
+mode = "launch"
+headless = true                 # default
+# channel = "stable"
+# userDataDir = "/path/to/profile"
+# chromeFlags = ["--window-size=1280,800"]
+```
+
+The **entry flow's `[connect]` is authoritative**: flows pulled in via `imports` are step
+libraries only — their config, including any `[connect]`, is ignored.
+
 ## Example flows
 
 The nine flows in [`examples/flows/`](examples/flows/) map 1:1 to the fixture pages

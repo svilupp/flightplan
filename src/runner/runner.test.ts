@@ -21,6 +21,7 @@ import { FakeClock } from "../assert/clock.ts";
 import type { ConnectConfig, ResolvedConfig } from "../config/index.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
 import {
+  BrowserPilotDriver,
   MockDriver,
   makeFailureBatch,
   makeInteractiveElement,
@@ -28,7 +29,12 @@ import {
   makeSuccessBatch,
 } from "../driver/index.ts";
 import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
-import { runFlow } from "./runner.ts";
+import {
+  DEFAULT_CONNECT_CONFIG,
+  defaultDriverFactory,
+  resolveConnectConfig,
+  runFlow,
+} from "./runner.ts";
 import type { RunOptions } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1228,5 +1234,179 @@ steps = [
     expect(result.summary.verdict).toBe("passed");
     expect(result.summary.steps.map((s) => s.stepId)).toEqual(["first:open", "first:settle"]);
     expect(driver.callsTo("goto").map((c) => c.args[0])).toEqual(["http://localhost:3000/alpha"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connect-config resolution — the default (no [connect] block) attaches to a
+// general CDP endpoint at localhost:9222; an explicit config wins wholesale.
+// ---------------------------------------------------------------------------
+
+describe("resolveConnectConfig", () => {
+  test("defaults to attach at localhost:9222 when the config sets no connect", () => {
+    const resolved = resolveConnectConfig(defaultConfig());
+    expect(resolved).toEqual({ mode: "attach", browserURL: "localhost:9222" });
+    expect(resolved).toBe(DEFAULT_CONNECT_CONFIG);
+  });
+
+  test("an explicit connect config overrides the default", () => {
+    const connect: ConnectConfig = { mode: "launch", headless: true };
+    const config = resolveConfigWithDefaults([{ connect }]);
+    expect(resolveConnectConfig(config)).toEqual(connect);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lock crediting is GATED on the full step outcome (measured admin-crud regression)
+// ---------------------------------------------------------------------------
+// A resolution must be credited to the lock portfolio (first-learn / green promotion / heal)
+// only when the step PASSES end-to-end (action ok AND assertions ok) — never on bare action
+// success. Before the fix a WRONG-but-clickable selector earned a green and climbed the per-step
+// portfolio even when the step's after-assertion failed, so the next warm run replayed the wrong
+// pick (admin-crud: a promoted `bulk-delete` selector deleted the row instead of ticking a
+// checkbox). Steps with NO assertions still credit on action success (unchanged).
+describe("runFlow — lock crediting gated on assertion outcome", () => {
+  /** A click guarded by a whole-page `text` after-assertion; the snapshot text drives pass/fail. */
+  const GUARDED_CLICK = `
+version = 1
+kind = "flow"
+id = "test.gatecredit"
+description = "gate lock crediting on assertion pass"
+
+[run]
+assert_timeout_ms = 10
+
+[[steps]]
+id = "act"
+do = "click"
+target = ["text:Primary", "click the primary button"]
+
+[[steps.assert]]
+type = "text"
+text = "SAVED-OK"
+`;
+
+  /** The sidecar lock path the runner derives for a flow (mirrors defaultLockPath). */
+  function gateLockPath(flowPath: string): string {
+    return flowPath.replace(/\.toml$/i, ".lock.toml");
+  }
+
+  /** A snapshot with the clickable "Primary" button; `pageText` drives the after-assertion. */
+  function gateSnapshot(pageText: string) {
+    return makeSnapshot({
+      url: "http://localhost:3000/crud",
+      accessibilityTree: [{ role: "main", ref: "n1", children: [{ role: "button", ref: "n2" }] }],
+      interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Primary" })],
+      text: pageText,
+    });
+  }
+
+  test("action succeeds but the after-assertion FAILS → resolution is NOT credited (no first-learn write)", async () => {
+    const { flowPath, outDir } = await writeFlow(GUARDED_CLICK);
+    const lockPath = gateLockPath(flowPath);
+
+    const driver = new MockDriver();
+    // The click RESOLVES + ACTS at L1 (success), but the page text lacks "SAVED-OK", so the
+    // after-assertion fails and the step fails end-to-end.
+    driver.setSnapshot(gateSnapshot("nothing useful here"));
+    driver.setSignature("http://localhost:3000/crud|hash");
+    driver.setBatchResult(makeSuccessBatch("role:button:Primary", "click"));
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+
+    // The run failed on the assertion, but the ACTION itself succeeded (resolved at L1).
+    expect(result.summary.verdict).toBe("failed");
+    expect(result.summary.failed_step).toBe("act");
+    expect(result.summary.steps[0]?.tier).toBe("L1");
+    expect(result.summary.steps[0]?.ok).toBe(false);
+    expect(result.summary.drift_count).toBe(0);
+    expect(result.summary.healed_steps).toEqual([]);
+
+    // The wrong-but-clickable selector was NOT credited: no lock was written (first-learn suppressed).
+    expect(await Bun.file(lockPath).exists()).toBe(false);
+  });
+
+  test("action AND after-assertion pass → resolution IS credited (first-learn persisted)", async () => {
+    const { flowPath, outDir } = await writeFlow(GUARDED_CLICK);
+    const lockPath = gateLockPath(flowPath);
+
+    const driver = new MockDriver();
+    // Same action, but now the page text satisfies the after-assertion → the step passes end-to-end.
+    driver.setSnapshot(gateSnapshot("result: SAVED-OK"));
+    driver.setSignature("http://localhost:3000/crud|hash");
+    driver.setBatchResult(makeSuccessBatch("role:button:Primary", "click"));
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+
+    expect(result.summary.verdict).toBe("passed");
+    expect(result.summary.steps[0]?.tier).toBe("L1");
+
+    // The passing step credited its resolution: the recipe was learned + persisted.
+    expect(await Bun.file(lockPath).exists()).toBe(true);
+    const learned = await loadLockFile(lockPath);
+    expect(learned.targets[0]?.step).toBe("act");
+    expect(learned.targets[0]?.strategies?.[0]?.selector).toBe("role:button:Primary");
+  });
+
+  test("warm L0 replay whose after-assertion FAILS does NOT promote the portfolio (greens frozen, lock byte-stable)", async () => {
+    const { flowPath, outDir } = await writeFlow(GUARDED_CLICK);
+    const lockPath = gateLockPath(flowPath);
+
+    // --- Run 1: passes end-to-end → first-learn (greens recorded). ---
+    const d1 = new MockDriver();
+    d1.setSnapshot(gateSnapshot("result: SAVED-OK"));
+    d1.setSignature("http://localhost:3000/crud|hash");
+    d1.setBatchResult(makeSuccessBatch("role:button:Primary", "click"));
+    const run1 = await runFlow(optsFor(flowPath, outDir, d1, defaultConfig()));
+    expect(run1.summary.verdict).toBe("passed");
+
+    const afterLearn = await loadLockFile(lockPath);
+    const greensAfterLearn = afterLearn.targets[0]?.strategies?.[0]?.greens ?? 0;
+
+    // --- Run 2: identical signature → L0 warm replay, but the after-assertion now FAILS. ---
+    // A GREEN L0 replay would normally tick the portfolio track record (greens++) and rewrite the
+    // lock. Because this step fails end-to-end, the resolution must NOT be credited — no promotion,
+    // and the committed lock stays byte-identical. This is the admin-crud regression in miniature.
+    const d2 = new MockDriver();
+    d2.setSnapshot(gateSnapshot("ERROR: not saved"));
+    d2.setSignature("http://localhost:3000/crud|hash");
+    d2.setBatchResult(makeSuccessBatch("role:button:Primary", "click"));
+    const run2 = await runFlow(
+      optsFor(flowPath, outDir, d2, defaultConfig(), { runId: "testrun-0002" }),
+    );
+
+    expect(run2.summary.verdict).toBe("failed");
+    expect(run2.summary.steps[0]?.tier).toBe("L0"); // it WAS a warm replay…
+    expect(run2.summary.steps[0]?.ok).toBe(false); // …that failed on the assertion.
+
+    const afterFail = await loadLockFile(lockPath);
+    // Greens did NOT advance and the committed lock is byte-identical (no promotion on a failed run).
+    expect(afterFail.targets[0]?.strategies?.[0]?.greens).toBe(greensAfterLearn);
+    expect(afterFail).toEqual(afterLearn);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [timeouts] → driver factory threading (integration gap)
+// ---------------------------------------------------------------------------
+
+describe("defaultDriverFactory — [timeouts] threading", () => {
+  test("default path (no timeouts arg) keeps the driver's built-in ceilings", () => {
+    // Backward-compat: constructing without timeouts must still work and fall back to the driver's
+    // own DEFAULT_ACTION_TIMEOUT_MS (5000) / DEFAULT_NAV_TIMEOUT_MS (2000).
+    const driver = defaultDriverFactory(DEFAULT_CONNECT_CONFIG);
+    expect(driver).toBeInstanceOf(BrowserPilotDriver);
+    const bp = driver as BrowserPilotDriver;
+    expect(bp.actionTimeoutMs).toBe(5000);
+    expect(bp.navTimeoutMs).toBe(2000);
+  });
+
+  test("honors an author's [timeouts] override — action_ms / nav_ms reach the driver", () => {
+    // The runner threads config.timeouts into the default factory; those resolved ceilings must
+    // land on the constructed BrowserPilotDriver instead of its built-in fallbacks.
+    const driver = defaultDriverFactory(DEFAULT_CONNECT_CONFIG, { action_ms: 1234, nav_ms: 777 });
+    const bp = driver as BrowserPilotDriver;
+    expect(bp.actionTimeoutMs).toBe(1234);
+    expect(bp.navTimeoutMs).toBe(777);
   });
 });

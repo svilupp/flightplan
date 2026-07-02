@@ -125,6 +125,16 @@ export type { JudgeVerdict, ResolverDecision } from "./schemas.ts";
 // ---------------------------------------------------------------------------
 
 /**
+ * Passed to an {@link AiCallContext.fallback} when a model call cannot produce a schema-conforming
+ * value. `outcome` is the classified failure label the `ai_call` event records (`no_output` /
+ * `timeout` / `unparseable` / `error`); `error` is the underlying thrown value (for logging).
+ */
+export interface AiCallFailure {
+  error: unknown;
+  outcome: string;
+}
+
+/**
  * One logical AI call. `modelRole` selects the registry entry (model list + pricing); `callRole`
  * is the wider {@link AiCallRole} stamped on the `ai_call` event (a `judge` routes to a text or
  * vision MODEL but is logged as `judge`). `deriveOutcome` lets the advisor stamp
@@ -150,6 +160,18 @@ export interface AiCallContext<S extends z.ZodType = z.ZodType> {
     outcome?: string;
     advisoryVerdict?: AiCallEvent["advisoryVerdict"];
   };
+  /**
+   * OPTIONAL graceful-degradation hook (robustness — a malformed model response must never abort a
+   * run). When set, a generation/parse failure that is NOT a budget error (the "No object
+   * generated: could not parse the response" class from the AI SDK, or a local schema-validation
+   * failure) does NOT throw out of {@link aiCall}: the failure is still recorded (an `ai_call`
+   * event with the classified failure `outcome`), and `aiCall` returns this typed fallback value as
+   * `output` with `degraded: true`. Terminal, NON-acting callers (the L4 advisor, `ai_judge`) supply
+   * a SAFE default so the run continues; callers that WANT a model failure to escalate (the L2
+   * resolver / L3 vision) simply omit this and keep the throw contract. Budget errors ALWAYS
+   * propagate regardless of this hook.
+   */
+  fallback?: (failure: AiCallFailure) => z.infer<S>;
 }
 
 /** The validated, typed result of an {@link AiCallContext}. */
@@ -161,6 +183,14 @@ export interface AiCallResult<T> {
   cost_usd: number;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * True when `output` came from {@link AiCallContext.fallback} because the model call could not
+   * produce a schema-conforming value (a graceful, non-throwing degradation). Absent/false on a
+   * normal successful call, so existing callers that ignore it are unaffected.
+   */
+  degraded?: boolean;
+  /** When {@link degraded}, the classified failure label (matches the recorded `ai_call.outcome`). */
+  failureOutcome?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -219,6 +219,28 @@ export const CacheConfigSchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
+// [resolve] — deterministic-resolution tuning (author-declared selector hooks)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `[resolve]` block — knobs for the deterministic (L1/L0) resolver. All optional + additive;
+ * an absent block keeps the built-in behaviour unchanged.
+ *
+ *  - `attributes` — EXTRA DOM attribute names the resolver may use as deterministic selector hooks,
+ *    in addition to the built-in `data-testid`/`data-test`/`data-qa` set. Threaded into the driver's
+ *    `snapshot({ attributeNames })` + `resolveAll({ testIdAttributes })`, so a site-specific hook
+ *    like `data-cmd` is surfaced on the snapshot and — when its value is UNIQUE on the page — becomes
+ *    a high-confidence `[data-cmd="c2"]` candidate. This lets an icon-only toolbar (no testid / aria /
+ *    text) resolve + PERSIST a discriminating durable selector so warm runs replay it at L0 with zero
+ *    model calls (Fix 2 BONUS). Default: none (behaviour identical to before).
+ */
+export const ResolveConfigSchema = z
+  .object({
+    attributes: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
 // [plan] — the L5 cheap-first path-repair planner (PLAN_v003 §4 Phase C / v003-6)
 // ---------------------------------------------------------------------------
 
@@ -248,6 +270,34 @@ export const PlanConfigSchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
+// [timeouts] — action / navigation wall-clock ceilings (fixes the 30s hangs)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `[timeouts]` block — top-level, per-scenario wall-clock ceilings for browser ACTIONS. All
+ * fields optional + defaulted (`DEFAULT_TIMEOUTS` in `./resolve.ts` → `action_ms:5000`,
+ * `nav_ms:2000`) and mergeable key-by-key, so it is fully backward compatible.
+ *
+ *  - `action_ms` — the default actionability/click ceiling (ms) the driver hands browser-pilot for
+ *    EVERY batch (L0 replay / L1 race) + single action when the step/caller sets none. It BOUNDS
+ *    browser-pilot's own ~30s actionability default, so a disabled/wrong LEADING selector fails fast
+ *    (≈`action_ms`) and escalates instead of dead-hanging ~30s (the measured admin-crud L0 stall:
+ *    `outcome=escalated durationMs≈30500` then L1 resolved ~90ms). Default `5000`. Tune DOWN
+ *    (`2000`–`3000`) for a snappy app, UP for a genuinely slow one. A per-step `timeout_ms`
+ *    (flow `stepCommon`) STILL overrides this per action — browser-pilot honors a step's own
+ *    `Step.timeout` over the batch-level default.
+ *  - `nav_ms` — the client-side navigation-SETTLE ceiling (ms) applied to the driver's post-`goto`/
+ *    `press` `waitForNavigation({ optional:true })` wait. Bounds the SPA "navigation that never
+ *    happens" settle. Default `2000`.
+ */
+export const TimeoutsConfigSchema = z
+  .object({
+    action_ms: z.number().int().positive().optional(),
+    nav_ms: z.number().int().positive().optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
 // The full Config object (all sections optional; built-in defaults fill the gaps).
 // ---------------------------------------------------------------------------
 
@@ -263,6 +313,8 @@ export const ConfigSchema = z
     artifacts: ArtifactsConfigSchema.optional(),
     cache: CacheConfigSchema.optional(),
     plan: PlanConfigSchema.optional(),
+    timeouts: TimeoutsConfigSchema.optional(),
+    resolve: ResolveConfigSchema.optional(),
   })
   .strict();
 

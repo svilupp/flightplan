@@ -59,7 +59,7 @@ export interface RunOptions {
   /**
    * The fully-resolved config (built-in → global → imported → flow → CLI). The runner reads
    * `run` (budgets / assertion mode / fail_on_assertion / timeout), `connect` (the connect
-   * config; defaults to Mode B headless launch when absent), and `redaction`.
+   * config; defaults to attaching over CDP at localhost:9222 when absent), and `redaction`.
    */
   config: ResolvedConfig;
   /** Output base directory for run artifacts (CLI `-o/--out`). Defaults to `.flightplan-runs/`. */

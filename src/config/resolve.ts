@@ -66,6 +66,19 @@ export const DEFAULT_PLAN = {
   enabled: true,
 } as const;
 
+/**
+ * Default action/navigation wall-clock ceilings (`[timeouts]`). `action_ms` bounds browser-pilot's
+ * ~30s actionability default so a disabled/wrong LEADING selector fails fast (≈5s) and escalates
+ * instead of dead-hanging (the measured admin-crud 30s L0 stall); `nav_ms` bounds the post-action
+ * client-side navigation SETTLE. Threaded into `BrowserPilotDriver` by the runner
+ * (`actionTimeoutMs`/`navTimeoutMs`). Mergeable key-by-key; a per-step `timeout_ms` overrides
+ * `action_ms` for that action.
+ */
+export const DEFAULT_TIMEOUTS = {
+  action_ms: 5000,
+  nav_ms: 2000,
+} as const;
+
 /** Default AI provider/key wiring (PROPOSAL "Hard decisions"). Models stay unset by default
  * (the registry is config-driven; PLAN.md §8 risk #4 — never hardcode model ids). */
 export const DEFAULT_AI = {
@@ -86,6 +99,7 @@ export const BUILTIN_DEFAULTS: Config = {
   run: { ...DEFAULT_RUN_LIMITS },
   redaction: { ...DEFAULT_REDACTION },
   plan: { ...DEFAULT_PLAN },
+  timeouts: { ...DEFAULT_TIMEOUTS },
 };
 
 // ---------------------------------------------------------------------------
@@ -157,6 +171,8 @@ export function mergeConfigLayer(base: Config, over: Config): Config {
   }
 
   // SPECIAL CASE: `connect` (discriminated union) is replaced wholesale by a later layer.
+  // Layers only ever come from the entry flow (built-in → entry flow [config] → [run]);
+  // imported flows never contribute config, so their [connect] blocks are intentionally ignored.
   if (over.connect !== undefined) {
     merged.connect = over.connect;
   }
@@ -201,5 +217,8 @@ export function resolveConfigWithDefaults(layers: ReadonlyArray<Config>): Resolv
     // The planner is enabled-by-default (PLAN_v003 v003-6): a layer may set `plan.enabled = false`,
     // but when unset the resolved config guarantees `enabled: true`.
     plan: { ...DEFAULT_PLAN, ...parsed.plan },
+    // Action/nav ceilings always present: an unset key keeps its default (mergeable), so
+    // `action_ms` (5000) and `nav_ms` (2000) are guaranteed for the driver.
+    timeouts: { ...DEFAULT_TIMEOUTS, ...parsed.timeouts },
   };
 }

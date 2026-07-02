@@ -81,6 +81,7 @@ export {
 // --- core types (the GenerateFn seam + runtime contracts) ---
 export type {
   AiCallContext,
+  AiCallFailure,
   AiCallResult,
   AiCallSink,
   AiContentPart,

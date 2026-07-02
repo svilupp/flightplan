@@ -24,8 +24,10 @@ import type {
   ModelRoleSchema,
   PlanConfigSchema,
   RedactionConfigSchema,
+  ResolveConfigSchema,
   RunLimitsSchema,
   TelemetryConfigSchema,
+  TimeoutsConfigSchema,
 } from "./schema.ts";
 
 // ---- Model registry ----
@@ -44,6 +46,8 @@ export type RedactionConfig = z.infer<typeof RedactionConfigSchema>;
 export type ArtifactsConfig = z.infer<typeof ArtifactsConfigSchema>;
 export type CacheConfig = z.infer<typeof CacheConfigSchema>;
 export type PlanConfig = z.infer<typeof PlanConfigSchema>;
+export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>;
+export type ResolveConfig = z.infer<typeof ResolveConfigSchema>;
 
 // ---- Connect config (discriminated union, PLAN.md §3) ----
 export type ConnectAttachConfig = z.infer<typeof ConnectAttachSchema>;
@@ -70,4 +74,12 @@ export interface ResolvedConfig extends Config {
    * deterministic run stays byte-identical regardless of this flag.
    */
   plan: PlanConfig & { enabled: boolean };
+  /**
+   * Action / navigation wall-clock ceilings (`[timeouts]`), always present in a resolved config
+   * with `action_ms` (default 5000) and `nav_ms` (default 2000) GUARANTEED. The runner threads
+   * these into `BrowserPilotDriver` (`actionTimeoutMs`/`navTimeoutMs`) so browser-pilot's ~30s
+   * actionability default never applies — a disabled/wrong leading selector fails fast (≈5s) and
+   * escalates instead of dead-hanging. A per-step `timeout_ms` still overrides `action_ms`.
+   */
+  timeouts: TimeoutsConfig & { action_ms: number; nav_ms: number };
 }
