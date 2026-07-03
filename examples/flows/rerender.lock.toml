@@ -1,12 +1,12 @@
 version = 2
-source = "examples/flows/rerender.toml"
-source_hash = "sha256:2b95d7cf2070db22980bc64ae6ebf8cd98cff9959bc5cef7b98abf3cd8bbe658"
+source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/rerender.toml"
+source_hash = "sha256:5a878e2e7a1e0e3d72565b4512423f85645e86f4266e42c6e1f527484fff33cc"
 description = "Refresh the widget, then confirm on the re-rendered (fresh-ref) node"
 
 [[targets]]
 step = "confirm_action"
 target = "the Confirm button in the refreshed widget"
-last_seen = "2026-07-03T00:20:42.800Z"
+last_seen = "2026-07-03T16:25:56.475Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/rerender*"
@@ -15,42 +15,38 @@ sig = "text:http://localhost:3000/rerender|13rm9qf;struct:/rerender|1rq9wy5"
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid='rerender-action']"
-greens = 2
-last_ok = "2026-07-03T00:20:42.800Z"
+greens = 1
+last_ok = "2026-07-03T16:25:56.475Z"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid=\"rerender-action\"]"
-greens = 1
-last_ok = "2026-07-03T00:20:42.800Z"
-
-[[targets.strategies]]
-kind = "role_name"
-selector = "role:button:\"Confirm\""
-greens = 1
-last_ok = "2026-07-03T00:20:42.800Z"
-
-[[targets.strategies]]
-kind = "label"
-selector = "[aria-label=\"Confirm\"]"
 greens = 0
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid=\"rerender-trigger\"]"
 greens = 0
-last_drift = "2026-07-03T00:20:42.800Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Confirm\""
+greens = 0
 
 [[targets.strategies]]
 kind = "role_name"
 selector = "role:button:\"Refresh widget\""
 greens = 0
-last_drift = "2026-07-03T00:20:42.800Z"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Confirm\"]"
+greens = 0
 
 [[targets]]
 step = "refresh_widget"
 target = "the Refresh widget button"
-last_seen = "2026-07-03T00:20:41.576Z"
+last_seen = "2026-07-03T16:25:55.338Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/rerender*"
@@ -59,20 +55,18 @@ sig = "text:http://localhost:3000/rerender|ttybfd;struct:/rerender|t1ps1c"
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid='rerender-trigger']"
-greens = 2
-last_ok = "2026-07-03T00:20:41.576Z"
+greens = 1
+last_ok = "2026-07-03T16:25:55.338Z"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid=\"rerender-trigger\"]"
-greens = 1
-last_ok = "2026-07-03T00:20:41.576Z"
+greens = 0
 
 [[targets.strategies]]
 kind = "role_name"
 selector = "role:button:\"Refresh widget\""
-greens = 1
-last_ok = "2026-07-03T00:20:41.576Z"
+greens = 0
 
 [[targets.strategies]]
 kind = "label"

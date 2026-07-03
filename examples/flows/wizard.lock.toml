@@ -1,67 +1,62 @@
 version = 2
-source = "examples/flows/wizard.toml"
-source_hash = "sha256:d9bb65708cba178064146a7611c53b471cf79d8e7fa40a40629fd2695d70fcb5"
+source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/wizard.toml"
+source_hash = "sha256:0bb40bd0423966d1f11dc4b55468c72c550f33346684f9d7eb4b15aa57828092"
 description = "Complete the multi-step wizard and assert the welcome result"
 
 [[targets]]
 step = "advance_to_plan"
 target = "the Next button"
-last_seen = "2026-07-01T22:01:11.094Z"
+last_seen = "2026-07-03T16:26:17.430Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
-sig = "text:http://localhost:3000/wizard|hmpxif;struct:/wizard|1rt5jrj"
+sig = "text:http://localhost:3000/wizard|n2yxu6;struct:/wizard|hau3ct"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid='wizard-next-1']"
-greens = 4
-last_ok = "2026-07-01T22:01:11.094Z"
-
-[[targets.strategies]]
-kind = "testid"
-selector = "[data-testid=\"wizard-next-1\"]"
-greens = 3
-last_ok = "2026-07-01T22:01:11.094Z"
+greens = 1
+last_ok = "2026-07-03T16:26:17.430Z"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid=\"wizard-name\"]"
 greens = 0
-last_drift = "2026-07-01T22:01:11.094Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-next-1\"]"
+greens = 0
 
 [[targets.strategies]]
 kind = "role_name"
 selector = "role:button:\"Next\""
 greens = 0
-last_drift = "2026-07-01T22:01:11.094Z"
 
 [[targets.strategies]]
 kind = "role_name"
 selector = "role:textbox:\"Full name\""
 greens = 0
-last_drift = "2026-07-01T22:01:11.094Z"
 
 [[targets.strategies]]
 kind = "label"
 selector = "[aria-label=\"Full name\"]"
 greens = 0
-last_drift = "2026-07-01T22:01:11.094Z"
 
 [[targets]]
 step = "advance_to_review"
 target = "the Next button"
-last_seen = "2026-07-01T13:09:28.844Z"
+last_seen = "2026-07-03T16:26:17.946Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
-sig = "text:http://localhost:3000/wizard|uc13cs;struct:/wizard|1h9uakk"
+sig = "text:http://localhost:3000/wizard|1sarpzj;struct:/wizard|1sw02tu"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid='wizard-next-2']"
 greens = 1
-last_ok = "2026-07-01T13:09:28.844Z"
+last_ok = "2026-07-03T16:26:17.946Z"
 
 [[targets.strategies]]
 kind = "testid"
@@ -91,17 +86,17 @@ greens = 0
 [[targets]]
 step = "choose_plan"
 target = "the plan dropdown"
-last_seen = "2026-07-01T13:09:28.655Z"
+last_seen = "2026-07-03T16:26:17.688Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
-sig = "text:http://localhost:3000/wizard|uc13cs;struct:/wizard|1h9uakk"
+sig = "text:http://localhost:3000/wizard|k7f4xw;struct:/wizard|1sw02tu"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid='wizard-plan']"
 greens = 1
-last_ok = "2026-07-01T13:09:28.655Z"
+last_ok = "2026-07-03T16:26:17.688Z"
 
 [[targets.strategies]]
 kind = "testid"
@@ -131,62 +126,57 @@ greens = 0
 [[targets]]
 step = "enter_name"
 target = "the full name field"
-last_seen = "2026-07-01T22:01:10.856Z"
+last_seen = "2026-07-03T16:26:17.209Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
-sig = "text:http://localhost:3000/wizard|pxsorp;struct:/wizard|1fafles"
+sig = "text:http://localhost:3000/wizard|1pgxlra;struct:/wizard|1apytbi"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid='wizard-name']"
-greens = 4
-last_ok = "2026-07-01T22:01:10.856Z"
+greens = 1
+last_ok = "2026-07-03T16:26:17.209Z"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid=\"wizard-name\"]"
-greens = 3
-last_ok = "2026-07-01T22:01:10.856Z"
-
-[[targets.strategies]]
-kind = "label"
-selector = "[aria-label=\"Full name\"]"
-greens = 3
-last_ok = "2026-07-01T22:01:10.856Z"
+greens = 0
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid=\"wizard-next-1\"]"
 greens = 0
-last_drift = "2026-07-01T22:01:10.856Z"
 
 [[targets.strategies]]
 kind = "role_name"
 selector = "role:button:\"Next\""
 greens = 0
-last_drift = "2026-07-01T22:01:10.856Z"
 
 [[targets.strategies]]
 kind = "role_name"
 selector = "role:textbox:\"Full name\""
 greens = 0
-last_drift = "2026-07-01T22:01:10.856Z"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Full name\"]"
+greens = 0
 
 [[targets]]
 step = "submit_wizard"
 target = "the Submit button"
-last_seen = "2026-07-01T13:09:29.028Z"
+last_seen = "2026-07-03T16:26:18.192Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/wizard*"
-sig = "text:http://localhost:3000/wizard|c2xtca;struct:/wizard|79da2d"
+sig = "text:http://localhost:3000/wizard|1lm9fu9;struct:/wizard|1koh0wf"
 
 [[targets.strategies]]
 kind = "testid"
 selector = "[data-testid='wizard-submit']"
 greens = 1
-last_ok = "2026-07-01T13:09:29.028Z"
+last_ok = "2026-07-03T16:26:18.192Z"
 
 [[targets.strategies]]
 kind = "testid"

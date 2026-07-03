@@ -416,6 +416,39 @@ export interface Driver {
    * and for run context (`ResolveContext.currentUrl`). Throws if called before `connect()`. */
   currentUrl(): Promise<string>;
 
+  // --- frame switching (same-origin iframe / OOPIF context) ---
+
+  /**
+   * Enter a same-origin `<iframe>` (and, per browser-pilot, a genuine cross-origin OOPIF) so that
+   * SUBSEQUENT page ops — `snapshot`/`batch`/`click`/`fill`/`elementState`/assertions — resolve
+   * INSIDE that frame. `selector` identifies the `<iframe>` ELEMENT in the CURRENT document (an
+   * ordered CSS/attribute/`ref:`/`role:`/`text:` selector list, tried in order). Delegates to
+   * browser-pilot's `Page.switchToFrame`. Returns `true` when the frame was entered; `false` when
+   * the iframe element could not be found / attached (a clean step failure — never a throw).
+   *
+   * Frame context is STATEFUL: it persists across ops until {@link switchToMain}, a {@link goto}
+   * navigation, or {@link teardown} — all of which reset to the top document. IMPORTANT: the driver
+   * keeps in-frame resolution working ACROSS snapshots. browser-pilot's `snapshot()` reads the
+   * top-document accessibility tree and, as a side effect, invalidates the active frame root; the
+   * driver therefore re-establishes the frame around each snapshot so the next in-frame action does
+   * not silently mis-resolve against the parent document.
+   */
+  switchToFrame(selector: string | string[]): Promise<boolean>;
+
+  /**
+   * Leave the current frame and return to the top document (browser-pilot's `Page.switchToMain`).
+   * A no-op-safe counterpart to {@link switchToFrame}; safe to call when already on the top document.
+   */
+  switchToMain(): Promise<void>;
+
+  /**
+   * The selector of the frame currently switched into, or `null` when operating on the top document
+   * (browser-pilot's `Page.getCurrentFrame`). L1 reads this to RELAX its iframe mis-resolution guard
+   * once a target's frame has been entered: while switched, an in-frame target is legitimately
+   * reachable and must not be rejected as "exists only inside an iframe".
+   */
+  currentFrame(): string | null;
+
   // --- page operations (thin pass-throughs) ---
 
   /**

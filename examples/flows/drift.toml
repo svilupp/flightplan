@@ -18,6 +18,12 @@ variant = "a"
 [run]
 max_steps = 10
 assertions = "eager"
+assert_timeout_ms = 5000
+
+# Pin the L5 path-repair planner OFF (matches the code default) so deterministic runs stay
+# byte-stable regardless of ambient AI config. Behavioral no-op — the planner is opt-in.
+[config.plan]
+enabled = false
 
 [[steps]]
 id = "open_drift"
@@ -42,3 +48,4 @@ text = "Order created"
 type = "ai_judge"
 inputs = ["screenshot", "text"]
 prompt = "The page clearly confirms that a new order was created successfully."
+timeout_ms = 4000

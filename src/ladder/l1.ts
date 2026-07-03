@@ -315,7 +315,15 @@ export async function resolveL1(
   // content either, so escalation only burns L2–L4 latency/cost before failing with a worse error.
   // Probed only for zero-match hints, so the happy path (hint matched, or no iframe-capable driver)
   // is untouched.
-  const iframeHint = await detectIframeOnlyHint(hints, elements, ctx.driver);
+  //
+  // RELAXATION: skip the guard entirely once we have SWITCHED INTO a frame (a `switch_frame` step
+  // ran). While switched, browser-pilot routes the batch action into the frame root and its
+  // `locateSelectorFrame` probes the frame's OWN document, so an in-frame target is legitimately
+  // reachable — rejecting it would defeat the whole point of frame switching. The guard still fires
+  // for the genuine "target lives in an iframe you never entered" case (`currentFrame() === null`),
+  // whose error already points authors at frame switching.
+  const inFrame = ctx.driver.currentFrame?.() != null;
+  const iframeHint = inFrame ? undefined : await detectIframeOnlyHint(hints, elements, ctx.driver);
   if (iframeHint) {
     const base =
       `L1: target '${iframeHint}' exists only inside an iframe; iframes are not pierced` +

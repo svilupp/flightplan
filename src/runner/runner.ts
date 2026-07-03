@@ -55,7 +55,7 @@ import { BrowserPilotDriver, type DialogPolicy } from "../driver/browser-pilot-d
 import type { Driver } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { type ImportGraph, resolveImports } from "../flow/imports.ts";
-import { describeTarget } from "../flow/normalize-target.ts";
+import { describeTarget, normalizeTarget } from "../flow/normalize-target.ts";
 import { loadFlowFileFlattened } from "../flow/run.ts";
 import { applyTemplatingDeep, resolveInputs, type TemplateContext } from "../flow/template.ts";
 import type { AiJudgeAssertion, Assertion, FlowFile, Step } from "../flow/types.ts";
@@ -617,6 +617,49 @@ async function performStepAction(
     case "assert": {
       // A standalone assert step has no action of its own — its assertions run in the
       // after-phase handling. Treat the action as a no-op success here.
+      return { ok: true };
+    }
+    case "switch_frame": {
+      // Enter the `<iframe>` identified by the step's target so SUBSEQUENT steps resolve inside it.
+      // The iframe ELEMENT lives in the current document, so we hand its selector(s) straight to the
+      // driver (browser-pilot resolves it) — a `switch_frame` is NOT a cost-ladder resolution and
+      // takes no snapshot/ranking. A natural-language-only target can't identify a frame → fail clean.
+      const { selectors } = normalizeTarget(step.target);
+      const desc = describeTarget(step.target) ?? step.id;
+      if (selectors.length === 0) {
+        return {
+          ok: false,
+          error:
+            `switch_frame \`${step.id}\` needs a selector target identifying the <iframe> element ` +
+            "(a natural-language-only target cannot enter a frame)",
+        };
+      }
+      const ok = await driver.switchToFrame(selectors);
+      const ba = {
+        action: "switch_frame",
+        selectorOrIntent: services.redactor.redactText(desc),
+        ok,
+        durationMs: 0,
+      };
+      await writers.trace.emitBrowserAction(ba);
+      span.event(
+        TELEMETRY_EVENTS.browserAction,
+        browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
+      );
+      return ok
+        ? { ok: true }
+        : { ok: false, error: `switch_frame: could not enter iframe (${desc})` };
+    }
+    case "switch_to_main": {
+      // Leave the current frame and return to the top document. Always succeeds (a no-op on the top
+      // document); resets the driver's frame context so later steps resolve against the main frame.
+      await driver.switchToMain();
+      const ba = { action: "switch_to_main", selectorOrIntent: "", ok: true, durationMs: 0 };
+      await writers.trace.emitBrowserAction(ba);
+      span.event(
+        TELEMETRY_EVENTS.browserAction,
+        browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
+      );
       return { ok: true };
     }
     case "run": {

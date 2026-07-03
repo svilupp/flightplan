@@ -23,6 +23,8 @@ import type {
   RunStepSchema,
   SelectStepSchema,
   StepSchema,
+  SwitchFrameStepSchema,
+  SwitchToMainStepSchema,
   TextAssertionSchema,
   UrlAssertionSchema,
   ValueAssertionSchema,
@@ -54,6 +56,8 @@ export type WaitStep = z.infer<typeof WaitStepSchema>;
 export type AssertStep = z.infer<typeof AssertStepSchema>;
 export type AiPickStep = z.infer<typeof AiPickStepSchema>;
 export type RunStep = z.infer<typeof RunStepSchema>;
+export type SwitchFrameStep = z.infer<typeof SwitchFrameStepSchema>;
+export type SwitchToMainStep = z.infer<typeof SwitchToMainStepSchema>;
 export type Step = z.infer<typeof StepSchema>;
 
 // ---- Imports ----

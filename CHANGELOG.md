@@ -110,11 +110,11 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 - **Path-repair planner (L5), `[plan]`.** When a flow diverges from its recorded path (a step ran but
   the page is no longer where the next recorded step expects), an optional cheap-first planner
   proposes repair step(s) and splices them into the run, executed through the normal ladder within
-  budget. It is a peer of the per-target ladder, not part of it. **ENABLED BY DEFAULT** — an
-  intentional in-prod field test — but inert unless BOTH an AI runtime is present AND a real
+  budget. It is a peer of the per-target ladder, not part of it. **DISABLED BY DEFAULT — strictly
+  opt-in** — and even when enabled it is inert unless BOTH an AI runtime is present AND a real
   divergence signal exists (a recorded lock expectation for the next step); no-AI-runtime runs stay
-  byte-identical. Disable with `[plan]\nenabled = false`. Policy fields on `[plan]`: `enabled`
-  (default `true`), `escalate_confidence` (default `0.5`), `escalate_attempts` (default `2`),
+  byte-identical. Enable with `[plan]\nenabled = true`. Policy fields on `[plan]`: `enabled`
+  (default `false`), `escalate_confidence` (default `0.5`), `escalate_attempts` (default `2`),
   `max_replans`. Cheap-first is mandatory (the cheap `[ai.models.planner]` model); the
   capable/dueling arm (`[ai.models.planner_capable]`) is escalation-only and **UNPROVEN**. Prompt
   caching is mandatory (keyed on the flow `goal`). Requires `OPENROUTER_API_KEY`.

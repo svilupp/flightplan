@@ -576,6 +576,158 @@ target = ["Nonexistent", "click the missing button"]
 });
 
 // ---------------------------------------------------------------------------
+// Frame switching (switch_frame / switch_to_main)
+// ---------------------------------------------------------------------------
+
+describe("runFlow — frame switching", () => {
+  // A flow that ENTERS an iframe, clicks a target that lives ONLY inside that frame (its hint is
+  // scripted as iframe-bound, so L1's iframe guard WOULD hard-fail it on the top document), then
+  // returns to main and clicks a top-document target.
+  const FRAME_FLOW = `
+version = 1
+kind = "flow"
+id = "test.frame"
+description = "enter an iframe, act inside it, then return to main"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/contexts"
+
+[[steps]]
+id = "enter"
+do = "switch_frame"
+target = ["[data-testid='context-frame']", "the embedded iframe"]
+
+[[steps]]
+id = "in_frame_click"
+do = "click"
+target = ["[data-testid='iframe-btn']", "confirm inside the frame"]
+
+[[steps]]
+id = "leave"
+do = "switch_to_main"
+
+[[steps]]
+id = "main_click"
+do = "click"
+target = ["[data-testid='main-btn']", "confirm on the top document"]
+`;
+
+  test("switch_frame enters the frame (guard relaxed), switch_to_main returns to main", async () => {
+    const { flowPath, outDir } = await writeFlow(FRAME_FLOW);
+    const driver = new MockDriver();
+    driver.setSnapshot(makeSnapshot({ interactiveElements: [] }));
+    // The iframe-btn hint resolves ONLY inside the frame; without switching, L1's guard hard-fails.
+    driver.setSelectorFrame("[data-testid='iframe-btn']", "iframe");
+    // In-frame click, then the top-document click, each succeed once switched appropriately.
+    driver.enqueueBatchResult(makeSuccessBatch("[data-testid='iframe-btn']", "click"));
+    driver.enqueueBatchResult(makeSuccessBatch("[data-testid='main-btn']", "click"));
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+
+    expect(result.summary.verdict).toBe("passed");
+    expect(result.summary.steps.map((s) => s.stepId)).toEqual([
+      "open",
+      "enter",
+      "in_frame_click",
+      "leave",
+      "main_click",
+    ]);
+    expect(result.summary.steps.every((s) => s.ok)).toBe(true);
+
+    // switch_frame delegated to the driver with the RESOLVED iframe selector (NL entry dropped).
+    expect(driver.callsTo("switchToFrame")).toHaveLength(1);
+    expect(driver.callsTo("switchToFrame")[0]?.args[0]).toEqual(["[data-testid='context-frame']"]);
+    // switch_to_main delegated to the driver.
+    expect(driver.callsTo("switchToMain")).toHaveLength(1);
+    // Order: entered the frame BEFORE the in-frame click, left it BEFORE the main click.
+    const methods = driver.calls.map((c) => c.method);
+    expect(methods.indexOf("switchToFrame")).toBeLessThan(methods.indexOf("switchToMain"));
+
+    // The in-frame click resolved+acted (proves the guard was relaxed while switched into the frame).
+    const inFrame = result.summary.steps.find((s) => s.stepId === "in_frame_click");
+    expect(inFrame?.ok).toBe(true);
+    expect(inFrame?.tier).toBe("L1");
+  });
+
+  test("without switch_frame the same in-frame-only target hard-fails at L1 (guard intact)", async () => {
+    // Same click, but NO switch_frame precedes it → currentFrame() stays null → the guard fires.
+    const FLOW = `
+version = 1
+kind = "flow"
+id = "test.noframe"
+description = "in-frame target without entering the frame"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/contexts"
+
+[[steps]]
+id = "in_frame_click"
+do = "click"
+target = ["[data-testid='iframe-btn']", "confirm inside the frame"]
+`;
+    const { flowPath, outDir } = await writeFlow(FLOW);
+    const driver = new MockDriver();
+    driver.setSnapshot(makeSnapshot({ interactiveElements: [] }));
+    driver.setSelectorFrame("[data-testid='iframe-btn']", "iframe");
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+
+    expect(result.summary.verdict).toBe("failed");
+    const step = result.summary.steps.find((s) => s.stepId === "in_frame_click");
+    expect(step?.ok).toBe(false);
+    expect(step?.error ?? "").toContain("only inside an iframe");
+    // The guard never entered a frame and never acted.
+    expect(driver.callsTo("switchToFrame")).toHaveLength(0);
+  });
+
+  test("a goto after switch_frame resets the driver's frame context to main", async () => {
+    // enter a frame, then navigate: browser-pilot + the driver reset frame state on navigation, so
+    // the post-goto click resolves on the top document (its iframe-only guard would fire otherwise).
+    const FLOW = `
+version = 1
+kind = "flow"
+id = "test.frameresetgoto"
+description = "goto resets the frame context"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/contexts"
+
+[[steps]]
+id = "enter"
+do = "switch_frame"
+target = ["[data-testid='context-frame']", "the embedded iframe"]
+
+[[steps]]
+id = "renav"
+do = "goto"
+url = "http://localhost:3000/other"
+
+[[steps]]
+id = "main_click"
+do = "click"
+target = ["[data-testid='main-btn']", "confirm on the top document"]
+`;
+    const { flowPath, outDir } = await writeFlow(FLOW);
+    const driver = new MockDriver();
+    driver.setSnapshot(makeSnapshot({ interactiveElements: [] }));
+    driver.enqueueBatchResult(makeSuccessBatch("[data-testid='main-btn']", "click"));
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+
+    expect(result.summary.verdict).toBe("passed");
+    // After the second goto the driver is back on the top document (frame context reset).
+    expect(driver.currentFrame()).toBeNull();
+    expect(result.summary.steps.find((s) => s.stepId === "main_click")?.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // on_fail control flow (goto / self-retry / max re-entry bound)
 // ---------------------------------------------------------------------------
 

@@ -139,6 +139,13 @@ export class BrowserPilotDriver implements Driver {
   private connection: Connection | undefined;
   /** Active opt-in recording (set by `startRecording`, cleared by `stopRecording`). */
   private recording: RecordOpts | undefined;
+  /**
+   * The selector last passed to {@link switchToFrame} while we remain switched into a frame, or
+   * `undefined` on the top document. Used to faithfully RE-ENTER the frame after a `snapshot()`
+   * (browser-pilot's top-document snapshot invalidates the frame root). Cleared by
+   * {@link switchToMain}, {@link goto} (navigation resets frame state) and {@link teardown}.
+   */
+  private frameSelector: string | string[] | undefined;
 
   constructor(options: BrowserPilotDriverOptions = {}) {
     this.dialogPolicy = options.dialogPolicy ?? "dismiss";
@@ -290,6 +297,7 @@ export class BrowserPilotDriver implements Driver {
       this.browser = undefined;
       this.activePage = undefined;
       this.connection = undefined;
+      this.frameSelector = undefined;
     }
   }
 
@@ -313,10 +321,43 @@ export class BrowserPilotDriver implements Driver {
       // Bound the client-side settle to the configured nav ceiling (default 2000), not bp's ~30s.
       await page.waitForNavigation({ optional: true, timeout: opts?.timeout ?? this.navTimeoutMs });
     }
+    // A top-level navigation resets any frame context (browser-pilot resets its own frame state on
+    // navigation); drop our re-entry selector so a later snapshot never tries to re-enter a frame
+    // that no longer exists (PLAN frame-scoping: goto returns to the top document).
+    this.frameSelector = undefined;
   }
 
   async currentUrl(): Promise<string> {
     return this.requirePage().url();
+  }
+
+  // -------------------------------------------------------------------------
+  // frame switching (same-origin iframe / OOPIF context)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Enter the `<iframe>` identified by `selector`, delegating to browser-pilot's
+   * `Page.switchToFrame`. Passed `{ optional: true }` so a missing/unattachable frame returns
+   * `false` (a clean step failure) instead of throwing (which would surface as an infra `error`
+   * verdict). Records the selector for the snapshot re-entry dance only on success.
+   */
+  async switchToFrame(selector: string | string[]): Promise<boolean> {
+    const page = this.requirePage();
+    const entered = await page.switchToFrame(selector, { optional: true });
+    this.frameSelector = entered ? selector : undefined;
+    return entered;
+  }
+
+  /** Return to the top document (browser-pilot's `Page.switchToMain`). */
+  async switchToMain(): Promise<void> {
+    const page = this.requirePage();
+    await page.switchToMain();
+    this.frameSelector = undefined;
+  }
+
+  /** The active frame selector, or `null` on the top document (browser-pilot's `getCurrentFrame`). */
+  currentFrame(): string | null {
+    return this.activePage ? this.activePage.getCurrentFrame() : null;
   }
 
   // -------------------------------------------------------------------------
@@ -339,7 +380,25 @@ export class BrowserPilotDriver implements Driver {
       const names = dedupeAttributeNames(this.resolveAttributes, opts?.attributeNames);
       if (names.length > 0) bpOpts.attributeNames = names;
     }
-    return Object.keys(bpOpts).length > 0 ? page.snapshot(bpOpts) : page.snapshot();
+    const takeSnapshot = (): Promise<PageSnapshot> =>
+      Object.keys(bpOpts).length > 0 ? page.snapshot(bpOpts) : page.snapshot();
+
+    // FRAME-SAFE SNAPSHOT. browser-pilot's `snapshot()` reads the TOP-document accessibility tree
+    // and, as a side effect, invalidates the active frame root — leaving the NEXT in-frame action
+    // to silently mis-resolve against the parent document (verified against browser-pilot 0.1.0:
+    // switch → snapshot → in-frame click FAILS; switch → click succeeds). When switched into a
+    // frame we therefore bracket the (inherently top-document) snapshot with switchToMain / re-enter
+    // so the frame root is re-established afterwards and later in-frame ops keep resolving inside it.
+    // Gated on the AUTHORITATIVE `getCurrentFrame()` so a navigation that reset the frame is a no-op.
+    const activeFrame = page.getCurrentFrame();
+    if (activeFrame !== null) {
+      const reenter = this.frameSelector ?? activeFrame;
+      await page.switchToMain();
+      const snap = await takeSnapshot();
+      await page.switchToFrame(reenter, { optional: true });
+      return snap;
+    }
+    return takeSnapshot();
   }
 
   async resolveAll(intent: string, opts?: ResolveAllOpts): Promise<RankedCandidate[]> {

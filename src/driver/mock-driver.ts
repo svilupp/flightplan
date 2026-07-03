@@ -90,6 +90,8 @@ export interface DriverCall {
     | "clearBrowserState"
     | "goto"
     | "currentUrl"
+    | "switchToFrame"
+    | "switchToMain"
     | "snapshot"
     | "batch"
     | "resolveAll"
@@ -213,6 +215,16 @@ export class MockDriver implements Driver {
   /** One-shot URLs returned by `currentUrl()` (consumed FIFO before the default). */
   private currentUrlQueue: string[] = [];
 
+  // --- frame-switch state ---
+  /**
+   * The mock "current frame" selector — `null` on the top document, set by `switchToFrame()`, and
+   * reset to `null` by `switchToMain()`, `goto()` (navigation) and `teardown()`. Tests read it via
+   * `currentFrame()` to assert the driver was switched into (and back out of) a frame.
+   */
+  private currentFrameValue: string | null = null;
+  /** What `switchToFrame()` returns (default `true` = frame entered). Override via `setSwitchFrameOutcome`. */
+  private switchFrameOutcome = true;
+
   // --- dynamic providers ---
   private snapshotProvider?: (opts: SnapshotOpts | undefined, callIndex: number) => PageSnapshot;
   private batchProvider?: (
@@ -309,6 +321,11 @@ export class MockDriver implements Driver {
   /** Set the URL returned by `currentUrl()` (also what `goto()` sets the page to). */
   setCurrentUrl(url: string): this {
     this.currentUrlValue = url;
+    return this;
+  }
+  /** Set the boolean `switchToFrame()` returns (default `true`; `false` simulates an unfound frame). */
+  setSwitchFrameOutcome(outcome: boolean): this {
+    this.switchFrameOutcome = outcome;
     return this;
   }
   /** Set the default action boolean (optionally scoped to one verb). */
@@ -480,6 +497,7 @@ export class MockDriver implements Driver {
   async teardown(): Promise<void> {
     this.record("teardown", []);
     this.connected = false;
+    this.currentFrameValue = null;
   }
 
   /** Recorded no-op — there is no real browser state to clear in the mock (isolation seam). */
@@ -496,12 +514,39 @@ export class MockDriver implements Driver {
     // Record the nav by advancing the page URL; tests read it back via currentUrl() or the
     // call log, and may override the resulting snapshot via enqueueSnapshot/onSnapshot.
     this.currentUrlValue = url;
+    // A navigation resets the frame context to the top document (mirrors browser-pilot + the real
+    // driver): a target that follows a `goto` resolves against the top document, never a stale frame.
+    this.currentFrameValue = null;
   }
 
   async currentUrl(): Promise<string> {
     this.record("currentUrl", []);
     const queued = this.currentUrlQueue.shift();
     return queued ?? this.currentUrlValue;
+  }
+
+  // =========================================================================
+  // Driver — frame switching
+  // =========================================================================
+
+  /** Record the switch and advance the mock current-frame; returns the configured outcome. */
+  async switchToFrame(selector: string | string[]): Promise<boolean> {
+    this.record("switchToFrame", [selector]);
+    if (this.switchFrameOutcome) {
+      this.currentFrameValue = Array.isArray(selector) ? (selector[0] ?? null) : selector;
+    }
+    return this.switchFrameOutcome;
+  }
+
+  /** Record the return to the top document and clear the mock current-frame. */
+  async switchToMain(): Promise<void> {
+    this.record("switchToMain", []);
+    this.currentFrameValue = null;
+  }
+
+  /** The mock "current frame" selector (`null` on the top document). */
+  currentFrame(): string | null {
+    return this.currentFrameValue;
   }
 
   // =========================================================================

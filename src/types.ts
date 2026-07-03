@@ -48,6 +48,8 @@ export const STEP_DOS = [
   "assert",
   "ai_pick",
   "run",
+  "switch_frame",
+  "switch_to_main",
 ] as const;
 export type StepDo = (typeof STEP_DOS)[number];
 

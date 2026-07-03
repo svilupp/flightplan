@@ -177,21 +177,20 @@ recorded step expects it — an optional **planner** proposes repair step(s) to 
 splices them into the run, executed through the normal ladder within budget. It is a cheap-first
 escalation tier (L5), a peer of the per-target ladder rather than part of it.
 
-**The planner is ENABLED BY DEFAULT.** This is an intentional in-prod field test to prove its
-usefulness. It is inert on any run that lacks an AI runtime *or* a real divergence signal (a recorded
-lock expectation to compare the current page against), so deterministic, no-key runs are unaffected.
-To turn it off entirely:
+**The planner is DISABLED BY DEFAULT — it is strictly opt-in.** Even once enabled it is inert on any
+run that lacks an AI runtime *or* a real divergence signal (a recorded lock expectation to compare
+the current page against), so deterministic, no-key runs are unaffected. To turn it on:
 
 ```toml
 [plan]
-enabled = false
+enabled = true
 ```
 
 The `[plan]` block carries the planner *policy* (defaults shown):
 
 ```toml
 [plan]
-enabled             = true   # master switch; false disables the planner
+enabled             = false  # master switch; opt in with true
 escalate_confidence = 0.5    # cheap-arm confidence at/below which it escalates to the capable arm
 escalate_attempts   = 2      # cheap attempts for one divergence before escalating
 # max_replans        = 5     # run-level cap on total replans (unset → unlimited; also settable on [run])

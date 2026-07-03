@@ -334,6 +334,9 @@ const stepsRequiredFields: Rule = {
         case "run":
           requireField("flow", "an imported flow id or a path to the flow to run");
           break;
+        case "switch_frame":
+          requireField("target", "an ordered locator identifying the <iframe> element to enter");
+          break;
         case "assert": {
           if (rawAsserts(step).length === 0) {
             out.push(

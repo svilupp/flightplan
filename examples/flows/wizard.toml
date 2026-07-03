@@ -21,6 +21,11 @@ max_steps = 20
 assertions = "eager"
 assert_timeout_ms = 5000
 
+# Pin the L5 path-repair planner OFF (matches the code default) so deterministic runs stay
+# byte-stable regardless of ambient AI config. Behavioral no-op — the planner is opt-in.
+[config.plan]
+enabled = false
+
 [[steps]]
 id = "open_wizard"
 do = "goto"
@@ -60,9 +65,10 @@ id = "submit_wizard"
 do = "click"
 target = ["[data-testid='wizard-submit']", "the Submit button"]
 
-# The result text is surfaced in the page's accessibility text after submit. Assert against the
-# whole-page text (no selector) — the v0.0.18 AX snapshot exposes node names + page text, not
-# raw data-testid selectors, so page-text assertions are the reliable end-state oracle here.
+# The result text is surfaced in the page after submit. Assert against the whole-page text
+# (no selector) as a simple end-state oracle. A selector-scoped assert would work too:
+# deterministic visible/text asserts resolve [data-testid]/CSS on non-interactive nodes via
+# the driver's elementState.
 [[steps.assert]]
 type = "text"
 text = "Welcome, ${inputs.full_name}! Plan: ${inputs.plan}."

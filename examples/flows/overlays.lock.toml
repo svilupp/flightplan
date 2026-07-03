@@ -1,88 +1,84 @@
-version = 1
-source = "examples/flows/overlays.toml"
-source_hash = "sha256:f0dbeea63a096e3f3dd8d7e3de767ce9da985a5847c0e76336779376f8dfee64"
+version = 2
+source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/overlays.toml"
+source_hash = "sha256:d288b534fd861e0e05a89cafaf59d58d0e50012748447bee8ab0453338ccbdd9"
 description = "Dismiss the cookie overlay and place an order on the overlays fixture"
 
 [[targets]]
 step = "dismiss_cookie_banner"
 target = "the Accept cookies button in the cookie consent banner"
-strategy = "testid"
-selector = "[data-testid='cookie-accept']"
-green_runs = 1
-last_seen = "2026-07-01T14:05:13.244Z"
+last_seen = "2026-07-03T16:26:00.648Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/overlays*"
-sig = "text:http://localhost:3000/overlays|-1y9r8w;struct:/overlays|1pepbxk"
+sig = "text:http://localhost:3000/overlays|mk2qs2;struct:/overlays|1ut9wd2"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Accept cookies\"]"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='cookie-accept']"
+greens = 1
+last_ok = "2026-07-03T16:26:00.648Z"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Place order\"]"
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Accept cookies\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Place order\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Accept cookies\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Place order\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Accept cookies|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Place order|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"cookie-accept\"]"
+greens = 0
 
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"overlays-cta\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Accept cookies\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Place order\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Accept cookies\"]"
+greens = 0
 
 [[targets]]
 step = "place_order"
 target = "the Place order call to action"
-strategy = "testid"
-selector = "[data-testid='overlays-cta']"
-green_runs = 1
-last_seen = "2026-07-01T14:05:13.422Z"
+last_seen = "2026-07-03T16:26:00.875Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/overlays*"
-sig = "text:http://localhost:3000/overlays|qqh5tp;struct:/overlays|1lpu7jl"
+sig = "text:http://localhost:3000/overlays|15lohjp;struct:/overlays|p52kx4"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Place order\"]"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='overlays-cta']"
+greens = 1
+last_ok = "2026-07-03T16:26:00.875Z"
 
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Place order\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Place order\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Place order|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"overlays-cta\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Place order\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Place order\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Place order\""
+greens = 0
+
+[[targets.strategies]]
+kind = "structural_fingerprint"
+selector = "fingerprint:button|Place order|"
+greens = 0

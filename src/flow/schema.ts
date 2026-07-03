@@ -215,6 +215,35 @@ export const AiPickStepSchema = z
   .strict();
 
 /**
+ * switch_frame — ENTER a same-origin `<iframe>` (and, per browser-pilot, a cross-origin OOPIF) so
+ * that SUBSEQUENT steps' targets resolve INSIDE that frame. `target` is the usual ordered locator
+ * list, but it identifies the `<iframe>` ELEMENT in the CURRENT document — so at least one
+ * CSS/attribute (or `ref:`/`role:`/`text:`) selector is REQUIRED: a frame cannot be entered by
+ * natural language alone (browser-pilot resolves the frame element by selector). Frame context is
+ * STATEFUL: it persists for later steps until a `switch_to_main`, a `goto` navigation, or teardown.
+ * Delegates to browser-pilot's `Page.switchToFrame`. NB: a `switch_frame` step takes NO `value`; it
+ * is not a locator-targeting (L1) verb — the runner enters the frame directly, it does not resolve
+ * the iframe element through the cost ladder.
+ */
+export const SwitchFrameStepSchema = z
+  .object({
+    ...stepCommon,
+    do: z.literal("switch_frame"),
+    /** Ordered locator list identifying the `<iframe>` element (a selector entry is required). */
+    target: z.union([z.string(), z.array(z.string())]),
+  })
+  .strict();
+
+/**
+ * switch_to_main — LEAVE the current frame and return to the top document (browser-pilot's
+ * `Page.switchToMain`). Takes no target. The counterpart to `switch_frame`; a `goto` navigation and
+ * teardown also implicitly reset the frame context to the top document.
+ */
+export const SwitchToMainStepSchema = z
+  .object({ ...stepCommon, do: z.literal("switch_to_main") })
+  .strict();
+
+/**
  * run — execute another flow at this position (PLAN_v002 §3, v002-5..v002-9). `flow` names an
  * imported flow id (recommended) or a direct path (contains `/` or ends `.toml` — v002-6).
  * `with` passes inputs to the child, templated against the parent's scope. Expansion is static
@@ -239,6 +268,8 @@ export const StepSchema = z.discriminatedUnion("do", [
   AssertStepSchema,
   AiPickStepSchema,
   RunStepSchema,
+  SwitchFrameStepSchema,
+  SwitchToMainStepSchema,
 ]);
 
 // ---------------------------------------------------------------------------

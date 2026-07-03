@@ -23,6 +23,11 @@ max_steps = 20
 assertions = "eager"
 assert_timeout_ms = 5000
 
+# Pin the L5 path-repair planner OFF (matches the code default) so deterministic runs stay
+# byte-stable regardless of ambient AI config. Behavioral no-op — the planner is opt-in.
+[config.plan]
+enabled = false
+
 # Override the default attach (CDP on localhost:9222) — e.g. have flightplan launch its own
 # headless Chrome instead. Only the ENTRY flow's [connect] applies; imports' are ignored.
 # [connect]
@@ -35,8 +40,8 @@ do = "goto"
 url = "${inputs.base_url}/async"
 
 # The banner renders 700ms after load — poll the page text until it appears (timeout covers the
-# delay). The v0.0.18 AX snapshot surfaces node names + page text, not raw data-testid selectors,
-# so page-text assertions are the reliable oracle for the late-rendered banner.
+# delay). A page-text assertion is the simplest oracle here; a [data-testid]/CSS selector would
+# also work (deterministic asserts resolve non-interactive nodes via the driver's elementState).
 [[steps.assert]]
 type = "text"
 text = "Loaded asynchronously"

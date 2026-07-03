@@ -1,36 +1,44 @@
-version = 1
-source = "examples/flows/async.toml"
-source_hash = "sha256:529de3c7106a4ae25c0b486a9b0e6937e94f5b8a2697f53e0c31696a6746c23f"
+version = 2
+source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/async.toml"
+source_hash = "sha256:f0ad46e81ed78339ae5bf652c9b89c177ee33fbc1291da857e98cf9f9ab79e0c"
 description = "Trigger the async action and poll for the late-rendered result"
 
 [[targets]]
 step = "trigger_load"
 target = "the Load data button"
-strategy = "testid"
-selector = "[data-testid='async-load']"
-green_runs = 1
-last_seen = "2026-07-01T13:09:45.442Z"
+last_seen = "2026-07-03T16:26:04.903Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/async*"
-sig = "text:http://localhost:3000/async|u136a1;struct:/async|11opkbx"
+sig = "text:http://localhost:3000/async|671p5u;struct:/async|88mwm8"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Load data\"]"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='async-load']"
+greens = 1
+last_ok = "2026-07-03T16:26:04.903Z"
 
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Load data\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Load data\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Load data|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"async-load\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Load data\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Load data\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Load data\""
+greens = 0
+
+[[targets.strategies]]
+kind = "structural_fingerprint"
+selector = "fingerprint:button|Load data|"
+greens = 0

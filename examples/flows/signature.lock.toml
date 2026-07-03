@@ -1,36 +1,44 @@
-version = 1
-source = "examples/flows/signature.toml"
-source_hash = "sha256:408bd107e84733f9bb5cab3571d1ca91d8c24f781a80cd7c0938cc00fe5ef1a5"
+version = 2
+source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/signature.toml"
+source_hash = "sha256:3151f70f08c39393c9e0c9a9969420c6998e2bad11f70e88be89218e57d03cd5"
 description = "Continue past the signature gate and assert the deterministic result"
 
 [[targets]]
 step = "continue_action"
 target = "the Continue button"
-strategy = "testid"
-selector = "[data-testid='signature-action']"
-green_runs = 1
-last_seen = "2026-07-01T14:07:28.701Z"
+last_seen = "2026-07-03T16:26:03.160Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/signature*"
-sig = "text:http://localhost:3000/signature?variant=same|5hlpdz;struct:/signature|1sddgns"
+sig = "text:http://localhost:3000/signature?variant=same|1kl3fh;struct:/signature|bq1nk6"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Continue\"]"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='signature-action']"
+greens = 1
+last_ok = "2026-07-03T16:26:03.160Z"
 
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Continue\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Continue\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Continue|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"signature-action\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Continue\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Continue\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Continue\""
+greens = 0
+
+[[targets.strategies]]
+kind = "structural_fingerprint"
+selector = "fingerprint:button|Continue|"
+greens = 0

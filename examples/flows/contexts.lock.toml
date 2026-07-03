@@ -1,5 +1,93 @@
-version = 1
-source = "examples/flows/contexts.toml"
-source_hash = "sha256:a363bf3843d5cb05b35ac9fbd74d55d7e5eed3539a738e9c74e7c45c31d155c3"
+version = 2
+source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/contexts.toml"
+source_hash = "sha256:dd33174eaff5f257ad0d8b66cebaa64877ce735285ac07685b7efb057c91742c"
 description = "Confirm in the iframe and in the open shadow root on the contexts fixture"
-targets = []
+
+[[targets]]
+step = "confirm_in_frame"
+target = "the Confirm in frame button inside the embedded iframe"
+last_seen = "2026-07-03T16:26:47.420Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/contexts*"
+sig = "text:http://localhost:3000/contexts|1eokqq0;struct:/contexts|tn4b57"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='iframe-btn']"
+greens = 2
+last_ok = "2026-07-03T16:26:47.420Z"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Unreachable\"]"
+greens = 1
+last_ok = "2026-07-03T16:26:47.420Z"
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Confirm in shadow\""
+greens = 1
+last_ok = "2026-07-03T16:26:47.420Z"
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Unreachable\""
+greens = 1
+last_ok = "2026-07-03T16:26:47.420Z"
+
+[[targets.strategies]]
+kind = "structural_fingerprint"
+selector = "fingerprint:button|Confirm in shadow|"
+greens = 1
+last_ok = "2026-07-03T16:26:47.420Z"
+
+[[targets.strategies]]
+kind = "structural_fingerprint"
+selector = "fingerprint:button|Unreachable|"
+greens = 1
+last_ok = "2026-07-03T16:26:47.420Z"
+
+[[targets]]
+step = "confirm_in_shadow"
+target = "the Confirm in shadow button inside the open shadow-root widget"
+last_seen = "2026-07-03T16:26:47.604Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/contexts*"
+sig = "text:http://localhost:3000/contexts|1eokqq0;struct:/contexts|tn4b57"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='shadow-open-btn']"
+greens = 2
+last_ok = "2026-07-03T16:26:47.604Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"shadow-open-btn\"]"
+greens = 1
+last_ok = "2026-07-03T16:26:47.604Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Confirm in shadow\""
+greens = 1
+last_ok = "2026-07-03T16:26:47.604Z"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Confirm in shadow\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"shadow-closed-btn\"]"
+greens = 0
+last_drift = "2026-07-03T16:26:47.604Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Unreachable\""
+greens = 0
+last_drift = "2026-07-03T16:26:47.604Z"

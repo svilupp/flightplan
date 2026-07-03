@@ -67,6 +67,53 @@ describe("MockDriver — lifecycle + call recording", () => {
   });
 });
 
+describe("MockDriver — frame switching", () => {
+  test("switchToFrame records the selector, advances currentFrame, and returns true by default", async () => {
+    const d = new MockDriver();
+    expect(d.currentFrame()).toBeNull();
+    const entered = await d.switchToFrame(["[data-testid='frame']", "the embedded iframe"]);
+    expect(entered).toBe(true);
+    expect(d.currentFrame()).toBe("[data-testid='frame']"); // the first (selector) entry
+    expect(d.callsTo("switchToFrame")).toHaveLength(1);
+    expect(d.callsTo("switchToFrame")[0]?.args[0]).toEqual([
+      "[data-testid='frame']",
+      "the embedded iframe",
+    ]);
+  });
+
+  test("switchToMain records the return and clears currentFrame", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-testid='frame']");
+    expect(d.currentFrame()).toBe("[data-testid='frame']");
+    await d.switchToMain();
+    expect(d.currentFrame()).toBeNull();
+    expect(d.callsTo("switchToMain")).toHaveLength(1);
+  });
+
+  test("setSwitchFrameOutcome(false) simulates an unfound frame — returns false, stays on main", async () => {
+    const d = new MockDriver().setSwitchFrameOutcome(false);
+    const entered = await d.switchToFrame("[data-testid='missing']");
+    expect(entered).toBe(false);
+    expect(d.currentFrame()).toBeNull();
+  });
+
+  test("goto resets the frame context to the top document", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-testid='frame']");
+    expect(d.currentFrame()).toBe("[data-testid='frame']");
+    await d.goto("http://localhost:3000/next");
+    expect(d.currentFrame()).toBeNull();
+  });
+
+  test("teardown resets the frame context", async () => {
+    const d = new MockDriver();
+    await d.connect({ mode: "launch" });
+    await d.switchToFrame("[data-testid='frame']");
+    await d.teardown();
+    expect(d.currentFrame()).toBeNull();
+  });
+});
+
 describe("MockDriver — scripted snapshots", () => {
   test("default snapshot is returned when nothing queued", async () => {
     const snap = makeSnapshot({ url: "http://localhost:3000/wizard" });
