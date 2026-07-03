@@ -240,15 +240,14 @@ export function recipeFromExecution(
 
   if (opts.kind === "ai_pick") {
     target.kind = "ai_pick";
-    // NOTE (Task C fail-safe): an ai_pick's winning `durableSelector` can be NON-DISCRIMINATING
-    // (e.g. a role-only `role:button` when the picked element is an icon with no name/testid — see
-    // `strategy-array.ts`). We persist it as-is (it still round-trips + carries the advisory note),
-    // but the correctness guarantee lives at REPLAY time: `l0.ts`'s `classifyReplaySelector` detects
-    // that the selector resolves to >1 element on the live page and SKIPS L0 (→ re-resolve via
-    // vision) rather than clicking the wrong element. So a mis-discriminating pin can never mis-act.
-    // TODO(browser-pilot positional): when a UNIQUE positional selector (`role:button[N]`) can be
-    // derived for the picked element (see the TODO in `strategy-array.ts#roleNameSelectorForElement`),
-    // pin THAT here so an icon-only ai_pick stays deterministically L0-replayable.
+    // The pinned recipe is the winning `durableSelector`. For an icon-only pick (no testid / name /
+    // label / text), `strategy-array.ts#durableSelectorForElement` now derives a DISCRIMINATING
+    // durable selector when it has sibling/attribute context (Fix 2): a unique attribute hook
+    // (`[data-cmd="c2"]`) or a positional `role:<role>[N]`. We pin THAT verbatim, so a warm run
+    // replays it deterministically at L0 (zero model calls) — `l0.ts` treats both forms as unique.
+    // FAIL-SAFE (context absent → a legacy non-discriminating `role:button`): `l0.ts`'s replay gate
+    // detects a selector that resolves to >1 element and SKIPS L0 (→ re-resolve via vision) rather
+    // than mis-clicking, so a non-discriminating pin can never mis-act.
     target.pinned_choice = {
       strategy: winner.strategy,
       selector: winner.selector,

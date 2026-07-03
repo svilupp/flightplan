@@ -27,20 +27,26 @@ import type { AiCallContext, AiCallResult, AiCallSink, AiMessage, GenerateFn } f
 /**
  * Role-aware per-attempt wall-clock ceiling (ms), passed as `GenerateRequest.timeoutMs` so
  * `defaultGenerate` bounds EACH `generateText` attempt with `AbortSignal.timeout(ms)`. L2/L3
- * (resolver/vision) sit in the hot per-step path, so a hung call should escalate quickly;
- * advisor (L4) is a terminal, rarely-reached tier, so it gets a bit more headroom but stays
- * bounded — never unbounded like the pre-fix 174s hang. Overridable per call via
- * `AiCallRuntime.timeoutMsByRole` (tests use this to shrink the wait to milliseconds).
+ * (resolver/vision) sit in the hot per-step path, so a hung call escalates quickly; advisor (L4)
+ * is a terminal, rarely-reached tier, so it gets a bit more headroom but stays bounded.
+ *
+ * These are the "few seconds" DEFAULTS (Fix 2): deliberately far below the pre-fix 20/25/40s so a
+ * single step's L1→L2→L3→L4 escalation can never accumulate the tens-of-seconds hang measured in the
+ * field (icon-editor `:repair:` step, 31s; L4 p95 ~22s within its old 40s ceiling). Vision keeps the
+ * most headroom because a real screenshot round-trip is the slowest legitimate call — the goal is to
+ * bound PATHOLOGICAL hangs, not starve a genuinely-needed vision/advisor call. Tunable per run via
+ * `[timeouts] ai_call_ms` (a flat override for ALL roles, threaded here by `createAiRuntime` as
+ * `AiCallRuntime.timeoutMsByRole`) or per call in tests via the same field.
  */
 export const DEFAULT_TIMEOUT_MS_BY_ROLE: Record<ModelRoleName, number> = {
-  resolver: 20_000,
-  vision: 25_000,
-  advisor: 40_000,
+  resolver: 6_000,
+  vision: 12_000,
+  advisor: 10_000,
   // The L5 planner (PLAN_v003 v003-6): cheap `planner` sits in the per-divergence hot path so it
   // escalates quickly like the resolver; the capable `planner_capable` arm gets advisor-tier
   // headroom since it is a rarely-reached escalation.
-  planner: 25_000,
-  planner_capable: 40_000,
+  planner: 6_000,
+  planner_capable: 10_000,
 };
 
 /** The runtime slice `aiCall` consumes (a subset of `AiRuntime`). */

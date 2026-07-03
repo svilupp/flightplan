@@ -87,12 +87,14 @@ export interface DriverCall {
     | "connect"
     | "page"
     | "teardown"
+    | "clearBrowserState"
     | "goto"
     | "currentUrl"
     | "snapshot"
     | "batch"
     | "resolveAll"
     | "elementState"
+    | "locateSelectorFrame"
     | "click"
     | "fill"
     | "type"
@@ -200,6 +202,10 @@ export class MockDriver implements Driver {
 
   // --- by-selector outcomes ---
   private outcomeBySelector = new Map<string, boolean>();
+
+  // --- iframe-context probing (locateSelectorFrame) ---
+  /** Scripted `locateSelectorFrame` verdicts by selector; presence installs the method (lazily). */
+  private selectorFrameMap?: Map<string, "main" | "iframe" | "none">;
 
   // --- navigation state ---
   /** The URL returned by `currentUrl()`; updated by `goto()` and `setCurrentUrl()`. */
@@ -364,6 +370,25 @@ export class MockDriver implements Driver {
   // scripting API — by-selector + dynamic providers
   // =========================================================================
 
+  /**
+   * Script `locateSelectorFrame(selector)` to return `verdict`. The FIRST call INSTALLS the method
+   * on this instance — until then `driver.locateSelectorFrame` is `undefined`, so L1's iframe guard
+   * feature-detects it as absent and every test that does not opt in is unaffected. Once installed,
+   * an unscripted selector returns `'none'`. Calls are recorded in the call log (`callsTo`).
+   */
+  setSelectorFrame(selector: string, verdict: "main" | "iframe" | "none"): this {
+    if (!this.selectorFrameMap) {
+      const map = new Map<string, "main" | "iframe" | "none">();
+      this.selectorFrameMap = map;
+      (this as Driver).locateSelectorFrame = async (sel: string) => {
+        this.record("locateSelectorFrame", [sel]);
+        return map.get(sel) ?? "none";
+      };
+    }
+    this.selectorFrameMap.set(selector, verdict);
+    return this;
+  }
+
   /** Force an action's outcome when its selector exactly matches `selector`. */
   setOutcomeForSelector(selector: string, outcome: boolean): this {
     this.outcomeBySelector.set(selector, outcome);
@@ -455,6 +480,11 @@ export class MockDriver implements Driver {
   async teardown(): Promise<void> {
     this.record("teardown", []);
     this.connected = false;
+  }
+
+  /** Recorded no-op — there is no real browser state to clear in the mock (isolation seam). */
+  async clearBrowserState(): Promise<void> {
+    this.record("clearBrowserState", []);
   }
 
   // =========================================================================

@@ -110,16 +110,49 @@ describe("computeMaskedTextHash — volatile-region masking (Layer 1)", () => {
   });
 });
 
+describe("computeMaskedTextHash — dynamic number/date/currency normalization (Item 3)", () => {
+  test("stable when a PLAIN (non-live-region) counter changes", () => {
+    // A bare `generic`/`text` node — NOT a masked live-region role — holding a live counter.
+    const before = snap([{ role: "text", ref: "n1", name: "Cart total: 3 items" }]);
+    const after = snap([{ role: "text", ref: "n1", name: "Cart total: 12 items" }]);
+    expect(computeMaskedTextHash(after)).toBe(computeMaskedTextHash(before));
+  });
+
+  test.each([
+    ["12:30:45", "09:05:01"], // clock
+    ["$1,234.56", "$9.99"], // price
+    ["2026-07-02", "2025-01-15"], // ISO date
+    ["45%", "3%"], // percent
+  ])("stable when a plain %s-shaped token churns", (a, b) => {
+    const before = snap([{ role: "text", ref: "n1", name: `Value ${a}` }]);
+    const after = snap([{ role: "text", ref: "n1", name: `Value ${b}` }]);
+    expect(computeMaskedTextHash(after)).toBe(computeMaskedTextHash(before));
+  });
+
+  test("still CHANGES when the surrounding literal text changes", () => {
+    const before = snap([{ role: "text", ref: "n1", name: "Cart total: 3 items" }]);
+    const after = snap([{ role: "text", ref: "n1", name: "Wishlist total: 3 items" }]);
+    expect(computeMaskedTextHash(after)).not.toBe(computeMaskedTextHash(before));
+  });
+});
+
 describe("computeMaskedTextHash — ignore_regions (Layer 2)", () => {
   test("an ignore_regions selector excludes a subtree from the text hash", () => {
     // `.ticker` matches the node's class attribute → the region is pruned.
+    // Use a NON-numeric text change so the difference isn't collapsed by dynamic-number
+    // normalization (Item 3) — this test is about `ignore_regions` subtree exclusion, not numbers.
     const before = snap([
       { role: "button", ref: "n1", name: "Save" },
-      { role: "generic", ref: "n2", name: "$1,000", properties: { class: "ticker price" } },
+      { role: "generic", ref: "n2", name: "Acme headline", properties: { class: "ticker price" } },
     ]);
     const after = snap([
       { role: "button", ref: "n1", name: "Save" },
-      { role: "generic", ref: "n2", name: "$2,000", properties: { class: "ticker price" } },
+      {
+        role: "generic",
+        ref: "n2",
+        name: "Globex headline",
+        properties: { class: "ticker price" },
+      },
     ]);
     const opts = { ignoreRegions: [".ticker"] };
     expect(computeMaskedTextHash(after, opts)).toBe(computeMaskedTextHash(before, opts));

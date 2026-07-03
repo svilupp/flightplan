@@ -173,6 +173,12 @@ describe("resolution-order precedence", () => {
     expect(resolved.redaction.mask_text).toBe(true);
     expect(resolved.redaction.redact_media).toBe(true);
   });
+
+  test("the L5 path-repair planner is DISABLED by default (opt-in)", () => {
+    expect(resolveConfigWithDefaults([]).plan.enabled).toBe(false);
+    // Opt in explicitly.
+    expect(resolveConfigWithDefaults([{ plan: { enabled: true } }]).plan.enabled).toBe(true);
+  });
 });
 
 describe("[timeouts] — action/nav ceilings (fixes 30s hangs)", () => {
@@ -216,6 +222,23 @@ nav_ms = 1500
     expect(config.timeouts?.nav_ms).toBe(1500);
   });
 
+  test("settle_ms defaults to 150 and is tunable (0 disables the post-action settle)", () => {
+    expect(resolveConfigWithDefaults([]).timeouts.settle_ms).toBe(150);
+    expect(resolveConfigWithDefaults([{ timeouts: { settle_ms: 0 } }]).timeouts.settle_ms).toBe(0);
+    expect(resolveConfigWithDefaults([{ timeouts: { settle_ms: 400 } }]).timeouts.settle_ms).toBe(
+      400,
+    );
+  });
+
+  test("loadConfigFile accepts [timeouts] settle_ms", async () => {
+    const p = writeTmp(
+      "timeouts-settle.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[timeouts]\nsettle_ms = 250\n`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.timeouts?.settle_ms).toBe(250);
+  });
+
   test("rejects a non-positive action_ms (strict)", async () => {
     const p = writeTmp(
       "timeouts-bad.toml",
@@ -228,6 +251,45 @@ nav_ms = 1500
     const p = writeTmp(
       "timeouts-bad2.toml",
       `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[timeouts]\nbogus = 1\n`,
+    );
+    await expect(loadConfigFile(p)).rejects.toThrow(ConfigValidationError);
+  });
+});
+
+describe("[resolve] — author-declared attribute hooks (Fix 2 BONUS)", () => {
+  test("defaults: no [resolve] block → resolve is absent (unchanged behaviour)", () => {
+    const resolved = resolveConfigWithDefaults([]);
+    expect(resolved.resolve).toBeUndefined();
+  });
+
+  test("loadConfigFile accepts a [resolve] attributes array", async () => {
+    const p = writeTmp(
+      "resolve.toml",
+      `version = 1
+kind = "config"
+id = "x"
+description = "d"
+
+[resolve]
+attributes = ["data-cmd", "data-role"]
+`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.resolve?.attributes).toEqual(["data-cmd", "data-role"]);
+  });
+
+  test("a later layer replaces the attributes array wholesale", () => {
+    const resolved = resolveConfigWithDefaults([
+      { resolve: { attributes: ["data-cmd"] } },
+      { resolve: { attributes: ["data-hook"] } },
+    ]);
+    expect(resolved.resolve?.attributes).toEqual(["data-hook"]);
+  });
+
+  test("rejects an unknown key inside [resolve] (strict)", async () => {
+    const p = writeTmp(
+      "resolve-bad.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[resolve]\nbogus = 1\n`,
     );
     await expect(loadConfigFile(p)).rejects.toThrow(ConfigValidationError);
   });
@@ -294,6 +356,24 @@ describe("mergeable vs replaceable", () => {
     expect(merged.browser?.provider).toBe("browser-pilot");
     expect(merged.browser?.reuse_window).toBe(true);
     expect(merged.browser?.record).toBe(true);
+  });
+
+  test("[browser] dialog defaults to dismiss and accepts accept (strict)", async () => {
+    // Built-in default.
+    expect(resolveConfigWithDefaults([]).browser?.dialog).toBe("dismiss");
+    // An author can opt into accepting native dialogs.
+    const p = writeTmp(
+      "browser-dialog.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[browser]\ndialog = "accept"\n`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.browser?.dialog).toBe("accept");
+    // Out-of-vocab value is rejected.
+    const bad = writeTmp(
+      "browser-dialog-bad.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[browser]\ndialog = "ignore"\n`,
+    );
+    await expect(loadConfigFile(bad)).rejects.toThrow(ConfigValidationError);
   });
 
   test("connect (discriminated union) is REPLACED wholesale across differing modes", () => {

@@ -19,12 +19,19 @@
 //   6. Surface `failureReason`/`coveringElement` as escalation signals; set `escalate:true` when
 //      L1 can't resolve OR the match is ambiguous (→ orchestrator hands off to L2 in Phase 4).
 
-import type { BatchStep, InteractiveElement, PageSnapshot, StepResult } from "../driver/index.ts";
+import type {
+  BatchStep,
+  Driver,
+  InteractiveElement,
+  PageSnapshot,
+  StepResult,
+} from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { normalizeTarget } from "../flow/normalize-target.ts";
 import type { Step } from "../flow/types.ts";
 import { buildHandoff, isAmbiguous } from "./fuzzy.ts";
 import { capturePageSignature } from "./page-signature.ts";
+import { snapshotMatchCount } from "./revalidate.ts";
 import {
   buildHintCandidates,
   buildStrategyArray,
@@ -119,6 +126,40 @@ function pickTarget(
 }
 
 // ---------------------------------------------------------------------------
+// Iframe mis-resolution guard (failure-path only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect an author hint that exists ONLY inside a same-origin iframe the AX snapshot does not
+ * pierce. browser-pilot snapshots never descend into iframes, so a testid/attribute hint whose true
+ * match lives in an iframe `contentDocument` matches NOTHING in the snapshot; L1 would then fall
+ * through to a weaker (name/NL) candidate and silently resolve a LOOK-ALIKE parent element, clicking
+ * it and reporting ok:true (a false positive that only trips a later assert).
+ *
+ * This is strictly off the happy path: it feature-detects `driver.locateSelectorFrame` (absent →
+ * returns `undefined`, no behaviour change) and probes ONLY a PLAIN CSS/attribute hint (leading
+ * `[`; `ref:`/`role:`/`text:` are not iframe-scoped) that matched ZERO snapshot elements. It returns
+ * the first such hint the driver reports as iframe-bound, or `undefined`.
+ */
+async function detectIframeOnlyHint(
+  hints: readonly string[],
+  elements: InteractiveElement[],
+  driver: Driver,
+): Promise<string | undefined> {
+  if (typeof driver.locateSelectorFrame !== "function") return undefined;
+  for (const hint of hints) {
+    const sel = hint.trim();
+    // Only plain CSS/attribute selectors are iframe-scoped by locateSelectorFrame.
+    if (!sel.startsWith("[")) continue;
+    // Probe ONLY a hint that matched NOTHING in the snapshot (count 0). Unparseable compound CSS
+    // (count undefined) is left alone — we cannot prove it absent from the AX snapshot.
+    if (snapshotMatchCount(sel, elements) !== 0) continue;
+    if ((await driver.locateSelectorFrame(sel)) === "iframe") return sel;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Reading the result
 // ---------------------------------------------------------------------------
 
@@ -201,6 +242,12 @@ export async function resolveL1(
   ctx: ResolveContext,
   opts: L1Options = {},
   snapshot?: PageSnapshot,
+  /**
+   * The PRE-ACTION signature basis L0 already computed for this exact page/snapshot (Item 4). Passed
+   * ONLY when L1 is REUSING the shared snapshot (a clean pre-replay L0 miss), so it is safe to reuse
+   * verbatim instead of recomputing `capturePageSignature`. Ignored when L1 takes a fresh snapshot.
+   */
+  precomputedBasis?: { sig: string; url: string },
 ): Promise<StepExecution> {
   const minScore = opts.minScore ?? 0.4;
   const action = actionVerbForStep(step);
@@ -226,7 +273,12 @@ export async function resolveL1(
   // Capture the PRE-ACTION page-signature basis (composite match.sig + url) so a successful
   // resolution can be written back to the lock against the page it was learned on (Phase 3).
   // Computed here, before the batch acts, because a navigating action would mutate the page.
-  const signatureBasis = await capturePageSignature(ctx.driver, snap, ctx.cache);
+  // Reuse L0's basis when it handed one down for THIS shared snapshot (Item 4): same page, same
+  // snapshot, same `ctx.cache` → identical result, so recomputing it is pure waste.
+  const signatureBasis =
+    snapshot !== undefined && precomputedBasis !== undefined
+      ? precomputedBasis
+      : await capturePageSignature(ctx.driver, snap, ctx.cache);
 
   // (2) Native ranking: the driver's `resolveAll` runs browser-pilot's L1 race against the SAME
   // snapshot and executes nothing. `minConfidence:0` returns all candidates; L1's own `minScore`
@@ -252,6 +304,31 @@ export async function resolveL1(
       escalate: true,
       handoff: buildHandoff({ intent: intentText, action, ranked }),
       error: "L1: no candidate selectors (no hints and no interactive target matched)",
+    };
+  }
+
+  // IFRAME MIS-RESOLUTION GUARD (failure path only). Before acting, catch the silent trap where a
+  // CSS/attribute hint matched NOTHING in the snapshot because its true match lives inside an iframe
+  // (not pierced). Acting would resolve a weaker (name/NL) fallback → a look-alike parent element,
+  // reporting ok:true. Fail HARD with a clear, hint-naming error instead, and do NOT escalate:
+  // every AI tier picks from the same snapshot-derived candidate list, which cannot contain iframe
+  // content either, so escalation only burns L2–L4 latency/cost before failing with a worse error.
+  // Probed only for zero-match hints, so the happy path (hint matched, or no iframe-capable driver)
+  // is untouched.
+  const iframeHint = await detectIframeOnlyHint(hints, elements, ctx.driver);
+  if (iframeHint) {
+    const base =
+      `L1: target '${iframeHint}' exists only inside an iframe; iframes are not pierced` +
+      " — restructure the flow or use frame switching";
+    return {
+      ok: false,
+      tier: "L1",
+      candidates: ranked,
+      escalate: false,
+      error:
+        target !== undefined
+          ? `${base} (a weaker candidate would otherwise mis-resolve to a look-alike element)`
+          : base,
     };
   }
 

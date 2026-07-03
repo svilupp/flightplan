@@ -76,8 +76,8 @@ export function computeMaskedTextHash(
       // Emit the accessible name/value as the content basis (role prefix keeps a name that moves
       // between roles distinguishable, mirroring how struct keys on role).
       const role = (node.role ?? "").toLowerCase();
-      const name = (node.name ?? "").trim();
-      const value = (node.value ?? "").trim();
+      const name = normalizeDynamicText((node.name ?? "").trim());
+      const value = normalizeDynamicText((node.value ?? "").trim());
       if (name.length > 0 || value.length > 0) {
         tokens.push(`${role}|${name}|${value}`);
       }
@@ -87,6 +87,27 @@ export function computeMaskedTextHash(
 
   walk(snapshot.accessibilityTree);
   return `${snapshot.url}|${fnv1a(tokens.join("\n"))}`;
+}
+
+/**
+ * A maximal number/date/time/currency/percent-shaped run: an optional leading currency sigil, a
+ * digit, then any run of digits and numeric punctuation (`, . : / -` and inner spaces), plus an
+ * optional trailing `%` or AM/PM. Matches counters (`42`), clocks (`12:30:45`), dates
+ * (`2026-07-02`, `07/02/2026`), and prices (`$1,234.56`, `€ 9,99`).
+ */
+const NUMERIC_SHAPED = /[$£€¥]?\s?\d[\d.,:/\-\s]*\d?%?(?:\s?[AaPp][Mm])?/g;
+
+/**
+ * Collapse number/date/time/currency/percent-shaped tokens in an accessible name/value to a stable
+ * placeholder BEFORE hashing, so plain dynamic text (a live counter/clock/price that is NOT inside a
+ * masked live-region role) no longer thrashes the composite signature → an L0 miss every run on such
+ * pages. Only the numeric SHAPE is masked; surrounding literal words are preserved, so a genuine
+ * text change still moves the hash. NOTE: this changes the hash basis, so a lock recorded before this
+ * normalization re-heals its stored `match.sig` on the next (non-frozen) run.
+ */
+function normalizeDynamicText(s: string): string {
+  if (s.length === 0) return s;
+  return s.replace(NUMERIC_SHAPED, "#").trim();
 }
 
 /** Roles masked by default, lower-cased for comparison. */

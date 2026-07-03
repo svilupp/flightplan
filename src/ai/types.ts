@@ -59,11 +59,13 @@ export interface GenerateRequest {
   /** Multimodal message list (vision tiers). */
   messages?: AiMessage[];
   /**
-   * Wall-clock ceiling (ms) for EACH model attempt in the fallback chain (not the whole chain).
-   * `defaultGenerate` threads this into `AbortSignal.timeout(timeoutMs)` per `generateText` call
-   * so a hung provider call (e.g. the 174s L4 iframe hang) times out and falls back to the next
-   * model instead of blocking forever. `aiCall` supplies a role-aware default; callers may still
-   * omit it, in which case `defaultGenerate` falls back to `DEFAULT_TIMEOUT_MS`.
+   * Wall-clock ceiling (ms) for the WHOLE logical model call — ONE shared `AbortSignal.timeout` spans
+   * the entire fallback chain (Fix 2), so walking N fallbacks can't accumulate `N × timeoutMs` (the
+   * measured ~24s L2-resolver stall over 4 hung fallbacks). `defaultGenerate` threads it into the
+   * shared `abortSignal` so a hung provider call (e.g. the 174s L4 iframe hang) is bounded and — if it
+   * fails fast rather than hanging — the next model is still tried within the remaining budget.
+   * `aiCall` supplies a role-aware default; callers may omit it, in which case `defaultGenerate` falls
+   * back to `DEFAULT_TIMEOUT_MS`.
    */
   timeoutMs?: number;
   /**
@@ -199,8 +201,11 @@ export interface AiCallResult<T> {
 
 /** Deps to build an {@link AiRuntime}. `generate` is the seam; the rest is config/wiring. */
 export interface AiRuntimeDeps {
-  /** The resolved config (provides `[ai]`/`[run]` budgets + `[ai.models]` overrides). */
-  config: Pick<Config, "ai" | "run">;
+  /**
+   * The resolved config: `[ai]`/`[run]` budgets + `[ai.models]` overrides, plus `[timeouts]` for the
+   * per-AI-call ceiling (`ai_call_ms` → `AiCallRuntime.timeoutMsByRole`, Fix 2). All optional.
+   */
+  config: Pick<Config, "ai" | "run" | "timeouts">;
   /** The model-call seam (real = `provider.defaultGenerate`, tests = a fake). */
   generate: GenerateFn;
   /** The `ai_call` event sink (the run's `AiWriter`, or a test recorder). */

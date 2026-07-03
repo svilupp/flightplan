@@ -210,6 +210,31 @@ export function resolveSelectorToElement(
   return resolveSelector(selector, elements);
 }
 
+/**
+ * How many snapshot `interactiveElements` an identity-bearing selector matches, or `undefined`
+ * when the selector is NOT identity-parseable (a compound/descendant CSS selector, a ref) and a
+ * snapshot match-count therefore cannot be computed. Unlike {@link resolveSelectorToElement} (which
+ * collapses 0 and >1 both into `undefined`), this distinguishes "absent" (0) from "present" (≥1),
+ * which the L1 iframe guard needs to decide a hint matched NOTHING in the current document.
+ */
+export function snapshotMatchCount(
+  selector: string,
+  elements: readonly InteractiveElement[],
+): number | undefined {
+  const parsed = parseDurableSelector(selector);
+  if (!parsed) return undefined;
+  if (parsed.index !== undefined && parsed.role !== undefined) {
+    const role = parsed.role.toLowerCase();
+    const sameRole = elements.filter(
+      (el) =>
+        (el.role ?? "").toLowerCase() === role &&
+        (parsed.name === undefined || (el.name ?? "") === parsed.name),
+    );
+    return sameRole[parsed.index - 1] ? 1 : 0;
+  }
+  return elements.filter((el) => elementMatches(el, parsed)).length;
+}
+
 /** A single strategy's outcome in the race: what element (if any) it resolved to. */
 interface StrategyResolution {
   entry: StrategyEntry;

@@ -14,6 +14,7 @@
 
 import type { AiJudgeOptions, AssertionResult } from "../assert/types.ts";
 import type { AiJudgeAssertion } from "../flow/types.ts";
+import type { ModelRoleName } from "../types.ts";
 import { classifyL4 } from "./advisor-l4.ts";
 import { BudgetTracker, resolveBudgetLimits } from "./budget.ts";
 import type { AiCallRuntime } from "./call.ts";
@@ -30,6 +31,21 @@ import type { AiHooksImpl, AiRuntime, AiRuntimeDeps, PlannerRuntime } from "./ty
 import { resolveBatchL3, resolveL3 } from "./vision-l3.ts";
 
 /**
+ * Build the per-role AI-call timeout override from `[timeouts] ai_call_ms` (Fix 2). `ai_call_ms` is a
+ * FLAT ceiling applied to EVERY model role, so a single step's L2→L3→L4 escalation can never hang the
+ * tens of seconds measured in the field. Returns `undefined` when unset — `aiCall` then falls back to
+ * the role-aware `DEFAULT_TIMEOUT_MS_BY_ROLE` (a few seconds each). The value is validated positive by
+ * the config schema.
+ */
+export function timeoutMsByRoleFromConfig(
+  timeouts: { ai_call_ms?: number } | undefined,
+): Partial<Record<ModelRoleName, number>> | undefined {
+  const ms = timeouts?.ai_call_ms;
+  if (ms === undefined) return undefined;
+  return { resolver: ms, vision: ms, advisor: ms, planner: ms, planner_capable: ms };
+}
+
+/**
  * Assemble an {@link AiRuntime} from deps. The returned `hooks` satisfy the orchestrator's
  * `AiHooks`; `judge` satisfies `assertCtx.aiJudge`; `usageTotals()` returns the run-level rollup.
  */
@@ -40,6 +56,9 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
 
   // The slice the tier callers + aiCall consume. The optional redactor (when `enabled`) drives
   // `redactedPrompt`/`redactedResponse` on every `ai_call` event; absent → no prompt/response logged.
+  // Per-AI-call timeout ceiling (Fix 2): `[timeouts] ai_call_ms` flattened across all roles so the
+  // repair/L4 escalation path actually USES a bounded timeout. Unset → role-aware defaults in `aiCall`.
+  const timeoutMsByRole = timeoutMsByRoleFromConfig(deps.config.timeouts);
   const rt: AiCallRuntime = {
     registry,
     budget,
@@ -48,6 +67,7 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
     aiWriter: deps.aiWriter,
     ...(deps.redactor ? { redactor: deps.redactor } : {}),
     ...(deps.onAiCall ? { onAiCall: deps.onAiCall } : {}),
+    ...(timeoutMsByRole ? { timeoutMsByRole } : {}),
   };
 
   const hooks: AiHooksImpl = {

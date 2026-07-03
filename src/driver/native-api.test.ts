@@ -109,3 +109,11 @@ describe("MockDriver — structure-signature mode (Change 4)", () => {
     expect(d.callsTo("captureStateSignature")[0]?.args[0]).toEqual({ mode: "structure" });
   });
 });
+
+describe("MockDriver — clearBrowserState (cross-agent isolation seam)", () => {
+  test("is a recorded no-op (never throws)", async () => {
+    const d = new MockDriver();
+    await d.clearBrowserState();
+    expect(d.callsTo("clearBrowserState")).toHaveLength(1);
+  });
+});

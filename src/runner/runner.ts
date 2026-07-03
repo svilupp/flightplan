@@ -51,7 +51,7 @@ import {
   runAssertions,
 } from "../assert/index.ts";
 import type { CacheConfig, ConnectConfig, ResolvedConfig } from "../config/types.ts";
-import { BrowserPilotDriver } from "../driver/browser-pilot-driver.ts";
+import { BrowserPilotDriver, type DialogPolicy } from "../driver/browser-pilot-driver.ts";
 import type { Driver } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { type ImportGraph, resolveImports } from "../flow/imports.ts";
@@ -103,6 +103,7 @@ import {
   type Divergence,
   detectDivergence,
   isPathMutatingStep,
+  isSyntheticRepairStepId,
   runPathRepair,
 } from "./path-repair.ts";
 import type { RunClock, RunOptions, RunResult } from "./types.ts";
@@ -134,6 +135,9 @@ export const DEFAULT_CONNECT_CONFIG: ConnectConfig = {
  * (verified: the /wizard submit step intermittently saw the pre-reveal tree). A short settle
  * between ladder steps lets the AX tree catch up. Driven by the run clock, so tests with a
  * FakeClock incur ZERO real delay. (Assertions poll on their own and need no settle.)
+ *
+ * This is the DEFAULT / fallback; the effective value is the resolved `[timeouts] settle_ms`
+ * (`DEFAULT_TIMEOUTS.settle_ms`, kept in sync with this constant), threaded via `RunServices`.
  */
 export const LADDER_SETTLE_MS = 150;
 
@@ -264,14 +268,27 @@ interface RunServices {
   /** Monotonic frame index for unique screenshot filenames. */
   shotIndex: { n: number };
   /**
+   * Post-action AX-tree settle (ms) slept after every successful ladder action (`[timeouts]
+   * settle_ms`, default {@link LADDER_SETTLE_MS}). `0` disables it. Driven by the run clock, so a
+   * FakeClock incurs zero real delay.
+   */
+  settleMs: number;
+  /**
    * L0 cache-hit-quality tuning from `[cache]` config (L0 cache-hit quality — Layer 2). Threaded
    * into each ladder step's `ResolveContext.cache` (flow-level defaults; a per-step `cache` mode
    * overrides `signature`). Undefined when no `[cache]` block is set → default matching.
    */
   cache?: CacheOptions;
   /**
+   * Author-declared deterministic attribute-hook names from `[resolve] attributes` (e.g.
+   * `["data-cmd"]`). Threaded onto each ladder step's `ResolveContext.resolveAttributes` so an
+   * AI-tier pick persists a discriminating `[data-cmd="c2"]` durable selector (Fix 1). Undefined
+   * when the `[resolve]` block declares none (behavior unchanged).
+   */
+  resolveAttributes?: readonly string[];
+  /**
    * The L5 path-repair planner policy (PLAN_v003 v003-6). Present ALWAYS in a resolved config
-   * (`enabled` defaulted true), but the divergence/replan machinery is guarded so it only fires when
+   * (`enabled` defaulted false — opt-in), but the divergence/replan machinery is guarded so it only fires when
    * an AI runtime is present AND `[plan].enabled` AND a real recorded expectation diverges — a
    * no-AI-runtime run is byte-identical to before.
    */
@@ -636,6 +653,9 @@ async function performStepAction(
       const stepCache = "cache" in step ? step.cache : undefined;
       const mergedCache = mergeStepCache(services.cache, stepCache);
       if (mergedCache) ctx.cache = mergedCache;
+      // Author-declared attribute hooks (`[resolve] attributes`, Fix 1): an AI-tier pick persists a
+      // discriminating `[data-cmd="c2"]` durable selector so warm runs replay at L0 with no vision.
+      if (services.resolveAttributes) ctx.resolveAttributes = services.resolveAttributes;
       // Wire the L2/L3/L4 AI tiers (Phase 4). Absent → the orchestrator returns the failed L1
       // result with the handoff (AI-less runs behave exactly as in P2/P3).
       if (runtime) ctx.ai = runtime.hooks;
@@ -680,8 +700,9 @@ async function performStepAction(
               })
           : undefined;
         // Let the AX tree settle after a DOM-mutating action so the NEXT step's single L1
-        // snapshot is fresh (no real delay under a FakeClock — tests stay instant).
-        await clock.sleep(LADDER_SETTLE_MS);
+        // snapshot is fresh (no real delay under a FakeClock — tests stay instant). Effective
+        // value is `[timeouts] settle_ms`; `0` skips the sleep entirely.
+        if (services.settleMs > 0) await clock.sleep(services.settleMs);
         return {
           ok: true,
           tier: exec.tier,
@@ -986,6 +1007,9 @@ async function executeSteps(
           const ctx: ResolveContext = { driver, now: () => clock.now() };
           ctx.sleep = (ms) => clock.sleep(ms);
           if (session) ctx.lock = session.hook;
+          // Author-declared attribute hooks (`[resolve] attributes`, Fix 1) so a batched vision pick
+          // also persists a discriminating `[data-cmd="c2"]` durable selector for warm L0 replay.
+          if (services.resolveAttributes) ctx.resolveAttributes = services.resolveAttributes;
           ctx.ai = runtime.hooks;
           // Wrap the bound batch hook in an arrow (the hook is `this`-free, but referencing it bare
           // trips oxlint `unbound-method`); this is the `BatchVisionResolve` the ladder injects.
@@ -1077,8 +1101,14 @@ async function executeSteps(
       // is derived from the credit result here (moved from before the assertions) so a heal is only
       // counted + persisted when the healed selector actually produced a passing step; under
       // `--frozen` a credited drift still fails the run via `rec.fail`.
+      //
+      // Fix 3 — NEVER persist a recipe keyed to a synthetic `:repair:` step id. A planner-injected
+      // repair step (`<step>:repair:<n>.<i>`) is a throwaway, proposed action (it may be a `do=fill`
+      // on an unrelated status indicator); crediting its resolution poisons the lock with a junk
+      // recipe that a warm run then replays and fails on. It resolved+acted (so the recovery continues
+      // in memory), but its recipe is deliberately DROPPED — only genuine flow steps earn a recipe.
       let healed = false;
-      if (stepOk && action.creditResolution) {
+      if (stepOk && action.creditResolution && !isSyntheticRepairStepId(step.id)) {
         const rec = action.creditResolution();
         healed = rec.healed;
         if (rec.healed) {
@@ -1546,11 +1576,15 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     screenshotsDir: runDir.screenshotsDir,
     screenshotPaths: [],
     shotIndex: { n: 0 },
+    settleMs: opts.config.timeouts.settle_ms,
     ...(cacheOptionsFromConfig(opts.config.cache)
       ? { cache: cacheOptionsFromConfig(opts.config.cache) }
       : {}),
-    // L5 path-repair planner policy (PLAN_v003 v003-6). `enabled` defaults TRUE via the resolved
-    // config; the goal defaults to the flow `description` when `[flow].goal` is unset.
+    ...(opts.config.resolve?.attributes && opts.config.resolve.attributes.length > 0
+      ? { resolveAttributes: opts.config.resolve.attributes }
+      : {}),
+    // L5 path-repair planner policy (PLAN_v003 v003-6). `enabled` defaults FALSE via the resolved
+    // config (opt-in); the goal defaults to the flow `description` when `[flow].goal` is unset.
     plan: {
       enabled: opts.config.plan.enabled,
       goal: resolveFlowGoal(loaded.flow),
@@ -1658,11 +1692,17 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
 
   // --- (3) build the driver (factory) then connect; teardown ALWAYS in finally ---
   // An injected `driverFactory` (tests) keeps the pure `(connectCfg) => Driver` seam; the default
-  // production factory additionally receives the resolved `[timeouts]` so an author's action_ms/
-  // nav_ms override reaches BrowserPilotDriver instead of its own 5000/2000 fallback defaults.
+  // production factory additionally receives the resolved `[timeouts]` (so an author's action_ms/
+  // nav_ms override reaches BrowserPilotDriver instead of its own 5000/2000 fallback defaults) and
+  // the author-declared `[resolve] attributes` (extra selector-hook attribute names like data-cmd).
   const driver = opts.driverFactory
     ? opts.driverFactory(connectCfg)
-    : defaultDriverFactory(connectCfg, opts.config.timeouts);
+    : defaultDriverFactory(
+        connectCfg,
+        opts.config.timeouts,
+        opts.config.resolve?.attributes,
+        opts.config.browser?.dialog,
+      );
   const assertCtx = buildAssertContext(driver, opts.config, clock, runtime);
 
   // The produced video path (opt-in `[browser] record`), collected in the finally before teardown.
@@ -1954,7 +1994,15 @@ async function processAdvisoryVerdicts(
 ): Promise<void> {
   for (const adv of state.advisorySteps) {
     try {
-      if (adv.verdict.kind === "heal" && adv.signatureBasis && session) {
+      // Fix 3 — a synthetic `:repair:` step never earns a persisted heal recipe either (its id is a
+      // throwaway; a warm run would never look it up). Its `intent_changed` patch is still emitted
+      // below (a human-readable diagnosis is harmless), but no lock write is keyed to a repair id.
+      if (
+        adv.verdict.kind === "heal" &&
+        adv.signatureBasis &&
+        session &&
+        !isSyntheticRepairStepId(adv.step.id)
+      ) {
         // Speculative heal write: synthesize a durable resolution from the advisor's recipe gated
         // on the validated basis. (Today the advisor tier never carries a signatureBasis, so this
         // path is dormant — the verdict is recorded but no lock write happens, per spec.)
@@ -2014,17 +2062,24 @@ function intentChangedPatchBody(step: Step, verdict: AdvisoryIntentChangedVerdic
 /**
  * The production driver factory (a fresh BrowserPilotDriver). Threads the resolved `[timeouts]`
  * ceilings so an author's `action_ms`/`nav_ms` override reaches the driver instead of silently
- * falling back to the driver's own 5000/2000 DEFAULTS. `connectCfg` is unused here (the driver
- * receives it via `connect()`), but kept in the signature so this matches the `DriverFactory` seam.
+ * falling back to the driver's own 5000/2000 DEFAULTS, plus the author-declared `[resolve]
+ * attributes` (extra selector-hook attribute names like `data-cmd`) so the deterministic resolver
+ * surfaces + ranks them, plus the resolved `[browser] dialog` policy so a flow's native-dialog
+ * choice reaches the driver instead of its own `"dismiss"` fallback. Each arg is optional and
+ * additive — an absent `[timeouts]`/`[resolve]`/`[browser] dialog` leaves the driver's own defaults
+ * untouched. `connectCfg` is unused here (the driver receives it via `connect()`), but kept in the
+ * signature so this matches the `DriverFactory` seam.
  */
 export function defaultDriverFactory(
   _cfg: ConnectConfig,
   timeouts?: { action_ms: number; nav_ms: number },
+  resolveAttributes?: readonly string[],
+  dialog?: DialogPolicy,
 ): Driver {
-  if (!timeouts) return new BrowserPilotDriver();
   return new BrowserPilotDriver({
-    actionTimeoutMs: timeouts.action_ms,
-    navTimeoutMs: timeouts.nav_ms,
+    ...(timeouts ? { actionTimeoutMs: timeouts.action_ms, navTimeoutMs: timeouts.nav_ms } : {}),
+    ...(resolveAttributes && resolveAttributes.length > 0 ? { resolveAttributes } : {}),
+    ...(dialog ? { dialogPolicy: dialog } : {}),
   });
 }
 

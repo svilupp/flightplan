@@ -266,6 +266,16 @@ describe("synthetic/CSS targets resolve via driver.elementState", () => {
     expect(r.message).toContain("not visible");
   });
 
+  test("a synthetic target resolving via elementState NEVER fetches a snapshot (Item 5 perf)", async () => {
+    // A pure synthetic/CSS target answered entirely by elementState must skip driver.snapshot()
+    // across every poll — even a timing-out (multi-poll) assertion.
+    const d = new MockDriver().setElementState(es({ exists: true, visible: false, count: 1 }));
+    const { opts: o } = opts(d, 200);
+    await visible("[data-testid='toolbar']", o); // times out → several polls
+    expect(d.callsTo("elementState").length).toBeGreaterThan(1);
+    expect(d.callsTo("snapshot").length).toBe(0);
+  });
+
   test("onElementState provider keys on the queried selector", async () => {
     const d = new MockDriver().onElementState((sel) =>
       sel === "[data-testid='toolbar']" ? es({ exists: true, visible: true, count: 1 }) : es(),

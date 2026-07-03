@@ -20,6 +20,16 @@ describe("selectorUsedToStrategy — the §4 mapping table", () => {
     expect(selectorUsedToStrategy("role:link")).toBe("role_name");
   });
 
+  test("Fix 2 positional: role:Role[N] → 'role_name'", () => {
+    expect(selectorUsedToStrategy("role:button[2]")).toBe("role_name");
+    expect(selectorUsedToStrategy('role:button:"Bold"[3]')).toBe("role_name");
+  });
+
+  test("Fix 2 attribute hook: [data-cmd=…] (declared attribute) → 'testid'", () => {
+    expect(selectorUsedToStrategy('[data-cmd="c2"]')).toBe("testid");
+    expect(selectorUsedToStrategy("[data-cmd='c2']")).toBe("testid");
+  });
+
   test("role/name: generated [role][aria-label] pair → 'role_name'", () => {
     expect(selectorUsedToStrategy('[role="button"][aria-label="Create order"]')).toBe("role_name");
   });

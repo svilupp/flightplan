@@ -69,9 +69,9 @@ export interface ResolvedConfig extends Config {
   redaction: RedactionConfig; // mask_text/redact_media always have a default
   /**
    * The L5 path-repair planner policy (PLAN_v003 v003-6), always present in a resolved config with
-   * `enabled` defaulted to TRUE (the planner is enabled-by-default for a prod field test). Inert at
-   * runtime unless an AI runtime is present AND a divergence has a recorded expectation, so a
-   * deterministic run stays byte-identical regardless of this flag.
+   * `enabled` defaulted to FALSE (the planner is opt-in). Even when enabled it is inert at runtime
+   * unless an AI runtime is present AND a divergence has a recorded expectation, so a deterministic
+   * run stays byte-identical regardless of this flag.
    */
   plan: PlanConfig & { enabled: boolean };
   /**
@@ -81,5 +81,5 @@ export interface ResolvedConfig extends Config {
    * actionability default never applies — a disabled/wrong leading selector fails fast (≈5s) and
    * escalates instead of dead-hanging. A per-step `timeout_ms` still overrides `action_ms`.
    */
-  timeouts: TimeoutsConfig & { action_ms: number; nav_ms: number };
+  timeouts: TimeoutsConfig & { action_ms: number; nav_ms: number; settle_ms: number };
 }

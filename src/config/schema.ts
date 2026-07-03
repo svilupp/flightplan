@@ -72,6 +72,12 @@ export const BrowserConfigSchema = z
     reuse_window: z.boolean().optional(),
     /** Enable browser-pilot record/trace (screenshots + video on disk). */
     record: z.boolean().optional(),
+    /**
+     * How the driver auto-answers native `alert`/`confirm`/`beforeunload` dialogs so a flow never
+     * hangs (PLAN §8 risk #2). `"dismiss"` (default) cancels confirms / rejects beforeunload — the
+     * safe automation choice; `"accept"` confirms/OKs them. Threaded into `BrowserPilotDriver`.
+     */
+    dialog: z.enum(["dismiss", "accept"]).optional(),
   })
   .strict();
 
@@ -245,12 +251,12 @@ export const ResolveConfigSchema = z
 // ---------------------------------------------------------------------------
 
 /**
- * The `[plan]` block — the cheap-first path-repair planner (PLAN_v003 v003-6). ENABLED BY DEFAULT
- * (`enabled` defaults to `true` in the resolved config): the planner is a field-test in prod, but
- * it is INERT unless BOTH an AI runtime is present AND a divergence has a recorded expectation to
- * compare against, so deterministic (no-AI) runs stay byte-identical.
+ * The `[plan]` block — the cheap-first path-repair planner (PLAN_v003 v003-6). DISABLED BY DEFAULT
+ * (`enabled` defaults to `false` in the resolved config): the planner is strictly opt-in, so an AI
+ * runtime being present never injects replans into a deterministic flow. When enabled it is still
+ * INERT unless a divergence has a recorded expectation to compare against.
  *
- *  - `enabled`             — master switch (default TRUE). `false` disables the planner entirely.
+ *  - `enabled`             — master switch (default FALSE). Set `true` to opt into the planner.
  *  - `escalate_confidence` — planner confidence at/below which the CHEAP arm's repair escalates to
  *    the capable arm (default {@link 0.5}; the escalation signal is UNPROVEN — tune in the field).
  *  - `escalate_attempts`   — how many cheap attempts for ONE divergence before escalating.
@@ -289,11 +295,25 @@ export const PlanConfigSchema = z
  *  - `nav_ms` — the client-side navigation-SETTLE ceiling (ms) applied to the driver's post-`goto`/
  *    `press` `waitForNavigation({ optional:true })` wait. Bounds the SPA "navigation that never
  *    happens" settle. Default `2000`.
+ *  - `settle_ms` — the flat post-action AX-tree settle (ms) the runner sleeps after EVERY successful
+ *    ladder action, before the next step's single L1 snapshot, so Chrome's asynchronously-updated
+ *    accessibility tree catches up (the documented stale-AX-tree guarantee). Default `150`; `0`
+ *    disables it. Driven by the run clock, so a `FakeClock` incurs zero real delay.
+ *  - `ai_call_ms` — the per-model-attempt wall-clock ceiling (ms) for EVERY AI tier call (L2 resolver
+ *    / L3 vision / L4 advisor / L5 planner / `ai_judge`), a FLAT override applied to ALL roles.
+ *    Threaded by the runner into the AI runtime (`AiCallRuntime.timeoutMsByRole`) so `defaultGenerate`
+ *    bounds each `generateText` attempt with `AbortSignal.timeout(ms)`. This is what stops a step's
+ *    L1→L2→L3→L4 escalation from hanging tens of seconds (the measured 31s `:repair:` hang; L4 p95
+ *    ~22s). UNSET → the role-aware DEFAULT_TIMEOUT_MS_BY_ROLE (a few seconds each, vision gets the most
+ *    headroom) apply. Tune DOWN for a snappy provider, UP for a slow one; keep it comfortably above a
+ *    real vision round-trip so a genuinely-needed call is never starved.
  */
 export const TimeoutsConfigSchema = z
   .object({
     action_ms: z.number().int().positive().optional(),
     nav_ms: z.number().int().positive().optional(),
+    settle_ms: z.number().int().nonnegative().optional(),
+    ai_call_ms: z.number().int().positive().optional(),
   })
   .strict();
 

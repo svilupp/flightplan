@@ -392,6 +392,15 @@ export interface Driver {
   /** Release the connection. Mode A: detach only (Chrome survives). Mode B: detach + kill. */
   teardown(): Promise<void>;
 
+  /**
+   * Clear the current origin's client-side state — `localStorage`, `sessionStorage`, and cookies —
+   * for per-run/per-scenario ISOLATION so state never leaks between flows in a shared window/sweep.
+   * A cross-agent contract point: it MAY be unused for now, but a future isolation hook can call it
+   * (e.g. before a flow that assumes a clean session). Best-effort; never part of the resolution
+   * path. `MockDriver` implements it as a recorded no-op.
+   */
+  clearBrowserState(): Promise<void>;
+
   // --- navigation ---
 
   /**
@@ -450,6 +459,24 @@ export interface Driver {
    * undefined (no regression for AX-resolvable `role:`/`text:`/`plain` targets).
    */
   elementState?(selector: string): Promise<ElementState>;
+
+  /**
+   * Probe which browsing context a PLAIN CSS `selector` matches in, delegating to browser-pilot's
+   * `Page.locateSelectorFrame`. Returns `'main'` (matches the current document), `'iframe'` (matches
+   * ONLY inside a same-origin iframe the AX snapshot does not pierce), or `'none'` (no reachable
+   * match). Intended for the FAILURE / not-found path only: it runs one in-page `Runtime.evaluate`
+   * and must never touch the happy path. L1 uses it to catch the silent-mis-resolution trap where a
+   * testid/attribute hint exists ONLY inside an iframe (so the snapshot can't see it) and resolution
+   * would otherwise fall back to a look-alike parent element.
+   *
+   * `ref:`/`role:`/`text:` selectors are NOT iframe-scoped and always report against the current
+   * document, so callers should probe only plain CSS/attribute selectors (leading `[`).
+   *
+   * OPTIONAL so a driver that predates the primitive (or `MockDriver` in a test that does not opt in)
+   * degrades gracefully: callers MUST feature-detect (`driver.locateSelectorFrame?.(...)`) and skip
+   * the guard when it is undefined (no regression for AX-resolvable targets).
+   */
+  locateSelectorFrame?(selector: string): Promise<"main" | "iframe" | "none">;
 
   // --- single actions (each returns whether the action succeeded) ---
 

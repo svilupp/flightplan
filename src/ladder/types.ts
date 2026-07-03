@@ -348,6 +348,15 @@ export interface ResolveContext {
    * (Layer 1) active, so a run with no `[cache]` block behaves exactly as before this option.
    */
   cache?: CacheOptions;
+  /**
+   * Author-declared deterministic ATTRIBUTE-hook names from `[resolve] attributes` (e.g.
+   * `["data-cmd"]`). Threaded from the resolved config so an AI-tier pick (`actOnPick`) can persist a
+   * DISCRIMINATING durable selector for a nameless icon element: a unique attribute hook
+   * `[data-cmd="c2"]` (PREFERRED over positional, Fix 1) that a WARM run replays at L0 with ZERO model
+   * calls. Passed straight to `durableSelectorForElement`/`strategyForElement` as `attributeNames`.
+   * Absent/empty → the positional `role:<role>[N]` fallback path (behavior unchanged).
+   */
+  resolveAttributes?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------

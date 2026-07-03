@@ -32,7 +32,8 @@ import {
   makeSnapshot,
   makeSuccessBatch,
 } from "../driver/index.ts";
-import { emptyLock, writeLockFile } from "../lock/index.ts";
+import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
+import { isSyntheticRepairStepId, syntheticRepairStepId } from "./path-repair.ts";
 import { runFlow } from "./runner.ts";
 import type { AiRuntimeFactory, RunOptions } from "./types.ts";
 
@@ -75,9 +76,10 @@ async function readAiCalls(runDir: string): Promise<Array<Record<string, unknown
   }
 }
 
-/** Config with `[plan]` policy overrides folded in (the planner is enabled by default). */
+/** Config with `[plan]` policy overrides folded in. The planner is opt-in (default OFF), so these
+ * planner tests enable it explicitly unless an override says otherwise. */
 function planConfig(plan: Partial<ResolvedConfig["plan"]> = {}): ResolvedConfig {
-  return resolveConfigWithDefaults([{ plan: { ...plan } }]);
+  return resolveConfigWithDefaults([{ plan: { enabled: true, ...plan } }]);
 }
 
 interface FakeResponse {
@@ -259,6 +261,61 @@ describe("runFlow path-repair — divergence → cheap repair → continue", () 
     const plannerCalls = aiCalls.filter((c) => c.role === "planner");
     expect(plannerCalls).toHaveLength(1);
     expect(String(plannerCalls[0]!.purpose)).toContain("replan:next");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 3 — a synthetic `:repair:` step never poisons the lock with a junk recipe
+// ---------------------------------------------------------------------------
+
+describe("Fix 3 — synthetic repair-step ids are recognised + never persisted", () => {
+  test("isSyntheticRepairStepId matches the minted scheme but not authored/namespaced ids", () => {
+    expect(syntheticRepairStepId("click_bold", 1, 1)).toBe("click_bold:repair:1.1");
+    expect(isSyntheticRepairStepId("click_bold:repair:1.1")).toBe(true);
+    expect(isSyntheticRepairStepId(syntheticRepairStepId("next", 2, 0))).toBe(true);
+    // Authored + import-namespaced ids never end in `:repair:<int>.<int>`.
+    expect(isSyntheticRepairStepId("click_bold")).toBe(false);
+    expect(isSyntheticRepairStepId("mod:submit")).toBe(false);
+    expect(isSyntheticRepairStepId("run1:child")).toBe(false);
+    expect(isSyntheticRepairStepId("repair_widget")).toBe(false);
+  });
+
+  test("a spliced repair step RESOLVES + ACTS but its resolution is NOT written to the lock", async () => {
+    const { flowPath, outDir } = await writeFlow(TWO_STEP_FLOW);
+    const lockPath = flowPath.replace(/\.toml$/i, ".lock.toml");
+    await writeDivergingLock(lockPath);
+
+    const d = repairDriver();
+    // Planner proposes ONE click("Continue") repair step; the cheap arm is confident.
+    const { fn } = makeFakeGenerate([
+      {
+        output: {
+          decision: "repair",
+          confidence: 0.9,
+          steps: [{ do: "click", target: "Continue" }],
+        },
+      },
+    ]);
+
+    const result = await runFlow(
+      optsFor(flowPath, outDir, d, planConfig(), { aiRuntimeFactory: aiFactory(fn) }),
+    );
+
+    // The repair step executed + resolved (proving it is a genuine, acted-on step, not a no-op)…
+    expect(result.summary.repaired_steps).toEqual(["next:repair:1.0"]);
+    const repairStep = result.summary.steps.find((s) => s.stepId === "next:repair:1.0")!;
+    expect(repairStep.ok).toBe(true);
+
+    // …yet the flushed lock carries NO target keyed to the synthetic `:repair:` id (Fix 3). Only
+    // genuine flow steps (`act`/`next`) may earn a recipe; the junk repair recipe must never land.
+    const lock = await loadLockFile(
+      lockPath,
+      { source: "repair.two", source_hash: "sha256:x", description: "" },
+      () => 0,
+    );
+    const repairTargets = lock.targets.filter((t) => isSyntheticRepairStepId(t.step));
+    expect(repairTargets).toEqual([]);
+    expect(lock.targets.some((t) => t.step.includes(":repair:"))).toBe(false);
   });
 });
 

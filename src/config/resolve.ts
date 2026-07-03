@@ -57,13 +57,14 @@ export const DEFAULT_REDACTION = {
 } as const;
 
 /**
- * Default planner policy (PLAN_v003 v003-6): ENABLED BY DEFAULT for a prod field test. It is inert
- * unless BOTH an AI runtime is present AND a divergence has a recorded expectation to compare
- * against, so a deterministic (no-AI) run is byte-identical regardless. Cheap-first is mandatory:
- * the model defaults live in the registry (`planner` cheap, `planner_capable` escalation-only).
+ * Default planner policy (PLAN_v003 v003-6): DISABLED BY DEFAULT — the L5 path-repair planner is
+ * strictly OPT-IN (`[plan] enabled = true`). With an AI runtime present (`OPENROUTER_API_KEY` set)
+ * an on-by-default planner would inject replans into otherwise-deterministic flows the author never
+ * asked for, so it ships off. Cheap-first is still mandatory when enabled: the model defaults live
+ * in the registry (`planner` cheap, `planner_capable` escalation-only).
  */
 export const DEFAULT_PLAN = {
-  enabled: true,
+  enabled: false,
 } as const;
 
 /**
@@ -77,6 +78,9 @@ export const DEFAULT_PLAN = {
 export const DEFAULT_TIMEOUTS = {
   action_ms: 5000,
   nav_ms: 2000,
+  // Flat post-action AX-tree settle before the next step's single L1 snapshot (the runner's
+  // `LADDER_SETTLE_MS`). `0` disables it. Kept in sync with the runner's fallback constant.
+  settle_ms: 150,
 } as const;
 
 /** Default AI provider/key wiring (PROPOSAL "Hard decisions"). Models stay unset by default
@@ -90,6 +94,8 @@ export const DEFAULT_AI = {
 export const DEFAULT_BROWSER = {
   provider: "browser-pilot",
   reuse_window: true,
+  // Safe automation default: cancel confirms / reject beforeunload so a native dialog never hangs.
+  dialog: "dismiss",
 } as const;
 
 /** The complete built-in defaults layer. */
@@ -214,8 +220,8 @@ export function resolveConfigWithDefaults(layers: ReadonlyArray<Config>): Resolv
     ...parsed,
     run: parsed.run ?? { ...DEFAULT_RUN_LIMITS },
     redaction: parsed.redaction ?? { ...DEFAULT_REDACTION },
-    // The planner is enabled-by-default (PLAN_v003 v003-6): a layer may set `plan.enabled = false`,
-    // but when unset the resolved config guarantees `enabled: true`.
+    // The planner is disabled-by-default (opt-in): a layer may set `plan.enabled = true`, but when
+    // unset the resolved config guarantees `enabled: false`.
     plan: { ...DEFAULT_PLAN, ...parsed.plan },
     // Action/nav ceilings always present: an unset key keeps its default (mergeable), so
     // `action_ms` (5000) and `nav_ms` (2000) are guaranteed for the driver.

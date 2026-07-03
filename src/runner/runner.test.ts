@@ -1409,4 +1409,32 @@ describe("defaultDriverFactory — [timeouts] threading", () => {
     expect(bp.actionTimeoutMs).toBe(1234);
     expect(bp.navTimeoutMs).toBe(777);
   });
+
+  test("default path (no [resolve]) surfaces NO extra selector attributes", () => {
+    // Backward-compat: absent `[resolve] attributes` must leave the driver's attribute set empty
+    // (identical to before the knob existed), whether or not timeouts are passed.
+    expect(
+      (defaultDriverFactory(DEFAULT_CONNECT_CONFIG) as BrowserPilotDriver).resolveAttributes,
+    ).toEqual([]);
+    const withTimeouts = defaultDriverFactory(DEFAULT_CONNECT_CONFIG, {
+      action_ms: 1234,
+      nav_ms: 777,
+    }) as BrowserPilotDriver;
+    expect(withTimeouts.resolveAttributes).toEqual([]);
+  });
+
+  test("threads [resolve] attributes through to the driver alongside [timeouts]", () => {
+    // The runner threads config.resolve?.attributes into the default factory; those author-declared
+    // extra selector-hook attribute names (e.g. data-cmd) must reach the constructed driver so its
+    // snapshot/resolveAll surface + rank them.
+    const driver = defaultDriverFactory(DEFAULT_CONNECT_CONFIG, { action_ms: 1234, nav_ms: 777 }, [
+      "data-cmd",
+      "data-widget",
+    ]);
+    const bp = driver as BrowserPilotDriver;
+    expect(bp.resolveAttributes).toEqual(["data-cmd", "data-widget"]);
+    // and the timeouts wiring is unaffected by the added arg
+    expect(bp.actionTimeoutMs).toBe(1234);
+    expect(bp.navTimeoutMs).toBe(777);
+  });
 });

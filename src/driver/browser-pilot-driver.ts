@@ -89,6 +89,15 @@ export interface BrowserPilotDriverOptions {
    * {@link DEFAULT_NAV_TIMEOUT_MS} = 2000). The runner passes `config.timeouts.nav_ms`.
    */
   navTimeoutMs?: number;
+  /**
+   * Author-declared EXTRA attribute names (`[resolve] attributes`, e.g. `data-cmd`) the deterministic
+   * resolver may use as selector hooks (Fix 2 BONUS). The driver merges these into EVERY enriched
+   * `snapshot({ attributes:true })` (as `attributeNames`) and every `resolveAll` (as `testIdAttributes`),
+   * so a site-specific hook is surfaced + ranked WITHOUT any caller (L0/L1/AI) having to thread it.
+   * Empty/absent → behaviour identical to before (only the built-in testid attributes). The runner
+   * passes `config.resolve.attributes`.
+   */
+  resolveAttributes?: readonly string[];
 }
 
 /** Internal record of how the connection was acquired (drives teardown semantics). */
@@ -120,6 +129,11 @@ export class BrowserPilotDriver implements Driver {
    * Public + readonly for the same reason as {@link actionTimeoutMs}.
    */
   readonly navTimeoutMs: number;
+  /**
+   * Author-declared extra selector-hook attributes (`[resolve] attributes`), merged into every
+   * enriched snapshot + resolveAll (Fix 2 BONUS). Readonly for diagnostics; empty by default.
+   */
+  readonly resolveAttributes: readonly string[];
   private browser: Browser | undefined;
   private activePage: Page | undefined;
   private connection: Connection | undefined;
@@ -130,6 +144,7 @@ export class BrowserPilotDriver implements Driver {
     this.dialogPolicy = options.dialogPolicy ?? "dismiss";
     this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
     this.navTimeoutMs = options.navTimeoutMs ?? DEFAULT_NAV_TIMEOUT_MS;
+    this.resolveAttributes = options.resolveAttributes ?? [];
   }
 
   // -------------------------------------------------------------------------
@@ -217,6 +232,32 @@ export class BrowserPilotDriver implements Driver {
     return this.requirePage();
   }
 
+  /**
+   * Clear the current origin's client-side state (localStorage + sessionStorage + cookies) for
+   * per-run/per-scenario ISOLATION. Best-effort and defensive: each clear is attempted independently
+   * and a failure of one (or no active page) never throws — isolation must not break a run. Uses
+   * browser-pilot's `clearLocalStorage`/`clearSessionStorage`/`clearCookies`.
+   */
+  async clearBrowserState(): Promise<void> {
+    const page = this.activePage;
+    if (!page) return;
+    try {
+      await page.clearLocalStorage();
+    } catch {
+      /* origin may deny storage access; non-fatal */
+    }
+    try {
+      await page.clearSessionStorage();
+    } catch {
+      /* non-fatal */
+    }
+    try {
+      await page.clearCookies();
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   async teardown(): Promise<void> {
     const conn = this.connection;
     const browser = this.browser;
@@ -232,10 +273,18 @@ export class BrowserPilotDriver implements Driver {
         }
       }
       if (browser) {
-        await browser.disconnect(); // drops our CDP socket
+        try {
+          await browser.disconnect(); // drops our CDP socket
+        } catch {
+          // socket may already be dead (Chrome crashed); non-fatal — chrome.kill() must still run
+        }
       }
       if (conn?.kind === "launch") {
-        conn.chrome.kill(); // we own the launched Chrome → kill it (synchronous)
+        try {
+          conn.chrome.kill(); // we own the launched Chrome → kill it (synchronous)
+        } catch {
+          // process may already be gone; non-fatal
+        }
       }
     } finally {
       this.browser = undefined;
@@ -280,9 +329,16 @@ export class BrowserPilotDriver implements Driver {
     // When set, bp enriches each `interactiveElements[]` with real DOM `attributes`
     // (data-testid/id/class/name/type/…). We forward only the options the caller asked for, so
     // the default path (no roles/attributes) is byte-identical to before the bump.
-    const bpOpts: { roles?: string[]; attributes?: boolean } = {};
+    const bpOpts: { roles?: string[]; attributes?: boolean; attributeNames?: string[] } = {};
     if (opts?.roles) bpOpts.roles = opts.roles;
     if (opts?.attributes) bpOpts.attributes = true;
+    // Merge author-declared `[resolve] attributes` with any caller-supplied `attributeNames` so a
+    // hook like `data-cmd` is surfaced on EVERY enriched snapshot (L0/L1/AI) without the caller
+    // threading it (Fix 2 BONUS). Only forwarded when attribute enrichment is on.
+    if (bpOpts.attributes) {
+      const names = dedupeAttributeNames(this.resolveAttributes, opts?.attributeNames);
+      if (names.length > 0) bpOpts.attributeNames = names;
+    }
     return Object.keys(bpOpts).length > 0 ? page.snapshot(bpOpts) : page.snapshot();
   }
 
@@ -291,7 +347,15 @@ export class BrowserPilotDriver implements Driver {
     // 1:1 to bp's (our `strategies` is the shared `Strategy` union = bp's `CandidateStrategy`;
     // our `snapshot` is the re-exported bp `PageSnapshot`), so we pass them straight through.
     const page = this.requirePage();
-    const ranked = opts ? await page.resolveAll(intent, opts) : await page.resolveAll(intent);
+    // Merge author-declared `[resolve] attributes` into `testIdAttributes` so the native ranker
+    // turns a unique hook value (`data-cmd="c2"`) into a high-confidence deterministic candidate,
+    // again without any caller threading it (Fix 2 BONUS).
+    const mergedNames = dedupeAttributeNames(this.resolveAttributes, opts?.testIdAttributes);
+    const effectiveOpts =
+      mergedNames.length > 0 ? { ...opts, testIdAttributes: mergedNames } : opts;
+    const ranked = effectiveOpts
+      ? await page.resolveAll(intent, effectiveOpts)
+      : await page.resolveAll(intent);
     // Map bp's `RankedCandidate` into the driver boundary shape field-for-field so the boundary
     // never leaks bp's type identity (the `_RankedCandidateMatchesBp` guard keeps this total).
     return ranked.map((c) => ({
@@ -313,6 +377,20 @@ export class BrowserPilotDriver implements Driver {
   async elementState(selector: string): Promise<ElementState> {
     const page = this.requirePage();
     return page.elementState(selector);
+  }
+
+  /**
+   * Probe which browsing context a plain CSS `selector` matches in (main document vs a same-origin
+   * iframe vs nowhere reachable), delegating to browser-pilot's `Page.locateSelectorFrame`. Used by
+   * L1's iframe mis-resolution guard on the failure path only (one `Runtime.evaluate`). Any bp shape
+   * that predates the method degrades to `'none'` (defensive) so the guard never throws.
+   */
+  async locateSelectorFrame(selector: string): Promise<"main" | "iframe" | "none"> {
+    const page = this.requirePage() as Page & {
+      locateSelectorFrame?(sel: string): Promise<"main" | "iframe" | "none">;
+    };
+    if (typeof page.locateSelectorFrame !== "function") return "none";
+    return page.locateSelectorFrame(selector);
   }
 
   async batch(steps: Step[], opts?: BatchOptions): Promise<BatchResult> {
@@ -528,6 +606,25 @@ function passThroughActionOpts(
     timeout: opts?.timeout ?? defaultTimeoutMs,
   };
   if (opts?.optional !== undefined) out.optional = opts.optional;
+  return out;
+}
+
+/**
+ * Merge the driver's construction-time `resolveAttributes` with a caller's per-call attribute names
+ * into a de-duplicated list (first-seen order, non-empty entries only). Returns `[]` when both are
+ * empty so callers can skip forwarding the option entirely (byte-identical default behaviour).
+ */
+function dedupeAttributeNames(
+  base: readonly string[],
+  extra: readonly string[] | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const n of [...base, ...(extra ?? [])]) {
+    if (n.length === 0 || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
   return out;
 }
 

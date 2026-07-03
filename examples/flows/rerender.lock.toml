@@ -1,4 +1,4 @@
-version = 1
+version = 2
 source = "examples/flows/rerender.toml"
 source_hash = "sha256:2b95d7cf2070db22980bc64ae6ebf8cd98cff9959bc5cef7b98abf3cd8bbe658"
 description = "Refresh the widget, then confirm on the re-rendered (fresh-ref) node"
@@ -6,83 +6,85 @@ description = "Refresh the widget, then confirm on the re-rendered (fresh-ref) n
 [[targets]]
 step = "confirm_action"
 target = "the Confirm button in the refreshed widget"
-strategy = "testid"
-selector = "[data-testid='rerender-action']"
-green_runs = 1
-last_seen = "2026-07-01T13:13:03.126Z"
+last_seen = "2026-07-03T00:20:42.800Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/rerender*"
-sig = "text:http://localhost:3000/rerender|yy1iip;struct:/rerender|1c0pclb"
+sig = "text:http://localhost:3000/rerender|13rm9qf;struct:/rerender|1rq9wy5"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Confirm\"]"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='rerender-action']"
+greens = 2
+last_ok = "2026-07-03T00:20:42.800Z"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Refresh widget\"]"
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Confirm\""
-
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Refresh widget\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Confirm\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Refresh widget\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Confirm|"
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Refresh widget|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"rerender-action\"]"
+greens = 1
+last_ok = "2026-07-03T00:20:42.800Z"
 
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Confirm\""
+greens = 1
+last_ok = "2026-07-03T00:20:42.800Z"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Confirm\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"rerender-trigger\"]"
+greens = 0
+last_drift = "2026-07-03T00:20:42.800Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Refresh widget\""
+greens = 0
+last_drift = "2026-07-03T00:20:42.800Z"
 
 [[targets]]
 step = "refresh_widget"
 target = "the Refresh widget button"
-strategy = "testid"
-selector = "[data-testid='rerender-trigger']"
-green_runs = 1
-last_seen = "2026-07-01T13:13:02.035Z"
+last_seen = "2026-07-03T00:20:41.576Z"
 
 [targets.match]
 url_glob = "http://localhost:3000/rerender*"
-sig = "text:http://localhost:3000/rerender|-7bhyo2;struct:/rerender|t1fxu0"
+sig = "text:http://localhost:3000/rerender|ttybfd;struct:/rerender|t1ps1c"
 
-[[targets.candidates]]
-strategy = "label"
-selector = "[aria-label=\"Refresh widget\"]"
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='rerender-trigger']"
+greens = 2
+last_ok = "2026-07-03T00:20:41.576Z"
 
-[[targets.candidates]]
-strategy = "role_name"
-selector = "role:button:\"Refresh widget\""
-
-[[targets.candidates]]
-strategy = "scoped_text"
-selector = "text:\"Refresh widget\""
-
-[[targets.candidates]]
-strategy = "structural_fingerprint"
-selector = "fingerprint:button|Refresh widget|"
-
-[[targets.candidates]]
-strategy = "testid"
+[[targets.strategies]]
+kind = "testid"
 selector = "[data-testid=\"rerender-trigger\"]"
+greens = 1
+last_ok = "2026-07-03T00:20:41.576Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Refresh widget\""
+greens = 1
+last_ok = "2026-07-03T00:20:41.576Z"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Refresh widget\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Refresh widget\""
+greens = 0
+
+[[targets.strategies]]
+kind = "structural_fingerprint"
+selector = "fingerprint:button|Refresh widget|"
+greens = 0

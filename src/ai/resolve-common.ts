@@ -265,6 +265,24 @@ export async function actOnPick(
   const { tier, chosen, elements, ranked, signatureBasis, intentText, action } = args;
   const element = elements.find((e) => e.ref === chosen.ref);
 
+  // Discriminating durable-selector context (icon-editor COLD persistence, Fix 1). Pass the snapshot's
+  // interactive elements as SIBLINGS *and* the author-declared attribute-hook names (`[resolve]
+  // attributes`, threaded via `ctx.resolveAttributes`) so a NAMELESS icon `<button>` — whose
+  // native-ranking selector is the non-discriminating bare `role:button` — instead persists a
+  // DISCRIMINATING recipe. `durableSelectorForElement` PREFERS a unique author attribute hook
+  // (`[data-cmd="c2"]`) over the positional `role:button[N]` fallback (positional proved fragile —
+  // the index can shift), and both are L0-replayable so a subsequent WARM run resolves the SAME icon
+  // deterministically at L0 with NO vision. Additive + backward-compatible: when no attribute names
+  // are declared (`resolveAttributes` absent/empty) the positional path applies exactly as before, and
+  // a NAMED element is unaffected (it still yields `role:Role:Name`). The SAME context feeds
+  // `strategyForElement` + `durableSelectorForElement` below so the learned strategy label + selector
+  // stay in agreement (a `[data-cmd=…]` hook rides the cheap `testid` tier).
+  const attributeNames = ctx.resolveAttributes;
+  const durableCtx =
+    attributeNames && attributeNames.length > 0
+      ? { siblings: elements, attributeNames }
+      : { siblings: elements };
+
   // Build the ordered selector array REF-FIRST. Unlike L1 (whose candidate carries a UNIQUE durable
   // selector, so selector-first is safe), an AI-tier pick's `chosen.selector` comes from native
   // ranking and, for a NAMELESS icon element, is the bare NON-UNIQUE `role:<role>` (e.g. `role:button`).
@@ -304,12 +322,12 @@ export async function actOnPick(
       strategy = mapped;
       durableSelector = selectorUsed;
     } else if (element) {
-      strategy = strategyForElement(element);
-      durableSelector = durableSelectorForElement(element) ?? chosen.selector;
+      strategy = strategyForElement(element, durableCtx);
+      durableSelector = durableSelectorForElement(element, durableCtx) ?? chosen.selector;
     }
   } else if (element) {
-    strategy = strategyForElement(element);
-    durableSelector = durableSelectorForElement(element) ?? chosen.selector;
+    strategy = strategyForElement(element, durableCtx);
+    durableSelector = durableSelectorForElement(element, durableCtx) ?? chosen.selector;
   }
 
   const exec: StepExecution = {

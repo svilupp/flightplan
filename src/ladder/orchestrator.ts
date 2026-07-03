@@ -135,6 +135,13 @@ export async function resolveStep(
   // ONE shared snapshot for this resolveStep: attribute-enriched so testid/label derivation and
   // the driver's native ranking see real DOM attributes. L0's pre-replay gates (lookup + url_glob
   // + sig) use it; on a clean L0 miss, L1 REUSES it (single-snapshot discipline, PLAN.md §7).
+  //
+  // NOTE (Item 8, investigated + intentionally NOT deferred): the attribute enrichment is NOT wasted
+  // on an L0 lock hit. L0's target-identity replay plan (`buildReplayPlan` → `classifyReplaySelector`
+  // → `elementMatchesParsed`) reads `element.attributes` to match a recipe's `[data-testid=…]` /
+  // `[attr=val]` primary against the live snapshot; without `{ attributes: true }` those identity
+  // checks would silently fail and every testid/attr recipe would drift-heal. So the enriched
+  // snapshot is required BEFORE the L0 gate — deferring enrichment to the L0-miss path is unsafe.
   const sharedSnapshot = await ctx.driver.snapshot({ attributes: true });
 
   // --- L0 (locked-recipe validate + replay) ---
@@ -147,10 +154,13 @@ export async function resolveStep(
   // have mutated → L1 must take a FRESH snapshot. A clean pre-replay L0 miss did NOT act, so L1
   // REUSES the shared snapshot.
   const l1Snapshot = l0.replayed ? undefined : sharedSnapshot;
+  // On a clean pre-replay L0 miss, L0 already computed the page-signature basis for this same
+  // snapshot — hand it to L1 so it reuses it instead of recomputing `capturePageSignature` (Item 4).
+  const l1Basis = l0.replayed ? undefined : l0.signatureBasis;
 
   // --- L1 (deterministic strategy race) ---
   t0 = now();
-  const l1 = await resolveL1(step, ctx, opts.l1 ?? {}, l1Snapshot);
+  const l1 = await resolveL1(step, ctx, opts.l1 ?? {}, l1Snapshot, l1Basis);
   attempts.push(attemptOf(l1, now() - t0));
   if (l1.ok || !l1.escalate) return { execution: l1, attempts };
 

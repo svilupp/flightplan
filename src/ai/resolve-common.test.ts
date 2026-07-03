@@ -168,7 +168,7 @@ describe("buildCandidatePacket", () => {
 // let browser-pilot's order-honoring `findElement` resolve the FIRST same-role element before the
 // ref is ever tried (the candidate-ordering bug). So the action array MUST lead with `ref:eN`.
 
-const clickStep = (id: string, target: string): Step => ({ id, do: "click", target }) as Step;
+const clickStep = (id: string, target: string): Step => ({ id, do: "click", target });
 
 function ctxFor(driver: MockDriver): ResolveContext {
   return { driver, now: () => 0 };
@@ -244,6 +244,168 @@ describe("actOnPick — AI-tier pick candidate ordering", () => {
     expect(exec.durableSelector).toBe("[data-testid='trash']");
     expect(exec.durableSelector).not.toBe("role:button");
     expect(exec.pinnedLabel).toBeUndefined(); // nameless → no pinned label
+  });
+
+  test("nameless icon with NO testid persists a DISCRIMINATING positional selector (cold→warm L0 replay)", async () => {
+    // Two NAMELESS icon buttons, NO testid/label/text — native ranking gives each the bare,
+    // non-unique `role:button`. Before the wire, the persisted recipe would be that bare
+    // `role:button` (non-discriminating → L0 replay gate skips it → warm run re-runs vision). With
+    // the sibling context passed to `durableSelectorForElement`, the chosen element persists the
+    // discriminating POSITIONAL `role:button[2]`, so a warm run replays deterministically at L0.
+    const elements = [
+      makeInteractiveElement({ ref: "e1", role: "button", name: "", attributes: {} }),
+      makeInteractiveElement({ ref: "e2", role: "button", name: "", attributes: {} }),
+    ];
+    const ranked: RankedCandidate[] = [
+      makeRankedCandidate({
+        ref: "e1",
+        role: "button",
+        name: "",
+        selector: "role:button",
+        score: 0.3,
+      }),
+      makeRankedCandidate({
+        ref: "e2",
+        role: "button",
+        name: "",
+        selector: "role:button",
+        score: 0.3,
+      }),
+    ];
+
+    const d = new MockDriver();
+    // Resolves via the authoritative ref → `selectorUsedToStrategy("ref:e2")` is null → the durable
+    // selector is RE-DERIVED from the chosen element (now WITH sibling context).
+    d.enqueueBatchResult(makeSuccessBatch("ref:e2"));
+
+    const exec = await actOnPick(clickStep("s1", "trash icon"), ctxFor(d), {
+      tier: "L3",
+      chosen: ranked[1]!,
+      elements,
+      ranked,
+      signatureBasis: { sig: "sig", url: "http://x/icons" },
+      intentText: "trash icon",
+      action: "click",
+    });
+
+    expect(exec.ok).toBe(true);
+    // Discriminating positional selector (e2 is the 2nd button among same-role siblings), NOT bare.
+    expect(exec.durableSelector).toBe("role:button[2]");
+    expect(exec.durableSelector).not.toBe("role:button");
+    expect(exec.strategy).toBe("role_name");
+  });
+
+  test("Fix 1: nameless icon with a UNIQUE `[resolve] attributes` hook persists `[data-cmd=…]` (preferred over positional)", async () => {
+    // The icon-editor shape: nameless icon buttons carrying only a site-specific `data-cmd` hook.
+    // With `ctx.resolveAttributes = ["data-cmd"]` threaded from `[resolve] attributes`, the chosen
+    // element persists the DISCRIMINATING, UNIQUE attribute selector `[data-cmd="c2"]` — PREFERRED
+    // over the fragile positional `role:button[2]` — so a warm run replays it at L0 (zero vision).
+    const elements = [
+      makeInteractiveElement({
+        ref: "e1",
+        role: "button",
+        name: "",
+        attributes: { "data-cmd": "c1" },
+      }),
+      makeInteractiveElement({
+        ref: "e2",
+        role: "button",
+        name: "",
+        attributes: { "data-cmd": "c2" },
+      }),
+    ];
+    const ranked: RankedCandidate[] = [
+      makeRankedCandidate({
+        ref: "e1",
+        role: "button",
+        name: "",
+        selector: "role:button",
+        score: 0.3,
+      }),
+      makeRankedCandidate({
+        ref: "e2",
+        role: "button",
+        name: "",
+        selector: "role:button",
+        score: 0.3,
+      }),
+    ];
+
+    const d = new MockDriver();
+    // Resolves via the authoritative ref → strategy(ref) is null → durable selector re-derived from
+    // the chosen element WITH sibling + attribute-name context.
+    d.enqueueBatchResult(makeSuccessBatch("ref:e2"));
+
+    const ctx: ResolveContext = { driver: d, now: () => 0, resolveAttributes: ["data-cmd"] };
+    const exec = await actOnPick(clickStep("s1", "bold icon"), ctx, {
+      tier: "L3",
+      chosen: ranked[1]!,
+      elements,
+      ranked,
+      signatureBasis: { sig: "sig", url: "http://x/icon-editor" },
+      intentText: "bold icon",
+      action: "click",
+    });
+
+    expect(exec.ok).toBe(true);
+    // Unique attribute hook wins over positional — the robust, L0-replayable selector.
+    expect(exec.durableSelector).toBe('[data-cmd="c2"]');
+    expect(exec.durableSelector).not.toBe("role:button[2]");
+    expect(exec.durableSelector).not.toBe("role:button");
+    // A `[data-*=…]` hook rides the cheap deterministic `testid` tier.
+    expect(exec.strategy).toBe("testid");
+  });
+
+  test("Fix 1: a NON-UNIQUE attribute value falls back to positional (never a mis-resolving hook)", async () => {
+    // Both buttons share `data-cmd="dup"` → the value is NOT unique on the page, so it is not a
+    // discriminating hook. `durableSelectorForElement` must skip it and fall back to positional.
+    const elements = [
+      makeInteractiveElement({
+        ref: "e1",
+        role: "button",
+        name: "",
+        attributes: { "data-cmd": "dup" },
+      }),
+      makeInteractiveElement({
+        ref: "e2",
+        role: "button",
+        name: "",
+        attributes: { "data-cmd": "dup" },
+      }),
+    ];
+    const ranked: RankedCandidate[] = [
+      makeRankedCandidate({
+        ref: "e1",
+        role: "button",
+        name: "",
+        selector: "role:button",
+        score: 0.3,
+      }),
+      makeRankedCandidate({
+        ref: "e2",
+        role: "button",
+        name: "",
+        selector: "role:button",
+        score: 0.3,
+      }),
+    ];
+    const d = new MockDriver();
+    d.enqueueBatchResult(makeSuccessBatch("ref:e2"));
+
+    const ctx: ResolveContext = { driver: d, now: () => 0, resolveAttributes: ["data-cmd"] };
+    const exec = await actOnPick(clickStep("s1", "second icon"), ctx, {
+      tier: "L3",
+      chosen: ranked[1]!,
+      elements,
+      ranked,
+      signatureBasis: { sig: "sig", url: "http://x/icon-editor" },
+      intentText: "second icon",
+      action: "click",
+    });
+
+    expect(exec.ok).toBe(true);
+    expect(exec.durableSelector).toBe("role:button[2]"); // non-unique hook skipped → positional
+    expect(exec.durableSelector).not.toBe('[data-cmd="dup"]');
   });
 
   test("a pick with NO ref emits only the selector (never ref:undefined)", async () => {

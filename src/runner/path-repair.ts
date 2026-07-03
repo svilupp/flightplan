@@ -89,6 +89,14 @@ async function recordedRecipe(
  * Captures ONE fresh signature from a single snapshot (no extra round-trips beyond the driver
  * calls `capturePageSignature` already makes). Returns the {@link Divergence} on a mismatch, else
  * `null`. Never throws for a lookup/signature error — a best-effort detector must not break a run.
+ *
+ * PERF (Item 2): this takes a CHEAP `snapshot()` — signature capture only reads the accessibility
+ * tree + URL (the structural component is a separate driver call), so the full-DOM `attributes:true`
+ * enrichment the ladder needs is pure waste here. The snapshot is deliberately NOT shared with the
+ * next step's `resolveStep`, which must take its OWN fresh snapshot AFTER that step's before-phase
+ * assertions may have waited/polled (the page can change in between — reusing this one would resolve
+ * against a stale DOM). So the two snapshots are distinct on purpose; only the wasted enrichment is
+ * dropped. Only the (before-recorded) recipe expectation is compared, so semantics are unchanged.
  */
 export async function detectDivergence(
   driver: Driver,
@@ -107,7 +115,7 @@ export async function detectDivergence(
 
   let current: { sig: string; url: string };
   try {
-    const snapshot = await driver.snapshot({ attributes: true });
+    const snapshot = await driver.snapshot();
     current = await capturePageSignature(driver, snapshot, cache);
   } catch {
     // A signature-capture failure is inconclusive — treat as "no divergence" (fail-safe).
@@ -237,12 +245,34 @@ export function usableRepairSteps(
   if (plan.decision !== "repair" || !plan.steps) return [];
   const out: Step[] = [];
   plan.steps.forEach((proposed, i) => {
-    const shaped = shapeProposedStep(proposed, `${divergedStepId}:repair:${attempt}.${i}`);
+    const shaped = shapeProposedStep(proposed, syntheticRepairStepId(divergedStepId, attempt, i));
     if (!shaped) return;
     const parsed = StepSchema.safeParse(shaped);
     if (parsed.success) out.push(parsed.data);
   });
   return out;
+}
+
+/**
+ * The synthetic id scheme for a planner-injected repair step: `<divergedStepId>:repair:<attempt>.<i>`
+ * (attempt = the 1-based planner attempt for this divergence; i = the 0-based step index within that
+ * attempt's plan). The SINGLE source of truth for both minting these ids ({@link usableRepairSteps})
+ * and recognising them ({@link isSyntheticRepairStepId}), so the two can never drift.
+ */
+export function syntheticRepairStepId(divergedStepId: string, attempt: number, i: number): string {
+  return `${divergedStepId}:repair:${attempt}.${i}`;
+}
+
+/**
+ * Is `id` a synthetic planner-injected repair step id (Fix 3)? Matches the `:repair:<int>.<int>`
+ * suffix {@link syntheticRepairStepId} mints. Used by the runner to REFUSE persisting a lock recipe
+ * keyed to such an id: a repair step is a throwaway, planner-proposed action (it may be a `do=fill` on
+ * an unrelated element), so crediting its resolution would poison the lock with junk that a warm run
+ * then replays. A genuine flow/import step id (even a namespaced `parent:child`) never ends in
+ * `:repair:<int>.<int>`, so this never false-positives on an authored step.
+ */
+export function isSyntheticRepairStepId(id: string): boolean {
+  return /:repair:\d+\.\d+$/.test(id);
 }
 
 /**

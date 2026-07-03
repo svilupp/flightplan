@@ -322,3 +322,107 @@ describe("L1 — fill carries its value into the batch step", () => {
     expect(sent[0]?.value).toBe("Ada");
   });
 });
+
+describe("L1 — iframe mis-resolution guard", () => {
+  // The /contexts benchmark trap: a testid hint whose only match lives inside a same-origin iframe
+  // (not pierced by the AX snapshot), with a look-alike parent button ranked for the NL intent. The
+  // guard must FAIL HARD (naming the hint) instead of silently clicking the look-alike.
+  function iframeTrapDriver(): MockDriver {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          // The look-alike parent — NOT the iframe submit button, but ranks for the NL intent.
+          makeInteractiveElement({ ref: "e6", role: "button", name: "Fill Iframe Form" }),
+        ],
+      }),
+    );
+    d.setResolveAll([makeRankedCandidate({ ref: "e6", role: "button", name: "Fill Iframe Form" })]);
+    // If the guard failed to fire, the batch would "succeed" on the look-alike (silent false positive).
+    d.setBatchResult(makeSuccessBatch("role:button:Fill Iframe Form"));
+    return d;
+  }
+
+  const iframeStep = (): Step => ({
+    id: "submit_iframe",
+    do: "click",
+    target: ["[data-testid='iframe-submit']", "the Submit button inside the iframe form"],
+  });
+
+  test("iframe-only hint + look-alike fallback → fails hard, does NOT act", async () => {
+    const d = iframeTrapDriver();
+    d.setSelectorFrame("[data-testid='iframe-submit']", "iframe");
+
+    const r = await resolveL1(iframeStep(), ctxFor(d));
+
+    expect(r.ok).toBe(false);
+    expect(r.escalate).toBe(false);
+    expect(r.error).toContain("[data-testid='iframe-submit']");
+    expect(r.error).toContain("only inside an iframe");
+    expect(r.error).toContain("mis-resolve");
+    // The guard fired BEFORE the batch — no silent click on the look-alike parent.
+    expect(d.callsTo("batch")).toHaveLength(0);
+    expect(d.callsTo("locateSelectorFrame")).toHaveLength(1);
+  });
+
+  test("no iframe-capable driver (feature-detect absent) → unchanged behaviour, acts as before", async () => {
+    const d = iframeTrapDriver(); // never calls setSelectorFrame → method not installed
+    const r = await resolveL1(iframeStep(), ctxFor(d));
+    // Without the probe the legacy path runs: it acts (and, as before, may mis-resolve) — proving the
+    // guard is purely additive and off unless the driver exposes locateSelectorFrame.
+    expect(d.callsTo("batch")).toHaveLength(1);
+    expect(r.ok).toBe(true);
+  });
+
+  test("iframe-only hint with NO fallback → not-found error still names the hint", async () => {
+    const d = new MockDriver();
+    // Empty snapshot: nothing ranks, so no fallback target is picked.
+    d.setSnapshot(makeSnapshot({ interactiveElements: [] }));
+    d.setResolveAll([]);
+    d.setSelectorFrame("[data-testid='iframe-submit']", "iframe");
+
+    const r = await resolveL1(iframeStep(), ctxFor(d));
+
+    expect(r.ok).toBe(false);
+    expect(r.escalate).toBe(false);
+    expect(r.error).toContain("[data-testid='iframe-submit']");
+    expect(r.error).toContain("only inside an iframe");
+    expect(d.callsTo("batch")).toHaveLength(0);
+  });
+
+  test("hint IS present in the snapshot → no probe, happy path acts", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({
+            ref: "e1",
+            role: "button",
+            name: "Submit",
+            attributes: { "data-testid": "iframe-submit" },
+          }),
+        ],
+      }),
+    );
+    d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Submit" })]);
+    d.setBatchResult(makeSuccessBatch("[data-testid='iframe-submit']"));
+    // Method installed, but the hint matches the snapshot → guard must NOT probe it.
+    d.setSelectorFrame("[data-testid='iframe-submit']", "iframe");
+
+    const r = await resolveL1(iframeStep(), ctxFor(d));
+
+    expect(r.ok).toBe(true);
+    expect(d.callsTo("locateSelectorFrame")).toHaveLength(0);
+    expect(d.callsTo("batch")).toHaveLength(1);
+  });
+
+  test("driver reports 'main' (hint absent from snapshot but in main doc) → no failure", async () => {
+    const d = iframeTrapDriver();
+    d.setSelectorFrame("[data-testid='iframe-submit']", "main");
+    const r = await resolveL1(iframeStep(), ctxFor(d));
+    // Probed (zero snapshot matches) but NOT iframe-bound → legacy path proceeds and acts.
+    expect(d.callsTo("locateSelectorFrame")).toHaveLength(1);
+    expect(d.callsTo("batch")).toHaveLength(1);
+    expect(r.ok).toBe(true);
+  });
+});

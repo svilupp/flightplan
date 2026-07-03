@@ -22,8 +22,9 @@ import type { ResolveContext, StepExecution } from "../ladder/index.ts";
 import { resolveStep } from "../ladder/orchestrator.ts";
 import type { AdvisoryVerdict } from "../types.ts";
 import { BudgetExceededError } from "./budget.ts";
+import { DEFAULT_TIMEOUT_MS_BY_ROLE } from "./call.ts";
 import { DEFAULT_MODEL_REGISTRY, resolveRegistry } from "./registry.ts";
-import { createAiRuntime } from "./runtime.ts";
+import { createAiRuntime, timeoutMsByRoleFromConfig } from "./runtime.ts";
 import type { AiCallSink, GenerateFn, GenerateRequest } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -63,7 +64,7 @@ function makeFakeGenerate(responses: FakeResponse[]): { fn: GenerateFn; calls: G
 function buildRuntime(
   generate: GenerateFn,
   sink: AiCallSink,
-  config: Pick<Config, "ai" | "run"> = {},
+  config: Pick<Config, "ai" | "run" | "timeouts"> = {},
 ) {
   return createAiRuntime({ config, generate, aiWriter: sink });
 }
@@ -524,5 +525,83 @@ describe("registry — config overriding only resolver.model keeps the rest of t
     expect(reg.resolver.model).toBe("deepseek/deepseek-v4-flash");
     expect(reg.vision.model).toBe("google/gemini-3-flash-preview");
     expect(reg.advisor.model).toBe("z-ai/glm-5.2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 — the per-AI-call timeout is bounded + config-driven (the repair/L4 path USES it)
+// ---------------------------------------------------------------------------
+
+describe("Fix 2 — AI-call escalation is bounded by a configurable per-call timeout", () => {
+  test("timeoutMsByRoleFromConfig flattens `[timeouts] ai_call_ms` across all roles (unset → undefined)", () => {
+    expect(timeoutMsByRoleFromConfig(undefined)).toBeUndefined();
+    expect(timeoutMsByRoleFromConfig({})).toBeUndefined();
+    expect(timeoutMsByRoleFromConfig({ ai_call_ms: 1500 })).toEqual({
+      resolver: 1500,
+      vision: 1500,
+      advisor: 1500,
+      planner: 1500,
+      planner_capable: 1500,
+    });
+  });
+
+  test("default per-role ceilings are a few seconds, not tens (bounds the 31s escalation)", () => {
+    // The pre-fix defaults were 20/25/40s — a single L2→L3→L4 climb could accumulate tens of
+    // seconds. Now each is a few seconds so no step hangs like the measured 31s `:repair:` case.
+    expect(DEFAULT_TIMEOUT_MS_BY_ROLE.resolver).toBeLessThanOrEqual(10_000);
+    expect(DEFAULT_TIMEOUT_MS_BY_ROLE.vision).toBeLessThanOrEqual(15_000);
+    expect(DEFAULT_TIMEOUT_MS_BY_ROLE.advisor).toBeLessThanOrEqual(15_000);
+    // A full non-vision-hinted climb stays comfortably under the 31s field hang.
+    const worstClimb =
+      DEFAULT_TIMEOUT_MS_BY_ROLE.resolver +
+      DEFAULT_TIMEOUT_MS_BY_ROLE.vision +
+      DEFAULT_TIMEOUT_MS_BY_ROLE.advisor;
+    expect(worstClimb).toBeLessThan(31_000);
+  });
+
+  test("a runtime built with `ai_call_ms` threads that ceiling into the L2 generate call (repair/L4 path uses it)", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })],
+      }),
+    );
+    d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Go" })]);
+    d.setSignature("u|s");
+    d.enqueueBatchResult(makeSuccessBatch("role:button:Go"));
+
+    const sink = new RecordingSink();
+    const { fn, calls } = makeFakeGenerate([
+      { output: { decision: "pick", index: 0, confidence: 0.9 } },
+    ]);
+    // `[timeouts] ai_call_ms = 1234` → every AI role's per-call ceiling is 1234ms.
+    const rt = buildRuntime(fn, sink, { timeouts: { ai_call_ms: 1234 } });
+
+    await rt.hooks.resolveL2(clickStep({ target: "Go" }), priorL1, ctxFor(d, rt.hooks));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.timeoutMs).toBe(1234); // the bounded ceiling reached defaultGenerate's AbortSignal
+  });
+
+  test("with no `ai_call_ms`, the bounded role default is used (not unbounded)", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Go" })],
+      }),
+    );
+    d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Go" })]);
+    d.setSignature("u|s");
+    d.enqueueBatchResult(makeSuccessBatch("role:button:Go"));
+
+    const sink = new RecordingSink();
+    const { fn, calls } = makeFakeGenerate([
+      { output: { decision: "pick", index: 0, confidence: 0.9 } },
+    ]);
+    const rt = buildRuntime(fn, sink); // no [timeouts]
+
+    await rt.hooks.resolveL2(clickStep({ target: "Go" }), priorL1, ctxFor(d, rt.hooks));
+
+    expect(calls[0]!.timeoutMs).toBe(DEFAULT_TIMEOUT_MS_BY_ROLE.resolver);
   });
 });

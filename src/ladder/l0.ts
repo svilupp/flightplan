@@ -24,6 +24,7 @@ import type { InteractiveElement, PageSnapshot } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import type { Step } from "../flow/types.ts";
 import { signatureMatches, urlGlobMatches } from "../lock/signature.ts";
+import type { StrategyEntry } from "../lock/types.ts";
 import type { Strategy } from "../types.ts";
 import { isInteractiveRole } from "./fuzzy.ts";
 import { actionVerbForStep, buildBatchStep } from "./l1.ts";
@@ -36,7 +37,6 @@ import type {
   ResolveContext,
   StepExecution,
 } from "./types.ts";
-import type { StrategyEntry } from "../lock/types.ts";
 
 /** A clean L0 cache MISS (before any replay) → escalate to L1, which may REUSE the shared snapshot. */
 function miss(note: string): StepExecution {
@@ -135,16 +135,24 @@ export async function resolveL0(
     // On a signature MISS, only replay when the recipe's PRIMARY target is still present (or a
     // same-element strategy re-resolves it). A rival sibling resolving must NOT rescue the recipe.
     if (!plan.present) {
-      return miss("L0 miss: page signature changed — re-resolve at L1");
+      // Clean pre-replay miss: hand the freshly-computed basis to the orchestrator so L1 reuses it
+      // (same page, same snapshot) instead of recomputing `capturePageSignature` (Item 4).
+      return {
+        ...miss("L0 miss: page signature changed — re-resolve at L1"),
+        signatureBasis: basis,
+      };
     }
     revalidated = true;
   } else if (!plan.present) {
     // Signature matched but the primary target no longer uniquely resolves and no remembered
     // strategy heals it (e.g. a persisted non-discriminating `role:button` over an icon toolbar) →
     // clean MISS so the step re-resolves at L1/vision rather than mis-clicking the first match.
-    return miss(
-      "L0 miss: cached recipe's primary target is not uniquely resolvable — re-resolve at L1",
-    );
+    return {
+      ...miss(
+        "L0 miss: cached recipe's primary target is not uniquely resolvable — re-resolve at L1",
+      ),
+      signatureBasis: basis,
+    };
   }
 
   // Actionability demotion (disabled → back). Rivals were already dropped by the identity gate, so
@@ -189,7 +197,8 @@ export async function resolveL0(
   }
   if (revalidated) {
     exec.revalidated = true;
-    exec.error = "l0_revalidated: signature miss, primary target re-validated against fresh snapshot";
+    exec.error =
+      "l0_revalidated: signature miss, primary target re-validated against fresh snapshot";
   }
   return exec;
 }
@@ -281,13 +290,29 @@ function buildReplayPlan(
       }
       // else: non-identity / non-unique → never used to lead the batch (dropped from `ordered`).
     }
-    return { present: true, ordered: dedupeStrings(ordered), winner: primary, agreed, drifted, parseableCount };
+    return {
+      present: true,
+      ordered: dedupeStrings(ordered),
+      winner: primary,
+      agreed,
+      drifted,
+      parseableCount,
+    };
   }
 
   // CASE B — compound/non-identity primary: lead with the precise author selector alone.
   if (!primaryParsed) {
-    const drifted = others.filter((o) => resolveSelectorToElement(o.selector, elements) !== undefined);
-    return { present: true, ordered: [primary.selector], winner: primary, agreed: [primary], drifted, parseableCount };
+    const drifted = others.filter(
+      (o) => resolveSelectorToElement(o.selector, elements) !== undefined,
+    );
+    return {
+      present: true,
+      ordered: [primary.selector],
+      winner: primary,
+      agreed: [primary],
+      drifted,
+      parseableCount,
+    };
   }
 
   // CASE C — the parseable primary drifted (gone/ambiguous). Drift-heal via a corroborated race.
@@ -298,7 +323,14 @@ function buildReplayPlan(
     );
   const race = racePortfolio(portfolio, elements, now);
   if (!race.ok || !race.winner) {
-    return { present: false, ordered: [], winner: primary, agreed: [], drifted: [], parseableCount };
+    return {
+      present: false,
+      ordered: [],
+      winner: primary,
+      agreed: [],
+      drifted: [],
+      parseableCount,
+    };
   }
   return {
     present: true,
@@ -320,7 +352,10 @@ function buildPortfolioOutcome(
   // agreeing same-element strategies; otherwise the plan's primary/race winner.
   const acted = plan.agreed.find((v) => v.selector === learnedSelector) ?? plan.winner;
   return {
-    winner: { kind: acted.kind === learnedStrategy ? learnedStrategy : acted.kind, selector: acted.selector },
+    winner: {
+      kind: acted.kind === learnedStrategy ? learnedStrategy : acted.kind,
+      selector: acted.selector,
+    },
     agreed: plan.agreed,
     drifted: plan.drifted,
     agreement: `${plan.agreed.length}/${plan.parseableCount}`,

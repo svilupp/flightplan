@@ -4,10 +4,12 @@
 import { describe, expect, test } from "bun:test";
 import { makeInteractiveElement } from "../driver/index.ts";
 import {
+  attributeSelectorForElement,
   buildHintCandidates,
   buildStrategyArray,
   durableSelectorForElement,
   labelSelectorForElement,
+  roleNameSelectorForElement,
   scopedTextSelectorForElement,
   strategyForElement,
   structuralFingerprintForElement,
@@ -193,5 +195,79 @@ describe("scopedTextSelectorForElement / structuralFingerprintForElement", () =>
       makeInteractiveElement({ ref: "e1", role: "button", name: "Go" }),
     );
     expect(fp).toBe("fingerprint:role=button;name=Go");
+  });
+});
+
+describe("Fix 2 — discriminating durable selectors for icon-only elements", () => {
+  // Eight nameless icon buttons (icon-editor toolbar): no testid / name / label / text; unique data-cmd.
+  const toolbar = [
+    makeInteractiveElement({
+      ref: "e1",
+      role: "button",
+      name: "",
+      attributes: { "data-cmd": "c1" },
+    }),
+    makeInteractiveElement({
+      ref: "e2",
+      role: "button",
+      name: "",
+      attributes: { "data-cmd": "c2" },
+    }),
+    makeInteractiveElement({
+      ref: "e3",
+      role: "button",
+      name: "",
+      attributes: { "data-cmd": "c3" },
+    }),
+  ];
+
+  test("positional: a NAMELESS element with sibling context yields a discriminating role:Role[N]", () => {
+    // Without context → legacy role-only (non-discriminating).
+    expect(roleNameSelectorForElement(toolbar[1]!)).toBe("role:button");
+    // With sibling context → the 1-based DOM index among same-role siblings.
+    expect(roleNameSelectorForElement(toolbar[1]!, { siblings: toolbar })).toBe("role:button[2]");
+    expect(durableSelectorForElement(toolbar[2]!, { siblings: toolbar })).toBe("role:button[3]");
+    // strategyForElement still classifies positional as the deterministic role_name tier.
+    expect(strategyForElement(toolbar[1]!, { siblings: toolbar })).toBe("role_name");
+  });
+
+  test("attribute hook: a unique declared attribute is PREFERRED over positional", () => {
+    const ctx = { siblings: toolbar, attributeNames: ["data-cmd"] };
+    expect(attributeSelectorForElement(toolbar[1]!, ctx)).toBe('[data-cmd="c2"]');
+    // durableSelectorForElement prefers the unique attribute hook over the positional selector.
+    expect(durableSelectorForElement(toolbar[1]!, ctx)).toBe('[data-cmd="c2"]');
+    expect(strategyForElement(toolbar[1]!, ctx)).toBe("testid");
+  });
+
+  test("attribute hook is skipped when the value is NOT unique among siblings", () => {
+    const dupes = [
+      makeInteractiveElement({
+        ref: "e1",
+        role: "button",
+        name: "",
+        attributes: { "data-cmd": "dup" },
+      }),
+      makeInteractiveElement({
+        ref: "e2",
+        role: "button",
+        name: "",
+        attributes: { "data-cmd": "dup" },
+      }),
+    ];
+    const ctx = { siblings: dupes, attributeNames: ["data-cmd"] };
+    expect(attributeSelectorForElement(dupes[0]!, ctx)).toBeUndefined();
+    // Falls back to the positional selector instead.
+    expect(durableSelectorForElement(dupes[0]!, ctx)).toBe("role:button[1]");
+  });
+
+  test("no context / no declared attributes → byte-identical legacy behaviour", () => {
+    const el = makeInteractiveElement({
+      ref: "e2",
+      role: "button",
+      name: "",
+      attributes: { "data-cmd": "c2" },
+    });
+    expect(durableSelectorForElement(el)).toBe("role:button"); // legacy role-only fallback
+    expect(attributeSelectorForElement(el)).toBeUndefined();
   });
 });

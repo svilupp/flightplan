@@ -67,6 +67,23 @@ interface Probe {
 }
 
 /**
+ * A lazily-fetched, memoized page snapshot for ONE poll iteration. A probe reads the snapshot
+ * through this thunk, so a probe that resolves entirely via `driver.elementState` (a synthetic/CSS
+ * target) never triggers a `driver.snapshot()` round-trip at all; probes that DO need the snapshot
+ * (url, semantic targets, whole-page text) fetch it on first use and share the one result.
+ */
+type SnapshotSource = () => Promise<PageSnapshot>;
+
+/** Build a per-iteration snapshot source that fetches at most once, only if a probe reads it. */
+function makeSnapshotSource(driver: ConditionOpts["driver"]): SnapshotSource {
+  let cached: Promise<PageSnapshot> | undefined;
+  return () => {
+    cached ??= driver.snapshot();
+    return cached;
+  };
+}
+
+/**
  * Poll `probe()` on a fixed interval until it passes or the deadline elapses, then return the
  * final result. Returns AS SOON AS it passes (first passing poll wins). On timeout returns the
  * last probe's `pass:false` + its message. The clock is injected, so under a `FakeClock` the
@@ -81,7 +98,7 @@ async function poll(
   type: AssertType,
   selectorOrTarget: string | undefined,
   opts: ConditionOpts,
-  probe: (snapshot: PageSnapshot) => Probe | Promise<Probe>,
+  probe: (source: SnapshotSource) => Probe | Promise<Probe>,
 ): Promise<AssertionResult> {
   const { driver, timeoutMs, pollIntervalMs, clock } = opts;
   const start = clock.now();
@@ -89,16 +106,16 @@ async function poll(
 
   let last: Probe = { pass: false, message: "not evaluated" };
 
-  // First, immediate attempt (so timeoutMs=0 still checks once). The probe MAY be async —
-  // synthetic/CSS targets resolve via `driver.elementState` inside it (see `resolveTargetState`).
-  // TODO(perf): skip the snapshot fetch for pure-synthetic targets (they only need elementState).
-  last = await probe(await driver.snapshot());
+  // First, immediate attempt (so timeoutMs=0 still checks once). The probe fetches the snapshot
+  // LAZILY through the source — a pure synthetic/CSS target (resolved via `driver.elementState`)
+  // never triggers a snapshot round-trip; see `makeSnapshotSource` + `resolveTargetState`.
+  last = await probe(makeSnapshotSource(driver));
   if (last.pass) return done(true);
 
   while (clock.now() < deadline) {
     const remaining = deadline - clock.now();
     await clock.sleep(Math.min(pollIntervalMs, remaining));
-    last = await probe(await driver.snapshot());
+    last = await probe(makeSnapshotSource(driver));
     if (last.pass) return done(true);
   }
 
@@ -244,15 +261,17 @@ interface TargetState {
  */
 async function resolveTargetState(
   target: string,
-  snapshot: PageSnapshot,
+  source: SnapshotSource,
   opts: ConditionOpts,
 ): Promise<TargetState> {
   const parsed = parseTarget(target);
   if (parsed.kind === "synthetic" && opts.driver.elementState) {
+    // Pure synthetic/CSS target with the live-DOM primitive: answered WITHOUT a snapshot fetch.
     const s = await opts.driver.elementState(parsed.raw);
     return { present: s.exists, visible: s.visible, count: s.count, text: s.text, value: s.value };
   }
   // Snapshot path (semantic targets, or `elementState` unavailable → no behaviour change).
+  const snapshot = await source();
   const els = matchingElements(snapshot, target);
   const present = targetVisible(snapshot, target);
   let text: string;
@@ -301,8 +320,8 @@ export function visible(
   opts: ConditionOpts,
   expectedText?: string,
 ): Promise<AssertionResult> {
-  return poll("visible", target, opts, async (snap) => {
-    const state = await resolveTargetState(target, snap, opts);
+  return poll("visible", target, opts, async (source) => {
+    const state = await resolveTargetState(target, source, opts);
     const textOk = expectedText === undefined || containsCI(state.text, expectedText);
     const ok = state.visible && textOk;
     let message: string;
@@ -330,8 +349,8 @@ export function hidden(
   opts: ConditionOpts,
   expectedText?: string,
 ): Promise<AssertionResult> {
-  return poll("hidden", target, opts, async (snap) => {
-    const state = await resolveTargetState(target, snap, opts);
+  return poll("hidden", target, opts, async (source) => {
+    const state = await resolveTargetState(target, source, opts);
     const textOk = expectedText === undefined || containsCI(state.text, expectedText);
     const consideredVisible = state.visible && textOk;
     return {
@@ -351,16 +370,16 @@ export function text(
   expected: string,
   opts: ConditionOpts,
 ): Promise<AssertionResult> {
-  return poll("text", target ?? expected, opts, async (snap) => {
+  return poll("text", target ?? expected, opts, async (source) => {
     // Synthetic/CSS target with a live-DOM primitive → read the element's text directly (the AX
-    // snapshot never surfaces non-interactive containers). Semantic targets + whole-page text
-    // keep the existing snapshot-based behaviour below.
+    // snapshot never surfaces non-interactive containers), with NO snapshot fetch. Semantic targets
+    // + whole-page text keep the existing snapshot-based behaviour below.
     if (
       target !== undefined &&
       opts.driver.elementState &&
       parseTarget(target).kind === "synthetic"
     ) {
-      const state = await resolveTargetState(target, snap, opts);
+      const state = await resolveTargetState(target, source, opts);
       const ok = containsCI(state.text, expected);
       return {
         pass: ok,
@@ -369,6 +388,7 @@ export function text(
           : `element "${target}" does not contain "${expected}"`,
       };
     }
+    const snap = await source();
     let haystack: string;
     let scope: string;
     if (target !== undefined) {
@@ -396,7 +416,8 @@ export function text(
 
 /** `url` — the current page URL matches the pattern (glob or substring; see `urlMatchesPattern`). */
 export function url(pattern: string, opts: ConditionOpts): Promise<AssertionResult> {
-  return poll("url", pattern, opts, (snap) => {
+  return poll("url", pattern, opts, async (source) => {
+    const snap = await source();
     const ok = urlMatchesPattern(snap.url, pattern);
     return {
       pass: ok,
@@ -418,8 +439,8 @@ export function value(
   expected: string,
   opts: ConditionOpts,
 ): Promise<AssertionResult> {
-  return poll("value", target, opts, async (snap) => {
-    const state = await resolveTargetState(target, snap, opts);
+  return poll("value", target, opts, async (source) => {
+    const state = await resolveTargetState(target, source, opts);
     if (state.count === 0) {
       return { pass: false, message: `no element matched "${target}" to read its value` };
     }
@@ -440,8 +461,8 @@ export function value(
  * counted correctly); semantic targets keep counting matching interactive snapshot elements.
  */
 export function count(target: string, n: number, opts: ConditionOpts): Promise<AssertionResult> {
-  return poll("count", target, opts, async (snap) => {
-    const state = await resolveTargetState(target, snap, opts);
+  return poll("count", target, opts, async (source) => {
+    const state = await resolveTargetState(target, source, opts);
     const observed = state.count;
     const ok = observed === n;
     return {

@@ -68,7 +68,7 @@ function buildVisionRuntime(generate: GenerateFn, sink: AiCallSink) {
   return { rt, ai };
 }
 
-const clickStep = (id: string, target: string): Step => ({ id, do: "click", target }) as Step;
+const clickStep = (id: string, target: string): Step => ({ id, do: "click", target });
 
 function ctxFor(driver: MockDriver, ai?: ResolveContext["ai"]): ResolveContext {
   return { driver, ...(ai ? { ai } : {}), now: () => 0 };
@@ -220,6 +220,47 @@ describe("resolveBatchL3 — malformed / partial batch triggers per-target fallb
     expect(purposes).not.toContain("vision:s1"); // s1 never needed a fallback
     // Two screenshots total: 1 batch + 1 fallback single (s2).
     expect(d.callsTo("screenshot")).toHaveLength(2);
+  });
+
+  test("a schema-invalid pick is dropped per-target (its well-formed siblings resolve from the batch)", async () => {
+    const d = twoIconPage();
+    d.setScreenshot("SHOT"); // shared batch shot + one for the s2 fallback single
+    d.enqueueBatchResult(makeSuccessBatch("role:button:Save")); // s1 acts from the batch pick
+    d.enqueueBatchResult(makeSuccessBatch("role:button:Delete")); // s2 acts from the fallback single
+
+    const sink = new RecordingSink();
+    // s1 is a well-formed pick; s2 is OFF-CONTRACT (invalid `decision`). The pre-fix strict schema
+    // would have rejected the WHOLE batch → both fall back; now only s2 is dropped + falls back.
+    const { fn, calls } = makeFakeGenerate([
+      {
+        output: {
+          picks: [
+            { key: "s1", decision: "pick", index: 0, confidence: 0.95 },
+            { key: "s2", decision: "not-a-valid-decision", index: 0 },
+          ],
+        },
+      },
+      { output: { decision: "pick", index: 0, confidence: 0.9 } }, // s2 fallback single
+    ]);
+    const { rt } = buildVisionRuntime(fn, sink);
+
+    const execs = await resolveBatchL3(
+      rt,
+      [clickStep("s1", "save disk icon"), clickStep("s2", "trash icon")],
+      ctxFor(d),
+    );
+
+    expect(execs).toHaveLength(2);
+    expect(execs.every((e) => e.ok && e.tier === "L3")).toBe(true);
+    expect(execs[0]!.pinnedLabel).toBe("Save");
+    expect(execs[1]!.pinnedLabel).toBe("Delete");
+
+    // The bad pick did NOT throw the whole batch: s1 resolved from the batch, only s2 fell back.
+    expect(calls).toHaveLength(2);
+    const purposes = sink.events.map((e) => e.purpose);
+    expect(purposes).toContain("vision-batch:s1,s2"); // the batch call succeeded (lenient envelope)
+    expect(purposes).toContain("vision:s2"); // only s2 needed a per-target fallback
+    expect(purposes).not.toContain("vision:s1"); // s1 never fell back
   });
 
   test("a duplicated key is treated as unanswered and falls back", async () => {

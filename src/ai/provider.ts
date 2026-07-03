@@ -123,21 +123,29 @@ function cachedPromptMessages(prompt: string, prefix: string): ModelMessage[] {
 export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
   return async (req: GenerateRequest) => {
     const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // ONE shared deadline across the WHOLE fallback chain (Fix 2): a single LOGICAL model call —
+    // however many fallbacks it walks — is bounded by `timeoutMs`, so a chain of hung/slow models can
+    // NOT accumulate `num_models × timeoutMs` seconds (the measured ~24s L2-resolver stall walking 4
+    // hung DeepSeek fallbacks at 6s each). A fallback still gets a fair shot from whatever budget
+    // remains; once the deadline fires the remaining attempts reject instantly and the loop exits.
+    // A fail-FAST model (throws immediately, e.g. a rotated id) still falls through to the next model
+    // within budget — the shared signal only bites a genuinely SLOW/HUNG chain.
+    const abortSignal = AbortSignal.timeout(timeoutMs);
     let lastErr: unknown;
     for (const modelId of req.models) {
       try {
         // Build the call with EXACTLY one of `messages` / `prompt` (the SDK `Prompt` is a strict
         // XOR — a spread of an optional union widens it and fails typecheck), so branch here.
-        // `abortSignal: AbortSignal.timeout(timeoutMs)` bounds EACH attempt so a hung provider
-        // call (never throws, never resolves) can't block the fallback loop indefinitely — the
-        // 174s L4 iframe hang this guards against. A timeout aborts THIS attempt only; the `catch`
-        // below treats it like any other failure and moves to the next model in `req.models`.
+        // The shared `abortSignal` bounds the whole logical call so a hung provider call (never
+        // throws, never resolves) can't block indefinitely — the 174s L4 iframe hang this guards
+        // against. A fired timeout aborts the in-flight attempt; the `catch` below treats it like any
+        // other failure and moves to the next model (which then rejects at once on the same signal).
         const common = {
           model: opts.resolveModel(modelId),
           output: Output.object({ schema: req.schema }),
           maxOutputTokens: req.maxOutputTokens,
           providerOptions: { openrouter: { usage: { include: true } } },
-          abortSignal: AbortSignal.timeout(timeoutMs),
+          abortSignal,
         };
         // Three shapes, all a strict XOR in the SDK `Prompt`:
         //   1. multimodal `messages` (vision tiers) — passed through as-is;

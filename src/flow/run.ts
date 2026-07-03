@@ -208,7 +208,7 @@ function flattenFile(
       childSteps[childSteps.length - 1] = {
         ...last,
         assert: [...(last.assert ?? []), ...siteAssert],
-      } as Step;
+      };
     }
     out.push(...childSteps);
   }
