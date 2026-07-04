@@ -31,6 +31,7 @@ import {
   type ResolvedAttachConnectArgs,
 } from "./connect-resolution.ts";
 import { clickStep, pressStep, submitOptions } from "./navigation.ts";
+import { normalizeSelectorArg } from "./normalize-selector.ts";
 import type {
   ActionOpts,
   Driver,
@@ -343,6 +344,7 @@ export class BrowserPilotDriver implements Driver {
    */
   async switchToFrame(selector: string | string[]): Promise<boolean> {
     const page = this.requirePage();
+    selector = normalizeSelectorArg(selector);
     const entered = await page.switchToFrame(selector, { optional: true });
     this.frameSelector = entered ? selector : undefined;
     return entered;
@@ -435,7 +437,7 @@ export class BrowserPilotDriver implements Driver {
    */
   async elementState(selector: string): Promise<ElementState> {
     const page = this.requirePage();
-    return page.elementState(selector);
+    return page.elementState(normalizeSelectorArg(selector));
   }
 
   /**
@@ -449,14 +451,22 @@ export class BrowserPilotDriver implements Driver {
       locateSelectorFrame?(sel: string): Promise<"main" | "iframe" | "none">;
     };
     if (typeof page.locateSelectorFrame !== "function") return "none";
-    return page.locateSelectorFrame(selector);
+    return page.locateSelectorFrame(normalizeSelectorArg(selector));
   }
 
   async batch(steps: Step[], opts?: BatchOptions): Promise<BatchResult> {
     const page = this.requirePage();
     // DRIVER DEFAULT: any navigating step (click/submit/press) that did not set
     // `waitForNavigation` is defaulted to `true` so browser-pilot's `'auto'` never leaks.
-    const settled = steps.map((s) => withNavigationDefault(s));
+    // Also normalize each step's `selector` (strip `css:`, translate role bracket form) so a
+    // batch authored with Flightplan selector conventions reaches browser-pilot in a form it
+    // understands — the same rewrite the single-action methods apply.
+    const settled = steps.map((s) => {
+      const step = withNavigationDefault(s);
+      return step.selector === undefined
+        ? step
+        : { ...step, selector: normalizeSelectorArg(step.selector) };
+    });
     // BOUND THE ACTIONABILITY WAIT (fixes the measured 30s L0/L1 hang): default the batch-level
     // `timeout` to the configured action ceiling (5000) so browser-pilot's ~30s default never
     // applies to the L0 replay / L1 race / any batch. A per-step `Step.timeout` still WINS (bp
@@ -481,6 +491,7 @@ export class BrowserPilotDriver implements Driver {
     // batch-level `timeout` bounds the actionability wait to the action ceiling (5000, not bp's
     // ~30s); `clickStep` still sets a per-step `Step.timeout` from `opts.timeout`, which wins.
     const page = this.requirePage();
+    sel = normalizeSelectorArg(sel);
     const result = await page.batch([clickStep(sel, opts)], { timeout: this.actionTimeoutMs });
     return firstStepSucceeded(result);
   }
@@ -493,7 +504,7 @@ export class BrowserPilotDriver implements Driver {
     if (opts?.optional !== undefined) fillOpts.optional = opts.optional;
     if (opts?.blur !== undefined) fillOpts.blur = opts.blur;
     if (opts?.verify !== undefined) fillOpts.verify = opts.verify;
-    return page.fill(sel, value, fillOpts);
+    return page.fill(normalizeSelectorArg(sel), value, fillOpts);
   }
 
   async type(sel: string | string[], text: string, opts?: TypeOpts): Promise<boolean> {
@@ -504,7 +515,7 @@ export class BrowserPilotDriver implements Driver {
     if (opts?.optional !== undefined) typeOpts.optional = opts.optional;
     if (opts?.blur !== undefined) typeOpts.blur = opts.blur;
     if (opts?.delay !== undefined) typeOpts.delay = opts.delay;
-    return page.type(sel, text, typeOpts);
+    return page.type(normalizeSelectorArg(sel), text, typeOpts);
   }
 
   async select(
@@ -514,17 +525,17 @@ export class BrowserPilotDriver implements Driver {
   ): Promise<boolean> {
     const page = this.requirePage();
     const actionOpts = passThroughActionOpts(opts, this.actionTimeoutMs);
-    return page.select(sel, value, actionOpts);
+    return page.select(normalizeSelectorArg(sel), value, actionOpts);
   }
 
   async check(sel: string | string[], opts?: ActionOpts): Promise<boolean> {
     const page = this.requirePage();
-    return page.check(sel, passThroughActionOpts(opts, this.actionTimeoutMs));
+    return page.check(normalizeSelectorArg(sel), passThroughActionOpts(opts, this.actionTimeoutMs));
   }
 
   async hover(sel: string | string[], opts?: ActionOpts): Promise<boolean> {
     const page = this.requirePage();
-    return page.hover(sel, passThroughActionOpts(opts, this.actionTimeoutMs));
+    return page.hover(normalizeSelectorArg(sel), passThroughActionOpts(opts, this.actionTimeoutMs));
   }
 
   async press(
@@ -552,7 +563,7 @@ export class BrowserPilotDriver implements Driver {
     if (sopts.timeout === undefined) sopts.timeout = this.actionTimeoutMs;
     // browser-pilot's submit signature requires a selector; when none is given, submit the
     // ambient form via the empty-string selector (browser-pilot resolves the active form).
-    const selector = sel ?? "";
+    const selector = sel === undefined ? "" : normalizeSelectorArg(sel);
     return page.submit(selector, sopts);
   }
 

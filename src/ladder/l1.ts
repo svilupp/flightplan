@@ -29,7 +29,7 @@ import type {
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { normalizeTarget } from "../flow/normalize-target.ts";
 import type { Step } from "../flow/types.ts";
-import { buildHandoff, isAmbiguous } from "./fuzzy.ts";
+import { buildHandoff, isAmbiguous, isInTopCluster } from "./fuzzy.ts";
 import { capturePageSignature } from "./page-signature.ts";
 import { snapshotMatchCount } from "./revalidate.ts";
 import {
@@ -220,6 +220,35 @@ function learnFromResult(
 }
 
 // ---------------------------------------------------------------------------
+// Winner correlation (for the ambiguity veto)
+// ---------------------------------------------------------------------------
+
+/**
+ * Correlate the batch WINNER back to a ranked-candidate ref so the ambiguity veto can ask whether the
+ * element we actually clicked is one of the close-scoring contenders (`isInTopCluster`). The fuzzy
+ * `ranked` list scores candidates against the intent text — it says NOTHING about which element won
+ * the batch — so we recover the winner's identity from the selector bp reported it resolved through:
+ *
+ *  - a bare `ref:eN` won → that ref is the derived candidate for the fuzzy target: return `eN`.
+ *  - an AUTHOR HINT selector won → the hint resolved an element the fuzzy ranking never harvested
+ *    (e.g. an AX-`ignored` button reached via `role:button:More actions`): return `undefined`, i.e.
+ *    out-of-cluster — the author already disambiguated, there is nothing to veto.
+ *  - a DERIVED durable selector won (the role_name/label/text rung of the fuzzy target) → the winner
+ *    IS the fuzzy top: return the target's ref.
+ *  - nothing reported (or no target) → indeterminate: fall back to the fuzzy target's ref so the veto
+ *    stays exactly as conservative as before (an ambiguous fuzzy top still escalates).
+ */
+function winningRef(
+  selectorUsed: string | undefined,
+  hintSelectors: ReadonlySet<string>,
+  target: { element: InteractiveElement } | undefined,
+): string | undefined {
+  if (selectorUsed?.startsWith("ref:")) return selectorUsed.slice("ref:".length);
+  if (selectorUsed !== undefined && hintSelectors.has(selectorUsed)) return undefined;
+  return target?.element.ref;
+}
+
+// ---------------------------------------------------------------------------
 // The L1 resolver
 // ---------------------------------------------------------------------------
 
@@ -229,6 +258,8 @@ export interface L1Options {
   minScore?: number;
   /** Ambiguity gap threshold (top vs second). Default 0.1. */
   ambiguityGap?: number;
+  /** Ambiguity score floor: below this, close scores are not "plausible enough" to veto. Default 0.4. */
+  ambiguityFloor?: number;
 }
 
 /**
@@ -372,7 +403,23 @@ export async function resolveL1(
   // element resolves via `testid` (whether from a hint or the derived ladder), unrelated ambiguity
   // in the fuzzy intent-ranked list must not override that exact, DOM-unique match.
   const resolvedViaTestid = learned.strategy === "testid";
-  const ambiguous = !resolvedViaTestid && isAmbiguous(ranked, { gap: opts.ambiguityGap ?? 0.1 });
+  // AMBIGUITY VETO — gated on the WINNER. `isAmbiguous` reasons over the fuzzy INTENT ranking, which
+  // scores OTHER elements and knows nothing about which element the batch actually clicked. Firing it
+  // blindly discarded SUCCESSFUL clicks: when the true target is AX-`ignored` (never in `ranked`) but
+  // an author hint like `role:button:More actions` resolved and clicked it, two UNRELATED candidates
+  // scoring close ("View order status page" ×2 at 0.55/0.51) tripped the veto, and L1 threw the
+  // opened menu away and escalated — higher tiers then misclicked a look-alike. So the veto now fires
+  // only when the element that WON is itself inside the close-scoring top cluster (`isInTopCluster`):
+  // an out-of-cluster winner, or an author-hint hit on an element absent from `ranked`, has nothing
+  // to disambiguate against. A `testid` winner is DOM-unique by construction and bypasses as before.
+  const gap = opts.ambiguityGap ?? 0.1;
+  const floor = opts.ambiguityFloor ?? 0.4;
+  const hintSelectors = new Set(hintCandidates.map((c) => c.selector));
+  const winnerRef = winningRef(stepResult.selectorUsed, hintSelectors, target);
+  const ambiguous =
+    !resolvedViaTestid &&
+    isAmbiguous(ranked, { gap, floor }) &&
+    isInTopCluster(ranked, winnerRef, { gap, floor });
   const succeeded = stepResult.success && stepResult.outcomeStatus !== "ambiguous";
 
   // (6) Decide escalation.

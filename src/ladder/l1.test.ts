@@ -301,6 +301,113 @@ describe("L1 — escalation + L2 handoff", () => {
   });
 });
 
+describe("L1 — ambiguity veto is gated on the WINNING element", () => {
+  // The Shopify Polaris "More actions" trap: the true target is AX-`ignored` so it is NEVER in the
+  // fuzzy ranking; an author hint (`role:button:More actions`) resolves and clicks it. Meanwhile two
+  // UNRELATED "View order status page" links rank close (0.55 / 0.51, gap 0.04 < 0.1). The old veto
+  // fired off those unrelated scores and discarded the successful click; the winner-gated veto must
+  // recognise the winner is out-of-cluster (the hint hit an element absent from `ranked`) and stand.
+  test("(a) winner absent from ranked (author hint hit an AX-ignored target) → no veto, click stands", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "link", name: "View order status page" }),
+          makeInteractiveElement({ ref: "e2", role: "link", name: "View order status page" }),
+        ],
+      }),
+    );
+    // Close, plausible, unrelated — this is what tripped the old blind veto.
+    d.setResolveAll([
+      makeRankedCandidate({ ref: "e1", role: "link", name: "View order status page", score: 0.55 }),
+      makeRankedCandidate({ ref: "e2", role: "link", name: "View order status page", score: 0.51 }),
+    ]);
+    // The author hint won the batch — it resolved an element the ranking never harvested.
+    d.setBatchResult(makeSuccessBatch("role:button:More actions"));
+
+    const r = await resolveL1(
+      clickStep({ target: ["role:button:More actions", "More actions"] }),
+      ctxFor(d),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.escalate).toBe(false);
+    expect(r.strategy).toBe("role_name");
+  });
+
+  test("(b) winner IS the fuzzy top inside the close cluster → veto still fires (escalate)", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "button", name: "Continue" }),
+          makeInteractiveElement({ ref: "e2", role: "button", name: "Continue" }),
+        ],
+      }),
+    );
+    d.setResolveAll([
+      makeRankedCandidate({ ref: "e1", role: "button", name: "Continue", score: 0.9 }),
+      makeRankedCandidate({ ref: "e2", role: "button", name: "Continue", score: 0.88 }),
+    ]);
+    // A DERIVED rung of the fuzzy top (e1) won — the winner IS a close-cluster contender.
+    d.setBatchResult(makeSuccessBatch("role:button:Continue"));
+
+    const r = await resolveL1(clickStep({ target: "Continue" }), ctxFor(d));
+    expect(r.ok).toBe(false);
+    expect(r.escalate).toBe(true);
+    expect(r.error).toContain("ambiguous");
+  });
+
+  test("(b') winner is the fuzzy top via a bare ref inside the close cluster → veto still fires", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "button", name: "Continue" }),
+          makeInteractiveElement({ ref: "e2", role: "button", name: "Continue" }),
+        ],
+      }),
+    );
+    d.setResolveAll([
+      makeRankedCandidate({ ref: "e1", role: "button", name: "Continue", score: 0.9 }),
+      makeRankedCandidate({ ref: "e2", role: "button", name: "Continue", score: 0.88 }),
+    ]);
+    // bp resolved ref-first: the winning ref (e1) is the top-cluster fuzzy target.
+    d.setBatchResult(makeSuccessBatch("ref:e1"));
+
+    const r = await resolveL1(clickStep({ target: "Continue" }), ctxFor(d));
+    expect(r.ok).toBe(false);
+    expect(r.escalate).toBe(true);
+  });
+
+  test("(c) testid winner bypasses the veto even amid a close cluster (unchanged)", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({
+            ref: "e1",
+            role: "button",
+            name: "Continue",
+            attributes: { "data-testid": "continue-primary" },
+          }),
+          makeInteractiveElement({ ref: "e2", role: "button", name: "Continue" }),
+        ],
+      }),
+    );
+    d.setResolveAll([
+      makeRankedCandidate({ ref: "e1", role: "button", name: "Continue", score: 0.9 }),
+      makeRankedCandidate({ ref: "e2", role: "button", name: "Continue", score: 0.88 }),
+    ]);
+    // A testid is DOM-unique by construction → an exact match, never ambiguous.
+    d.setBatchResult(makeSuccessBatch("[data-testid='continue-primary']"));
+
+    const r = await resolveL1(clickStep({ target: "Continue" }), ctxFor(d));
+    expect(r.ok).toBe(true);
+    expect(r.escalate).toBe(false);
+    expect(r.strategy).toBe("testid");
+  });
+});
+
 describe("L1 — fill carries its value into the batch step", () => {
   test("fill step sends value alongside the selector array", async () => {
     const d = new MockDriver();

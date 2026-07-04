@@ -159,3 +159,6 @@ spikes/
 # - flightplan per-flow *.lock files (learned selector recipes) are a
 #   committed source artifact and MUST be version-controlled.
 # (.env above stays ignored because it holds API-key secrets.)
+
+# Private data
+.private/

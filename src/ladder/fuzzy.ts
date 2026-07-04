@@ -70,6 +70,37 @@ export function isAmbiguous(
   return top.score >= floor && second.score >= floor && top.score - second.score < gap;
 }
 
+/**
+ * Whether `ref` names an element inside the CLOSE-SCORING TOP CLUSTER of the ranked list: the top
+ * candidate plus any following candidate that is above the `floor` AND within `gap` of the top
+ * score (the same window `isAmbiguous` reasons about, but as a membership test rather than a pairwise
+ * one). Because `ranked` is sorted best-first the cluster is a prefix, so we scan from the top and
+ * stop at the first candidate that drops below the floor or outside the gap.
+ *
+ * This is the WINNER gate for the L1 ambiguity veto (l1.ts): the fuzzy ranking says nothing about
+ * which element actually got clicked, so the veto must only fire when the element that WON the batch
+ * is itself one of the close-scoring contenders. A winner that is out-of-cluster — or absent from
+ * `ranked` entirely, e.g. an author hint that hit an AX-`ignored` element (`ref` undefined here) —
+ * has nothing to disambiguate against, so this returns `false` and the click stands.
+ */
+export function isInTopCluster(
+  ranked: RankedCandidate[],
+  ref: string | undefined,
+  opts: { gap?: number; floor?: number } = {},
+): boolean {
+  if (ref === undefined) return false;
+  const gap = opts.gap ?? 0.1;
+  const floor = opts.floor ?? 0.4;
+  const top = ranked[0];
+  if (!top) return false;
+  for (const c of ranked) {
+    if (c.score < floor) break;
+    if (top.score - c.score >= gap) break;
+    if (c.ref === ref) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // L2 handoff
 // ---------------------------------------------------------------------------

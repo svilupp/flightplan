@@ -37,6 +37,7 @@ export {
   buildHandoff,
   INTERACTIVE_ROLES,
   isAmbiguous,
+  isInTopCluster,
   isInteractiveRole,
 } from "./fuzzy.ts";
 // --- the tier resolvers ---
