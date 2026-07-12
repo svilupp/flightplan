@@ -7,9 +7,8 @@ Bun + TypeScript + AI SDK v6 + browser-pilot. See `README.md` and `docs/` for th
 
 ## Browser-pilot integration boundary
 
-- Consumer guidance must use a released `browser-pilot` package. The local sibling `file:` dependency
-  and `bun run dev:link-browser-pilot` are Flightplan-development tools only; do not turn this private
-  repository into a publishable package as part of documentation work.
+- Consumer guidance must use a released `browser-pilot` package. Flightplan pins the released
+  `browser-pilot@0.1.0`; do not replace it with a sibling checkout in CI or consumer instructions.
 - The canonical authoring path is `bp record`, `bp record summary` / `bp record inspect`, `bp record
   derive`, manual TOML translation, `flightplan lint`, an unlocked first run for lock learning, then
   `flightplan run <flow> --frozen` for CI or shared replay. See `docs/BROWSER_PILOT_INTEGRATION.md`.

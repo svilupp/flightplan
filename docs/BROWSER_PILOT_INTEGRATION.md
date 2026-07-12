@@ -18,24 +18,7 @@ npm install browser-pilot
 ```
 
 Do not use a `file:` path, a workspace reference, or a sibling checkout in a consumer install.
-The Flightplan checkout is private and currently uses a local browser-pilot dependency for its own
-development. That repository setup is not a Flightplan consumer package contract.
-
-### Flightplan development only: local sibling checkout
-
-Use the sibling checkout and local dependency only when developing Flightplan itself. These commands
-are not part of a consumer installation or deployment workflow:
-
-```sh
-bun install
-bun run dev:link-browser-pilot
-bun run verify:browser-pilot
-bun run verify:browser-pilot:packed
-```
-
-`dev:link-browser-pilot` changes only Flightplan's local `node_modules` entry. The verification
-commands check the linked package and the packed consumer boundary. Do not copy the local
-`file:/Users/jan/Documents/GitHub/browser-pilot` dependency into another project.
+Flightplan itself pins the released `browser-pilot@0.1.0` package.
 
 ## Canonical authoring flow
 

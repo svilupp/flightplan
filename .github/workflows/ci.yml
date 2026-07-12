@@ -27,8 +27,3 @@ jobs:
 
       - name: Run checks
         run: bun run check
-
-      - name: Verify browser-pilot boundary
-        run: |
-          bun run verify:browser-pilot
-          bun run verify:browser-pilot:packed

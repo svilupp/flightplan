@@ -29,16 +29,12 @@ resolve -> veto ambiguity/policy -> validate preconditions -> dispatch once
 
 1. Inspect the target application and fixture contract. Identify hydration delays, repeated controls,
    popups, mutation endpoints, seeded resources, and cleanup behavior.
-2. Verify the browser-pilot dependency before debugging a flow:
+2. Install the locked dependencies before debugging a flow:
 
    ```sh
-   bun run dev:link-browser-pilot
-   bun run verify:browser-pilot
-   bun run verify:browser-pilot:packed
+   bun install
    ```
 
-   If verification reports a stale build, rebuild the linked browser-pilot checkout and verify again.
-   Remove only the inspected stale copied dependency cache; do not delete all `node_modules`.
 3. Write the flow with stable selectors, natural-language anchors, explicit effects, and deterministic
    assertions.
 4. Lint before connecting to Chrome:
@@ -198,7 +194,6 @@ Classify the failure:
 - `uncertain`: poll the postcondition and inspect the ledger; never dispatch again.
 - assertion timeout with a committed ledger entry: fix the assertion scope or timing, not the action.
 - stale-lock rejection: refresh or intentionally quarantine the lock after reviewing the flow diff.
-- stale dependency provenance: rebuild the linked browser-pilot distribution, then rerun verification.
 
 Keep `[config.plan].enabled = false` for deterministic safety proofs. Enable the planner only in a
 separate AI-backed experiment with a bounded `max_replans` and a clear goal.

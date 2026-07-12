@@ -41,7 +41,6 @@ through browser-pilot and Flightplan.
 | Ambiguous candidates after a click | Move resolution and ambiguity veto before dispatch |
 | Broad text assertion passed on the wrong region | Add an exact matcher and a selector or landmark |
 | Popup timeout after a valid click | Declare popup expectation on the trigger; preserve opener metadata and wait for title/URL updates |
-| Flow used stale browser-pilot code | Remove the inspected copied dependency cache, relink source, rebuild `dist`, verify installed and packed APIs |
 | Runtime accepted an old lock | Compare `source_hash` before connecting; use frozen mode for proof |
 | Flow linted but mutation was unsafe | Add `effect = "at_most_once"`, natural-language anchor, and a deterministic postcondition |
 | Assertion timed out after a committed mutation | Fix selector/text scope or readiness; do not make the mutation retryable |
@@ -49,7 +48,7 @@ through browser-pilot and Flightplan.
 ## Proof checklist
 
 1. Reset fixture state.
-2. Verify the Flightplan browser-pilot symlink and build freshness.
+2. Install the released dependencies from the lockfile.
 3. Lint the flow and review `migrate-effects` output.
 4. Run with `--frozen --no-lock-write --json` into a dedicated output directory.
 5. Check `summary.json`, `run.jsonl`, and `trace.jsonl`.

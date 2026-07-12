@@ -23,6 +23,18 @@ at `localhost:9222`, so start Chrome/Chromium with remote debugging enabled firs
 `[config.connect]` block with `mode = "launch"`. Deterministic L0/L1 flows need no API key.
 AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY`.
 
+## Install
+
+Install the public package with Bun or npm:
+
+```sh
+bun add @svilupp/flightplan
+# or
+npm install @svilupp/flightplan
+```
+
+The executable remains `flightplan`.
+
 ## Why the tiered resolver
 
 Flightplan uses deterministic lock replay and DOM resolution first, then pays for AI only when a
@@ -185,20 +197,6 @@ bun run lint
 bun run typecheck
 bun run test
 ```
-
-### Flightplan development only: local browser-pilot checkout
-
-Use the sibling browser-pilot checkout only for Flightplan development. These commands are not
-consumer installation instructions:
-
-```sh
-bun run dev:link-browser-pilot
-bun run verify:browser-pilot
-bun run verify:browser-pilot:packed
-```
-
-If verification reports a stale build, inspect and remove only the stale copied browser-pilot package
-or its generated cache, relink, rebuild browser-pilot, and verify again. Do not delete all dependencies.
 
 Lint and preview effect policy before execution:
 

@@ -46,21 +46,15 @@ Write down:
 If the effect cannot be observed deterministically, stop and add an oracle or fixture contract before
 authoring the flow.
 
-### 2. Establish a fresh driver boundary
+### 2. Install the released driver dependency
 
 From the Flightplan checkout:
 
 ```sh
-bun run dev:link-browser-pilot
-bun run verify:browser-pilot
-bun run verify:browser-pilot:packed
+bun install
 ```
 
-If the installed package is a stale copy, inspect the resolved path and remove only the stale copied
-browser-pilot package or generated cache. Rebuild the linked browser-pilot `dist`, relink, and rerun
-both verification commands. Do not delete all dependencies or silently fall back to a global package.
-
-Record version, source hash, build hash, resolved package path, and worktree state in the run notes.
+Record the resolved package version and lockfile state in the run notes.
 
 ### 3. Discover the application, then express it in Flightplan
 
@@ -195,7 +189,7 @@ a clear goal and explicit cost budget.
 
 - [ ] Final behavior is a Flightplan TOML flow.
 - [ ] Direct browser-pilot usage is limited to discovery or driver diagnosis.
-- [ ] Dependency symlink, source hash, and build freshness are verified.
+- [ ] The released browser-pilot dependency resolves from the lockfile.
 - [ ] Effects, retry policy, anchors, readiness, and exact postconditions are explicit.
 - [ ] Popup expectations are attached before the trigger dispatch.
 - [ ] Frozen/no-lock-write run passes from reset.

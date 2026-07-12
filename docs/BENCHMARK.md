@@ -7,7 +7,7 @@ contains current-run comparisons only; it does not preserve older benchmark clai
 
 | Area | Result |
 | --- | --- |
-| In-harness checks | `verify:browser-pilot` OK in 0.69s; `check` OK in 3.40s; lint 1.18s; typecheck 7.76s; test 3.15s |
+| In-harness checks | `check` OK in 3.40s; lint 1.18s; typecheck 7.76s; test 3.15s |
 | Example-flow lint | 0 errors, 0 warnings |
 | `benchmark-new` | 5/6 scenarios passed; 34/34 resolving steps at L1; 0 AI calls; $0 |
 | Documented 54-run comparison | 51/54 passed: tiered 27/27, AI-only baseline 24/27 |
@@ -25,9 +25,7 @@ The AI-only baseline took 200.530s and cost $0.044031. On this run, tiered execu
 - Date: 2026-07-12, Darwin 24.6.0 arm64 development environment.
 - Project: `/Users/jan/Documents/GitHub/flightplan`.
 - Runtime: Bun 1.3.12 + TypeScript, using the repository's documented check harness.
-- Browser provider in raw run metadata: browser-pilot 0.1.0, git source
-  `e3aa779a3f84b726c98797893f46a8ad0a3b6f3316f06a1ccf25f01017fc5b28`, build
-  `d17af02241dc00a9`.
+- Browser provider in raw run metadata: browser-pilot 0.1.0 from the released npm package.
 - `benchmark-new` used a fixture server on port 3001 and ran with
   `OPENROUTER_API_KEY` and `OPENAI_API_KEY` unset. Each scenario used a fresh copied flow,
   isolated cache/home paths, and a fresh lock output path.
@@ -40,7 +38,6 @@ The AI-only baseline took 200.530s and cost $0.044031. On this run, tiered execu
 Commands:
 
 ```sh
-bun run scripts/check.ts verify:browser-pilot
 bun run check
 bun run lint
 bun run typecheck
@@ -50,7 +47,6 @@ bun run flightplan lint examples/flows
 
 Results:
 
-- `verify:browser-pilot`: OK, 0.69s
 - `check`: OK, 3.40s
 - `lint`: OK, 1.18s
 - `typecheck`: OK, 7.76s

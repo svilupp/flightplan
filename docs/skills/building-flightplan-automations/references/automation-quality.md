@@ -32,9 +32,7 @@ exchange bonuses look alike. Declare popup URL/title/type and verify opener prov
 ## Proof commands
 
 ```sh
-bun run dev:link-browser-pilot
-bun run verify:browser-pilot
-bun run verify:browser-pilot:packed
+bun install
 bun run flightplan lint path/to/flow.toml
 bun run flightplan migrate-effects path/to/flow.toml
 bun run flightplan run path/to/flow.toml --frozen --no-lock-write --json -o /tmp/flightplan-proof
