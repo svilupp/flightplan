@@ -40,5 +40,5 @@ greens = 0
 
 [[targets.strategies]]
 kind = "structural_fingerprint"
-selector = "fingerprint:button|Continue|"
+selector = "fingerprint:role=button;name=Continue"
 greens = 0

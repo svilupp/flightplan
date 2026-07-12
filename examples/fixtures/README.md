@@ -1,8 +1,9 @@
 # Flightplan fixture server
 
 A self-contained, **zero-dependency** Bun HTTP server that serves 9 deterministic HTML
-fixture pages. Each page is purpose-built to exercise one rung of Flightplan's resolution
-ladder, so the learning-test campaign (PLAN.md Phase 6) can measure lock stability
+fixture pages. Each page is purpose-built to exercise one resolution scenario in Flightplan's
+ladder, so the validation campaign (see [`../../docs/plans/P6_RESULTS.md`](../../docs/plans/P6_RESULTS.md))
+can measure lock stability
 reproducibly.
 
 This document is the **contract** the flow-authoring agents rely on: route → target tier →
@@ -40,15 +41,15 @@ It is independent of `src/` and uses only `Bun.serve` (no packages, no network c
 | 02 | async | `/async` | L1 + polling | navigation settling / implicit waits |
 | 03 | rerender | `/rerender` | L1 (+ stale-ref re-resolve) | refs ephemeral; own re-resolution |
 | 04 | overlays | `/overlays` | L1 + auto-repair (covered) | `coveringElement` dismiss-then-retry |
-| 05 | contexts | `/contexts` | L1 | iframe + shadow-DOM scoped a11y traversal |
+| 05 | contexts | `/contexts` | L1 | same-origin frame switching + open shadow-DOM traversal |
 | 06 | gauntlet | `/gauntlet` | **L2** | model disambiguation of identical controls |
 | 07 | drift | `/drift?variant=a\|b\|c` | a:L0/L1 · b:**L1 heal** · c:**L2** | staleness → L1 heal; hard drift → model |
 | 08 | signature | `/signature?variant=same\|changed` | **L0 sig-mismatch → L1** | `match.sig` gate forces re-resolve |
 | 09 | vision | `/vision/icons` | **L3** | vision-only resolution of unlabeled icons |
 
 > Note on variant params: the task spec (and this server) use `?variant=…` for both drift
-> and signature. PLAN.md §6 sketches `/drift/order` and `/signature/page ?layout=grid|list`
-> as illustrative — the **canonical, implemented** routes are the ones in this table.
+> and signature. Earlier design sketches used `/drift/order` and `/signature/page ?layout=grid|list`
+> as illustrative routes — the **canonical, implemented** routes are the ones in this table.
 
 ## Per-fixture contract
 

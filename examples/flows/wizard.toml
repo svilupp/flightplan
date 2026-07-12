@@ -53,7 +53,7 @@ do = "click"
 effect = "at_most_once"
 # The NL entry is the fuzzy-match query (PLAN §7) — it must point squarely at the "Next" button,
 # so we keep it button-name-centric. (A wordy query mentioning "plan" would mis-rank the Plan
-# dropdown over Next on the v0.0.18 AX snapshot.)
+# dropdown over Next on the v0.1.0 AX snapshot.)
 target = ["[data-testid='wizard-next-1']", "the Next button"]
 
 [[steps.assert]]

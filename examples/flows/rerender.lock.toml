@@ -80,5 +80,5 @@ greens = 0
 
 [[targets.strategies]]
 kind = "structural_fingerprint"
-selector = "fingerprint:button|Refresh widget|"
+selector = "fingerprint:role=button;name=Refresh widget"
 greens = 0

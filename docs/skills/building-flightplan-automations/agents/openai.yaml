@@ -1,0 +1,4 @@
+interface:
+  display_name: "Building Flightplan Automations"
+  short_description: "Build and prove safe browser automations"
+  default_prompt: "Use $building-flightplan-automations to build, run, debug, and prove a high-quality browser automation through Flightplan."

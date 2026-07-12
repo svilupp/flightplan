@@ -20,15 +20,19 @@ describe("normalizeSelector", () => {
     expect(normalizeSelector('css:[role="button"]')).toBe('[role="button"]');
   });
 
-  test('translates role:<role>[name="..."] bracket form to role:<role>:<name>', () => {
-    expect(normalizeSelector('role:button[name="More actions"]')).toBe("role:button:More actions");
-    expect(normalizeSelector("role:link[name='GAL-2033']")).toBe("role:link:GAL-2033");
-    expect(normalizeSelector("role:menuitem[name=Duplicate]")).toBe("role:menuitem:Duplicate");
+  test("preserves browser-pilot native role bracket syntax", () => {
+    expect(normalizeSelector('role:button[name="More actions"]')).toBe(
+      'role:button[name="More actions"]',
+    );
+    expect(normalizeSelector("role:link[name='GAL-2033']")).toBe("role:link[name='GAL-2033']");
+    expect(normalizeSelector("role:menuitem[name=Duplicate]")).toBe(
+      "role:menuitem[name=Duplicate]",
+    );
   });
 
-  test("preserves a trailing positional index on a translated role bracket form", () => {
+  test("preserves a native role bracket name plus positional index", () => {
     expect(normalizeSelector('role:button[name="Mark as fulfilled"][2]')).toBe(
-      "role:button:Mark as fulfilled[2]",
+      'role:button[name="Mark as fulfilled"][2]',
     );
   });
 
@@ -57,7 +61,7 @@ describe("normalizeSelectorArg", () => {
   test("normalizes every entry of a fallback list, preserving order and array shape", () => {
     expect(
       normalizeSelectorArg(["css:#duplicate", 'role:button[name="Duplicate"]', "text:Duplicate"]),
-    ).toEqual(["#duplicate", "role:button:Duplicate", "text:Duplicate"]);
+    ).toEqual(["#duplicate", 'role:button[name="Duplicate"]', "text:Duplicate"]);
   });
 
   test("empty string passes through unchanged (ambient-form submit)", () => {

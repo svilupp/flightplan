@@ -205,6 +205,8 @@ export class BrowserPilotDriver implements Driver {
       this.activePage = await this.browser.page(undefined, { targetUrl: cfg.targetUrl });
     } else {
       const before = await this.listPageNames();
+      // Flightplan owns the page it drives; browser-pilot preserves DOM click effects in a
+      // background target without foregrounding the browser window.
       this.activePage = await this.browser.newPage();
       const after = await this.listPageNames();
       const opened = after.filter((n) => !before.includes(n));
@@ -568,9 +570,10 @@ export class BrowserPilotDriver implements Driver {
     const page = this.requirePage();
     // DRIVER DEFAULT: any navigating step (click/submit/press) that did not set
     // `waitForNavigation` is defaulted to `true` so browser-pilot's `'auto'` never leaks.
-    // Also normalize each step's `selector` (strip `css:`, translate role bracket form) so a
+    // Also normalize each step's `selector` (strip Flightplan's `css:` authoring prefix) so a
     // batch authored with Flightplan selector conventions reaches browser-pilot in a form it
-    // understands — the same rewrite the single-action methods apply.
+    // understands — the same rewrite the single-action methods apply. Native role bracket syntax
+    // is preserved because browser-pilot 0.1.0 supports it directly.
     const settled = steps.map((s) => {
       const step = withNavigationDefault(s);
       return step.selector === undefined

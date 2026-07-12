@@ -40,5 +40,5 @@ greens = 0
 
 [[targets.strategies]]
 kind = "structural_fingerprint"
-selector = "fingerprint:button|Create order|"
+selector = "fingerprint:role=button;name=Create order"
 greens = 0

@@ -18,7 +18,7 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
   pre-v002 flow using either now fails lint with `steps/removed-targeting-fields`, which spells out
   the fold into one `target` list. `steps/no-raw-selector` is retired (selectors are now legal
   directly in `target`); `steps/target-needs-nl` and `steps/target-unprefixed-selector` (warnings)
-  take its place. All `examples/flows/*.toml` are migrated to the new form.
+  take its place. All example flows are migrated to the new form.
 - **Compact inline-table step syntax, documented and blessed.** `steps = [{ id = "...", do = "..." ,
   ... }]` was already valid against the schema and is now first-class: use it for simple,
   assert-light steps; keep `[[steps]]` + `[[steps.assert]]` for assert-heavy ones. New lint rule
@@ -143,7 +143,8 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 - **Docs: performance & known-issues.** New `docs/PERFORMANCE.md` (learned strategy portfolio, the
   cheap-first tier model, and a flow-authoring best-practices checklist) and `docs/KNOWN_ISSUES.md`
   (assertions resolving CSS/testid selectors on non-interactive nodes via `elementState`, plus the
-  remaining assertion gaps — no `checked`/`enabled` type, opaque elements needing vision).
+  remaining visual-occlusion gap; deterministic `state` assertions cover enabled/disabled/checked/
+  unchecked/selected predicates).
 
 ### Changed
 

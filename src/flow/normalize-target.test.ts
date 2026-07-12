@@ -22,6 +22,16 @@ describe("classifyLocator", () => {
     expect(classifyLocator("css:button.primary")).toBe("css");
   });
 
+  test("CSS: prefix classifies case-insensitively", () => {
+    expect(classifyLocator("CSS:button.primary")).toBe("css");
+  });
+
+  test("special prefixes remain lowercase-only", () => {
+    expect(classifyLocator("ROLE:button:Next")).toBe("nl");
+    expect(classifyLocator("TEXT:Next")).toBe("nl");
+    expect(classifyLocator("REF:e1")).toBe("nl");
+  });
+
   test("leading [ classifies as css (attribute selector)", () => {
     expect(classifyLocator("[data-testid='x']")).toBe("css");
   });
@@ -82,6 +92,10 @@ describe("normalizeTarget", () => {
     const out = normalizeTarget(["css:button.primary", "the primary button"]);
     expect(out.selectors).toEqual(["button.primary"]);
     expect(out.nl).toBe("the primary button");
+  });
+
+  test("CSS: prefix is stripped case-insensitively", () => {
+    expect(normalizeTarget("CSS:button.primary")).toEqual({ selectors: ["button.primary"] });
   });
 
   test("multiple nl entries are joined as context", () => {

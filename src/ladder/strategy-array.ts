@@ -171,9 +171,9 @@ export function scopedTextSelectorForElement(el: InteractiveElement): string | u
 /**
  * structural_fingerprint selector: a stable structural token derived from role + name, emitted as
  * a `fingerprint:role=…;name=…` token (the `fingerprint:` prefix is recognised by
- * `selectorUsedToStrategy` so the mapping stays stable). It is the lowest-priority rung and the
- * durable-selector token of LAST RESORT for the lock — used only by `durableSelectorForElement`'s
- * fallback, never added to the live batch array (see `buildStrategyArray`).
+ * `selectorUsedToStrategy` so the mapping stays stable). It is the lowest-priority identity rung
+ * and durable-selector token of LAST RESORT for the lock — never added to a live batch array;
+ * L0 maps a resolved fingerprint to the current snapshot's `ref:eN` before replay.
  */
 export function structuralFingerprintForElement(el: InteractiveElement): string {
   const role = el.role ?? "";

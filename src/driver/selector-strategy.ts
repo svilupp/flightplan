@@ -21,7 +21,7 @@
 //   role   : role:Role:Name (special)  |  [role="..."][aria-label="..."] (generated)
 //   label  : [aria-label=...] | [placeholder=...] | [name=...] | label:...
 //   text   : text:...  (browser-pilot's interactive-text special)
-//   struct : fingerprint:... | fp:... | structure:...  (Flightplan structural fingerprint)
+//   struct : fingerprint:... | fp:... | structure:...  (Flightplan identity token; not executable)
 //   ref    : ref:eN  → resolved WITHIN a cycle; ephemeral, NOT a persistable Strategy → null
 //   css    : anything else (#id, .class, tag, attribute combos, descendant paths)
 
@@ -84,7 +84,8 @@ export function selectorUsedToStrategy(selectorUsed: string): Strategy | null {
     return "scoped_text";
   }
 
-  // structural fingerprint (Flightplan-emitted; browser-pilot 0.1.0 supplies native fingerprints).
+  // structural fingerprint (Flightplan-emitted identity token; L0 resolves it to a live ref before
+  // action, because browser-pilot's action selector API does not consume fingerprint tokens).
   if (/^(fingerprint|fp|structure):/i.test(sel)) {
     return "structural_fingerprint";
   }

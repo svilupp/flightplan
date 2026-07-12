@@ -101,14 +101,30 @@ export function parseDurableSelector(selector: string): ParsedSelector | undefin
     return { text: t };
   }
 
-  // structural fingerprint → `fingerprint:role=…;name=…`
+  // Structural fingerprint → `fingerprint:role=…;name=…`. Accept the legacy pipe form used by
+  // committed example locks. Neither form is sent to browser-pilot as an action selector; L0
+  // converts a resolved fingerprint to the current snapshot's `ref:eN`.
   const fp = /^(?:fingerprint|fp|structure):role=(.*?);name=(.*)$/i.exec(s);
   if (fp) return { fingerprint: { role: fp[1] ?? "", name: fp[2] ?? "" } };
+  const legacyFp = /^(?:fingerprint|fp|structure):([^|]*)\|([^|]*)\|?$/i.exec(s);
+  if (legacyFp) {
+    return { fingerprint: { role: legacyFp[1] ?? "", name: legacyFp[2] ?? "" } };
+  }
 
   // role_name → `role:Role:Name` (or role-only `role:Role`), each optionally with a trailing
   // positional `[N]` (browser-pilot `role:button[2]`, `role:button:"Bold"[2]`).
   if (/^role:/i.test(s)) {
     const { body: rawRest, index } = extractTrailingIndex(s.slice(s.indexOf(":") + 1));
+    const bracket = /^([^[]+)\[\s*name\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]]*?))\s*\]$/i.exec(
+      rawRest,
+    );
+    if (bracket) {
+      return {
+        role: bracket[1]!.trim(),
+        name: (bracket[2] ?? bracket[3] ?? bracket[4] ?? "").trim(),
+        ...(index !== undefined ? { index } : {}),
+      };
+    }
     const sep = rawRest.indexOf(":");
     const withIndex = index !== undefined ? { index } : {};
     if (sep < 0) return { role: rawRest, ...withIndex };

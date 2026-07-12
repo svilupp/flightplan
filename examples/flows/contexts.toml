@@ -70,10 +70,13 @@ target = ["[data-testid='shadow-open-btn']", "the Confirm in shadow button insid
 # The shadow click bubbles a CustomEvent the host surfaces as data-testid="result" = "Shadow confirmed".
 [[steps.assert]]
 type = "visible"
+selector = "[data-testid='result']"
 text = "Shadow confirmed"
 timeout_ms = 4000
 
 [[steps.assert]]
 type = "text"
+selector = "[data-testid='result']"
 text = "Shadow confirmed"
+match = "exact"
 timeout_ms = 4000

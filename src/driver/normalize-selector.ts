@@ -6,43 +6,24 @@
 // defence-in-depth: any selector that reaches an action does so in a form browser-pilot actually
 // understands, regardless of how it was authored or which internal path produced it.
 //
-// Two rewrites, both grounded in verified browser-pilot facts:
+// The one authoring rewrite is grounded in a verified browser-pilot fact:
 //   1. STRIP a leading `css:` prefix. browser-pilot has NO `css:` selector prefix — it is a
 //      Flightplan authoring convention. Passed verbatim, `css:button` becomes an invalid CSS
 //      argument to querySelector and silently "not found" (~200ms). Plain `button` works and
-//      shadow-pierces via deepQuery. The remainder of a `css:` selector is raw CSS, so no further
-//      role translation applies.
-//   2. TRANSLATE the `role:<role>[name="<name>"]` bracket form to browser-pilot's real
-//      `role:<role>:<name>` syntax. browser-pilot's role selector is `role:<role>:<name>` (name =
-//      case-insensitive substring); the bracket form silently mis-parses and never matches. A
-//      trailing positional index (`[2]`) is preserved (browser-pilot supports it).
+//      shadow-pierces via deepQuery. The remainder of a `css:` selector is raw CSS.
+//
+// Role selectors are otherwise passed through unchanged. browser-pilot 0.1.0 natively accepts
+// both `role:button:Save` and `role:button[name="Save"]`, including `[N]` positional suffixes.
 //
 // Idempotent: a selector already in canonical form is returned unchanged.
-
-/**
- * `role:<role>[name="<name>"]` (or `[name='...']` / `[name=...]`), optionally followed by a
- * trailing positional index like `[2]`. Anchored to the whole string so only the true bracket
- * form matches — a plain CSS attribute selector never does.
- */
-const ROLE_BRACKET_NAME =
-  /^role:([a-zA-Z]+)\s*\[\s*name\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]]*?))\s*\]\s*(\[\d+\])?\s*$/;
 
 /** Normalize a single selector string into the form browser-pilot understands. */
 export function normalizeSelector(selector: string): string {
   const s = selector.trim();
 
-  // (1) `css:` escape hatch — strip the prefix; the remainder is raw CSS, nothing more to do.
+  // `css:` escape hatch — strip the prefix; the remainder is raw CSS, nothing more to do.
   if (/^css:/i.test(s)) {
     return s.slice(s.indexOf(":") + 1).trim();
-  }
-
-  // (2) `role:<role>[name="<name>"]` bracket form → `role:<role>:<name>` (keep any positional).
-  const m = ROLE_BRACKET_NAME.exec(s);
-  if (m) {
-    const role = m[1];
-    const name = (m[2] ?? m[3] ?? m[4] ?? "").trim();
-    const positional = m[5] ?? "";
-    return `role:${role}:${name}${positional}`;
   }
 
   return s;

@@ -113,7 +113,7 @@
   <h1>flightplan</h1>
   <div class="sub">Library Specification — a TOML-defined browser-automation flow runner with a self-healing resolution ladder.</div>
   <div class="tags">
-    <span class="tag">Bun</span><span class="tag">TypeScript</span><span class="tag">AI SDK v6</span><span class="tag">browser-pilot</span><span class="tag">~40k LOC</span>
+    <span class="tag">Bun</span><span class="tag">TypeScript</span><span class="tag">AI SDK v6</span><span class="tag">browser-pilot</span><span class="tag">44,939 LOC</span>
   </div>
 </header>
 
@@ -129,7 +129,7 @@
 <ul>
   <li><strong>Dependency inversion, everywhere.</strong> The runner talks to a <code>Driver</code> interface, not to browser-pilot. The ladder talks to <code>ctx.ai?</code> hooks, not to the AI SDK. Assertions call an injected <code>aiJudge</code> seam. browser-pilot and the AI SDK each live behind exactly one file (<span class="fileref">src/driver/browser-pilot-driver.ts:12</span> and <span class="fileref">src/ai/provider.ts</span>). This makes the whole system testable against <code>MockDriver</code> and a fake <code>GenerateFn</code> — no Chrome, no network.</li>
   <li><strong>"Steps self-heal; assertions validate."</strong> The ladder is allowed to adapt, re-resolve, and rewrite the lock file to keep a step working. The assertion engine only <em>reports</em> — it never heals, never re-resolves, and never touches the lock. Correctness and adaptivity are kept in separate lanes.</li>
-  <li><strong>AI-less runs are deterministic.</strong> Without <code>OPENROUTER_API_KEY</code>, no AI runtime is built and the run is byte-identical to the deterministic baseline (L0/L1 only). The example flows are designed to resolve at L0/L1 and need no key.</li>
+  <li><strong>AI-less runs have no AI runtime.</strong> Deterministic-only flows can run at L0/L1 without <code>OPENROUTER_API_KEY</code>; AI calls are unavailable without a key, so flows that require L2/L3/L4 or <code>ai_judge</code> cannot complete.</li>
   <li><strong>Types derive from zod.</strong> Schemas are the source of truth; TypeScript types are <code>z.infer</code> of them.</li>
 </ul>
 </section>
@@ -137,7 +137,7 @@
 <!-- 2 -->
 <section id="structure">
 <h2>2. Repository &amp; code structure</h2>
-<p>Roughly 40k LOC under <code>src/</code>, organized into 15 subsystems. <span class="fileref">src/index.ts</span> is the library barrel; <span class="fileref">src/types.ts</span> (187 LOC) holds cross-cutting primitive unions (zod-free const arrays) and the <code>AdvisoryVerdict</code> union.</p>
+<p>44,939 LOC under <code>src/</code>, organized into 15 subsystems. <span class="fileref">src/index.ts</span> is the library barrel; <span class="fileref">src/types.ts</span> (187 LOC) holds cross-cutting primitive unions (zod-free const arrays) and the <code>AdvisoryVerdict</code> union.</p>
 
 <div class="tablewrap">
 <table>
@@ -166,9 +166,9 @@
 
 <h3>docs/ and examples/</h3>
 <ul>
-  <li><strong>docs/</strong>: plans <code>PLAN_v001..003</code> (v003 introduces adaptive resolution + the L5 planner), <code>P6_*</code> metrics harness, <code>research/</code>, <code>RUNNING.md</code>.</li>
+  <li><strong>docs/</strong>: plans <code>PLAN_v001..003</code> (v003 introduces adaptive resolution + the L5 planner), <code>P6_*</code> metrics harness, <code>research/</code>, <code>plans/RUNNING.md</code>.</li>
   <li><strong>examples/fixtures/server.ts</strong>: a zero-dependency Bun HTTP server on <code>:3000</code> serving 9 deterministic HTML pages (<code>GET /healthz</code> → 200).</li>
-  <li><strong>examples/flows/*.toml</strong>: 9 flows mapped 1:1 to the fixture pages — <code>wizard</code>, <code>async</code>, <code>rerender</code>, <code>overlays</code>, <code>contexts</code> (L0/L1), <code>gauntlet</code> (L2), <code>drift</code> (L0/L1-heal/L2 by variant), <code>signature</code> (L0 sig-mismatch → L1), <code>vision</code> (L3, icon-only). Each ships a committed <code>*.lock.toml</code> sidecar.</li>
+  <li><strong>examples/flows/</strong>: 9 flows mapped 1:1 to the fixture pages — <code>wizard</code>, <code>async</code>, <code>rerender</code>, <code>overlays</code>, <code>contexts</code> (L0/L1), <code>gauntlet</code> (L2), <code>drift</code> (L0/L1-heal/L3 by variant), <code>signature</code> (L0 sig-mismatch → L1), <code>vision</code> (L3, icon-only). Each flow ships with a committed lock sidecar.</li>
   <li><strong>spikes/</strong> is a gitignored throwaway sub-package excluded from the harness.</li>
 </ul>
 </section>
@@ -247,14 +247,15 @@
 <p>One snapshot, a pre-action signature basis, ranking via <code>driver.resolveAll(intent, {snapshot, action, minConfidence:0})</code>. The ordered strategy array is author hints + the ladder (<code>buildStrategyArray</code>), acted on via <code>driver.batch</code>; the winner and a durable (non-<code>ref:eN</code>) selector are learned from <code>selectorUsed</code>. Iframe guard <span class="fileref">:318</span>: a plain-CSS hint matching 0 elements is probed via <code>locateSelectorFrame</code>; if iframe-bound it fails hard with <code>escalate:false</code>. Escalation requires <code>succeeded &amp;&amp; !ambiguous</code>; ambiguity uses <code>isAmbiguous(ranked,{gap:0.1})</code> unless the winner is a testid. Minimum score 0.4.</p>
 
 <h4>Strategy ladder</h4>
+<p>After <code>switch_frame</code> enters a same-origin iframe, the current frame is allowed and subsequent in-frame targets resolve successfully. A direct target inside an unentered same-origin iframe still fails fast through the L1 iframe guard instead of acting on a look-alike parent.</p>
 <p><code>strategy-array.ts:243</code>: <code>ref:eN</code> (this-cycle only) → <code>testid</code> → <code>role_name</code> (<code>role:Role:Name</code> / <code>role:Role[N]</code>) → <code>label</code> → <code>scoped_text</code> (interactive-role only). <code>structural_fingerprint</code> is a durable last resort and is never a live batch entry. The <code>[resolve] attributes</code> hook rides the testid tier.</p>
 
 <h3>L5 path-repair planner</h3>
 <div class="callout warn">
 <span class="label">Documentation discrepancy</span>
-The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authoritative: <span class="fileref">src/config/resolve.ts</span> sets the default to disabled, <span class="fileref">src/config/schema.ts</span> defaults <code>[plan] enabled</code> to <code>false</code>, and <span class="fileref">README.md</span>, <span class="fileref">docs/KNOWN_ISSUES.md</span>, and <span class="fileref">docs/PERFORMANCE.md</span> agree. The planner must be turned on with <code>[plan] enabled = true</code> (which additionally requires an AI runtime, i.e. <code>OPENROUTER_API_KEY</code>).
+The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authoritative: <span class="fileref">src/config/resolve.ts</span> sets the default to disabled, <span class="fileref">src/config/schema.ts</span> defaults the internal <code>plan.enabled</code> to <code>false</code>, and <span class="fileref">README.md</span>, <span class="fileref">docs/KNOWN_ISSUES.md</span>, and <span class="fileref">docs/PERFORMANCE.md</span> agree. In a flow file, turn it on with <code>[config.plan] enabled = true</code> (which additionally requires an AI runtime, i.e. <code>OPENROUTER_API_KEY</code>).
 </div>
-<p>When enabled, the planner (<span class="fileref">src/ai/planner-l5.ts</span>, glued through <span class="fileref">src/runner/path-repair.ts</span>) proposes synthetic repair steps. Triggers: path divergence (<code>maybeRepairPath</code> <span class="fileref">runner.ts:1206</span>) and an L4 <code>intent_changed</code> verdict <span class="fileref">:1148</span>. <code>runPathRepair</code> <span class="fileref">:181</span> allows ≤3 attempts, escalating from a cheap <code>planRepair</code> to <code>planRepairEscalated</code> when confidence ≤0.5 or attempt ≥2. Proposed steps are validated against <code>StepSchema</code>, given ids <code>&lt;id&gt;:repair:&lt;a&gt;.&lt;i&gt;</code>, spliced in after the cursor, counted against <code>max_steps</code>, and <strong>refused</strong> for lock write-back. Prompt caching is mandatory (uncached ~3.85× cost): a stable prefix (goal + vocabulary) plus a volatile suffix (page + recent actions, bounded to 8). Any failure degrades to "no repair".</p>
+<p>When enabled, the planner (<span class="fileref">src/ai/planner-l5.ts</span>, glued through <span class="fileref">src/runner/path-repair.ts</span>) proposes synthetic repair steps. Triggers: path divergence (<code>maybeRepairPath</code> <span class="fileref">runner.ts:1206</span>) and an L4 <code>intent_changed</code> verdict <span class="fileref">:1148</span>. <code>runPathRepair</code> <span class="fileref">:181</span> allows ≤3 attempts, escalating from a cheap <code>planRepair</code> to <code>planRepairEscalated</code> when confidence ≤0.5 or attempt ≥2. Proposed steps are validated against <code>StepSchema</code>, given ids <code>&lt;id&gt;:repair:&lt;a&gt;.&lt;i&gt;</code>, spliced in after the cursor, counted against <code>max_steps</code>, and <strong>refused</strong> for lock write-back. Prompt caching is mandatory (uncached ~3.85× cost): a stable prefix (goal + vocabulary) plus a volatile suffix (page + recent actions, bounded to 8). The uncached incremental-planning probe measured 2.51× full-plan cost and 4.35× full-plan tokens. Any failure degrades to "no repair".</p>
 </section>
 
 <!-- 5 -->
@@ -273,7 +274,7 @@ The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authori
 <tr><td><code>description</code></td><td>string</td><td>yes</td><td></td></tr>
 <tr><td><code>goal</code></td><td>string</td><td>no</td><td>Durable "what" for the L5 planner; defaults to <code>description</code>.</td></tr>
 <tr><td><code>imports</code></td><td>string | string[]</td><td>no</td><td>Registers flow ids for composition.</td></tr>
-<tr><td><code>setup</code> / <code>teardown</code></td><td>Step[]</td><td>no</td><td>Run before / after the main steps.</td></tr>
+<tr><td><code>setup</code> / <code>teardown</code></td><td>flow path string</td><td>no</td><td>Reference a flow to run before / after the main steps.</td></tr>
 <tr><td><code>config</code></td><td>ConfigSchema</td><td>no</td><td>Entry-flow config layer.</td></tr>
 <tr><td><code>inputs</code></td><td>Record&lt;string,string&gt;</td><td>no</td><td>Templatable inputs.</td></tr>
 <tr><td><code>run</code></td><td>RunLimitsSchema</td><td>no</td><td>Budgets / limits.</td></tr>
@@ -306,25 +307,28 @@ The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authori
 <p>A <code>target</code> is either a bare natural-language query (prose → resolved by the ladder) or a prefixed selector. The whitelist of prefixes is <code>ref:</code>, <code>role:</code>, <code>text:</code>, <code>css:</code>, or a leading <code>[</code> (<span class="fileref">src/flow/normalize-target.ts:20–73</span>). A <code>target</code> may be an array: earlier entries are author hints, later entries fallbacks. Example (<code>wizard.toml</code>):</p>
 <pre><code>[[steps]]
 id = "name"
-fill = true
+do = "fill"
 target = ["[data-testid='wizard-name']", "the full name field"]
 value = "${inputs.full_name}"</code></pre>
+<p><code>css:</code> is a Flightplan authoring prefix and is stripped at the driver boundary. Browser-pilot 0.1.0 accepts both <code>role:button:Next</code> and <code>role:button[name="Next"]</code>. <code>fingerprint:</code>/<code>fp:</code>/<code>structure:</code> are internal lock identity tokens, not executable target selectors; <code>label:</code> is not part of the target contract.</p>
 <p>Pure prose targets route straight to vision when hinted, e.g. <code>vision.toml</code>:</p>
 <pre><code>target = "the trash-can / delete icon in the toolbar to delete the item"
 tier_hint = "vision"</code></pre>
 
 <h3>Assertions</h3>
-<p><code>AssertionSchema</code> <span class="fileref">schema.ts:102</span>; 7 types. Common fields (<span class="fileref">:19</span>): <code>when</code> (<code>"before"|"after"</code>, default <code>after</code>), <code>timeout_ms</code>. Deterministic types poll until pass or timeout.</p>
+<p><code>AssertionSchema</code> <span class="fileref">src/flow/schema.ts:145</span>; 9 types: 8 deterministic types plus <code>ai_judge</code>. Common fields (<span class="fileref">:30</span>) are <code>when</code> (<code>"before"|"after"</code>, default <code>after</code>), <code>purpose</code> (<code>"precondition"|"postcondition"</code>), and <code>timeout_ms</code>. Deterministic types poll until pass or timeout.</p>
 <div class="tablewrap">
 <table>
 <thead><tr><th>Type</th><th>Fields</th><th>Notes</th></tr></thead>
 <tbody>
 <tr><td><code>visible</code></td><td><code>text?</code>, <code>selector?</code></td><td>Element present &amp; visible.</td></tr>
 <tr><td><code>hidden</code></td><td><code>text?</code>, <code>selector?</code></td><td>Element absent / not visible.</td></tr>
-<tr><td><code>text</code></td><td><code>text</code> (req), <code>selector?</code></td><td>Text content match.</td></tr>
-<tr><td><code>url</code></td><td><code>url</code> (req)</td><td>Glob / substring match.</td></tr>
+<tr><td><code>text</code></td><td><code>text</code> (req), <code>selector?</code>, <code>match?</code>, <code>landmark?</code></td><td>Text content match.</td></tr>
+<tr><td><code>url</code></td><td><code>url</code> (req), <code>match?</code></td><td>Exact, origin/path, glob, or contains match.</td></tr>
 <tr><td><code>value</code></td><td><code>value</code> (req), <code>selector?</code></td><td>Input value match.</td></tr>
 <tr><td><code>count</code></td><td><code>count</code> (req, nonneg), <code>selector?</code></td><td>Element count.</td></tr>
+<tr><td><code>state</code></td><td><code>state</code> (req), <code>selector</code> (req for element states), <code>value?</code></td><td>Element states support <code>enabled</code>, <code>disabled</code>, <code>checked</code>, <code>unchecked</code>, and <code>selected</code>; page states (<code>dialog</code>, <code>menu</code>, <code>new_page</code>) omit the selector. The schema's <code>count</code> field is not used by the runtime.</td></tr>
+<tr><td><code>transition</code></td><td><code>kind</code> (req), <code>selector?</code>, <code>from?</code>, <code>capture?</code></td><td>Before/after URL, text, value, or state transition.</td></tr>
 <tr><td><code>ai_judge</code></td><td><code>prompt</code> (req), <code>inputs?</code> (min 1 of source/text/screenshot)</td><td>No threshold; a screenshot input routes to the vision model. Fail-safe closed.</td></tr>
 </tbody>
 </table>
@@ -348,18 +352,18 @@ count    = 5</code></pre>
 <!-- 6 -->
 <section id="config">
 <h2>6. Config specification</h2>
-<p><code>ConfigSchema</code> <span class="fileref">src/config/schema.ts:324</span> (all sections <code>.strict()</code>); defaults in <span class="fileref">src/config/resolve.ts</span>.</p>
+<p><code>ConfigSchema</code> <span class="fileref">src/config/schema.ts:324</span> (all sections <code>.strict()</code>); defaults in <span class="fileref">src/config/resolve.ts</span>. In a flow file, these sections are nested under <code>[config]</code> (for example, <code>[config.plan]</code>); a standalone config file uses the section names shown below.</p>
 
 <div class="tablewrap">
 <table>
 <thead><tr><th>Section</th><th>Key fields (defaults)</th></tr></thead>
 <tbody>
-<tr><td><code>[browser]</code></td><td><code>provider</code> "browser-pilot", <code>version</code>, <code>reuse_window</code> true, <code>record</code> false, <code>dialog</code> "dismiss"|"accept" (default dismiss). <span class="fileref">:66</span></td></tr>
-<tr><td><code>[connect]</code></td><td>Union on <code>mode</code>: <strong>attach</strong> (<code>wsUrl?</code>, <code>browserURL?</code>, <code>autodiscover?</code>, <code>targetUrl?</code>, <code>sessionName?</code>) or <strong>launch</strong> (<code>headless</code> true, <code>channel?</code>, <code>userDataDir?</code>, <code>chromeFlags?</code>). Replaced wholesale. Default: attach CDP <code>localhost:9222</code>. <span class="fileref">:121</span></td></tr>
+<tr><td><code>[browser]</code></td><td><code>provider</code> "browser-pilot", <code>version</code>, <code>reuse_window?</code> (schema-accepted but ignored by runtime), <code>record</code> false, <code>dialog</code> "dismiss"|"accept"|"fail"|"prompt"|"manual" (default dismiss). <code>accept</code>/<code>dismiss</code> auto-answer native dialogs; the other policies record a failure and dismiss the dialog. Tab selection is controlled by <code>[connect] targetUrl</code>, not <code>reuse_window</code>. <span class="fileref">src/config/schema.ts:66</span></td></tr>
+<tr><td><code>[connect]</code></td><td>Union on <code>mode</code>: <strong>attach</strong> (<code>wsUrl?</code>, <code>browserURL?</code>, <code>autodiscover?</code>, <code>targetUrl?</code>, <code>sessionName?</code>) or <strong>launch</strong> (<code>headless?</code>, default <code>true</code>; <code>headless = false</code> is supported, <code>channel?</code>, <code>userDataDir?</code>, <code>chromeFlags?</code>). Replaced wholesale. Default: attach CDP <code>localhost:9222</code>. <span class="fileref">:121</span></td></tr>
 <tr><td><code>[ai]</code></td><td><code>provider</code> "openrouter", <code>api_key_env</code> "OPENROUTER_API_KEY", <code>max_model_calls</code>, <code>max_screenshots</code>, <code>models</code>. <span class="fileref">:51</span></td></tr>
 <tr><td><code>[ai.models.*]</code></td><td>For <code>resolver</code>, <code>advisor</code>, <code>vision</code>, <code>planner</code>, <code>planner_capable</code>: <code>{model, fallbacks?[], pricing?{in,out}}</code>. <span class="fileref">:16</span></td></tr>
 <tr><td><code>[run]</code></td><td><code>max_steps</code>, <code>max_model_calls</code>, <code>max_screenshots</code>, <code>max_cost_usd</code>, <code>max_replans</code>, <code>assertions</code> eager|deferred (default eager), <code>fail_on_assertion</code> (default true), <code>assert_timeout_ms</code> (default 5000). Replaced wholesale. <span class="fileref">:130</span></td></tr>
-<tr><td><code>[assertions]</code></td><td>Alternate spelling, normalized into <code>[run]</code>. <span class="fileref">:153</span></td></tr>
+<tr><td><code>[assertions]</code></td><td>Schema-accepted compatibility shape (<code>mode</code>, <code>fail_on_failure</code>, <code>assert_timeout_ms</code>), but not normalized into <code>[run]</code> by the current resolver. Use <code>[run]</code> for effective assertion policy. <span class="fileref">src/config/schema.ts:153</span></td></tr>
 <tr><td><code>[telemetry.logfire]</code></td><td><code>enabled</code> "auto"|bool, <code>token_env</code>, <code>service_name</code>. <span class="fileref">:165</span></td></tr>
 <tr><td><code>[redaction]</code></td><td><code>mask_text</code> true, <code>redact_media</code> true. <span class="fileref">:184</span></td></tr>
 <tr><td><code>[artifacts]</code></td><td><code>collocate</code> true, <code>out_dir</code>, <code>lock_path</code>. <span class="fileref">:195</span></td></tr>
@@ -372,13 +376,13 @@ count    = 5</code></pre>
 </div>
 
 <h3>Merge order</h3>
-<p><code>mergeConfigLayer</code> <span class="fileref">resolve.ts:165</span>: <strong>built-in → global → imported → top-level flow → CLI</strong>. <code>ai.models</code>, scalars, <code>browser</code>, <code>telemetry</code>, <code>artifacts</code>, <code>redaction</code> merge key-by-key; <code>run</code>, <code>connect</code>, and arrays are replaced wholesale.</p>
+<p>The current CLI resolves <strong>built-in defaults → entry flow <code>[config]</code> → entry flow <code>[run]</code></strong> (<span class="fileref">src/cli/index.ts:359–370</span>). Imported flow config is ignored, and the CLI does not currently load a global config layer or add config-valued CLI overrides. Within <code>mergeConfigLayer</code> (<span class="fileref">src/config/resolve.ts:165</span>), <code>ai.models</code>, scalars, <code>browser</code>, <code>telemetry</code>, <code>artifacts</code>, and <code>redaction</code> merge key-by-key; <code>run</code>, <code>connect</code>, and arrays are replaced wholesale.</p>
 
 <h3>Environment variables</h3>
 <ul>
-  <li><code>OPENROUTER_API_KEY</code> — required for AI tiers and <code>ai_judge</code> / <code>ai_pick</code>. Override the env-var name via <code>[ai] api_key_env</code>.</li>
+  <li><code>OPENROUTER_API_KEY</code> — required when an AI tier or AI-backed step/assertion is invoked, including an <code>ai_pick</code> escalation or <code>ai_judge</code>. Deterministic L0/L1 runs and warm L0 lock replay can be keyless. Override the env-var name via <code>[ai] api_key_env</code>.</li>
   <li><code>LOGFIRE_TOKEN</code> — optional; telemetry defaults to on iff the token is present.</li>
-  <li>Example flows run L0/L1 and need no key.</li>
+  <li><code>wizard</code>, <code>async</code>, <code>rerender</code>, <code>overlays</code>, and <code>contexts</code> are deterministic-only examples and need no key. <code>gauntlet</code> requires L2; <code>vision</code> requires L3; <code>drift</code> and <code>signature</code> include <code>ai_judge</code> assertions and therefore require an AI runtime even though their default target paths are deterministic.</li>
 </ul>
 
 <h3>CLI commands &amp; flags</h3>
@@ -458,7 +462,7 @@ count    = 5</code></pre>
 <p>A step verb (not an assertion). It picks one element from a set given intent, then pins the choice into the lock (<code>pinned_choice</code>) so subsequent warm runs replay at L0 with zero AI.</p>
 
 <h3>Vision batching</h3>
-<p><code>resolveBatchL3</code> <span class="fileref">src/ai/vision-l3.ts:300</span> + orchestrator <code>resolveVisionBatch</code> <span class="fileref">orchestrator.ts:231</span>: ≥2 same-page hinted steps collapse into 1 screenshot + 1 keyed call (~79.5% cheaper, ~74.7% faster). The response envelope is lenient (<code>{picks:[unknown]}</code>) with per-pick re-validation (<code>indexByKey</code> <span class="fileref">:385</span>); a malformed pick falls back to its own single L3 call. A step carrying its own <code>assert</code> or <code>on_fail</code> is not batched.</p>
+<p><code>resolveBatchL3</code> <span class="fileref">src/ai/vision-l3.ts:300</span> + orchestrator <code>resolveVisionBatch</code> <span class="fileref">orchestrator.ts:231</span>: ≥2 same-page hinted steps collapse into 1 screenshot + 1 keyed call. The benchmark's 8-icon batch matched 8/8 in 2.77s versus 11.96s for eight single calls, 76.8% faster. The response envelope is lenient (<code>{picks:[unknown]}</code>) with per-pick re-validation (<code>indexByKey</code> <span class="fileref">:385</span>); a malformed pick falls back to its own single L3 call. A step carrying its own <code>assert</code> or <code>on_fail</code> is not batched.</p>
 
 <h3>Prompts-by-index design</h3>
 <p>L2/L3 packets number candidates by index and present role + name + score + ancestor context — <strong>never raw selectors</strong>. The model returns an index (or <code>screenshot_needed</code> / <code>give_up</code>), which the ladder maps back to a concrete element. This keeps the model out of the business of inventing selectors and makes every AI decision re-validatable against the live snapshot.</p>
@@ -469,7 +473,7 @@ count    = 5</code></pre>
 <h2>9. Drift detection &amp; page signatures</h2>
 
 <h3>Portfolio race</h3>
-<p><code>racePortfolio</code> (<span class="fileref">src/lock/revalidate.ts:286</span>) resolves each durable selector and runs an identity check over one snapshot. Outcomes: <strong>Agreement</strong> (≥2 strategies hit the same element), <strong>Single</strong>, <strong>Disagreement</strong> (prefer the track-record winner corroborated by role + name), or <strong>None</strong> → miss → fall to L1. The trace records the strategy and agreement ratio (e.g. <code>"3/4"</code>).</p>
+<p><code>racePortfolio</code> (<span class="fileref">src/ladder/revalidate.ts:286</span>) resolves each durable selector and runs an identity check over one snapshot. Outcomes: <strong>Agreement</strong> (≥2 strategies hit the same element), <strong>Single</strong>, <strong>Disagreement</strong> (prefer the track-record winner corroborated by role + name), or <strong>None</strong> → miss → fall to L1. The trace records the strategy and agreement ratio (e.g. <code>"3/4"</code>).</p>
 
 <h3>Page signatures</h3>
 <p><code>capturePageSignature</code> (<span class="fileref">src/ladder/page-signature.ts</span>) builds the composite <code>text:&lt;textSig&gt;;struct:&lt;structSig&gt;</code>. The <em>text</em> signature is a volatile-masked hash (excluding <code>aria-live</code>, <code>data-live</code>, hidden nodes, and <code>[cache] ignore_regions</code>). The <em>struct</em> signature is a role-tree hash. Signature mode (<code>full</code> vs <code>struct-only</code>) is set per-step via <code>cache</code> or globally via <code>[cache] signature</code>.</p>
@@ -547,30 +551,29 @@ Use <code>report --json</code> or <code>ai.jsonl</code> for cost, not <code>summ
 <h2>13. Performance &amp; known issues</h2>
 
 <h3>Benchmark headlines</h3>
-<p>From <span class="fileref">BENCHMARK.md</span>: tiered cost ladder vs a vision-only "standard loop", over 9 flows × 3 trials (27 runs each). WARM (learned locks in place) vs BASELINE:</p>
+<p>Current figures from <span class="fileref">BENCHMARK.md</span>:</p>
 <ul>
-  <li><strong>5.52× faster</strong> wall-clock (48.4s vs 267.2s).</li>
-  <li><strong>4.85× cheaper</strong> ($0.006078 vs $0.029473); <strong>6.13× cheaper per pass</strong>.</li>
-  <li><strong>4.8× fewer AI calls</strong> (10 vs 48); <strong>35× fewer vision calls</strong> (1 vs 35).</li>
-  <li><strong>12.8× faster</strong> step latency p50 (190ms vs 2432ms); <strong>6.2× faster</strong> p95.</li>
-  <li><strong>93.3% of steps resolve free</strong> at L0/L1 vs 0% for the baseline.</li>
-  <li><strong>More reliable</strong>: 24/27 pass vs 19/27; excluding the by-design <code>contexts</code> failure, 24/24 (100%) vs 19/24 (79%).</li>
+  <li>In the documented 54-run comparison, tiered execution passed <strong>27/27</strong> in 104.177s at $0.007702686; the AI-only baseline passed <strong>24/27</strong> in 200.530s at $0.044031.</li>
+  <li>The tiered arm was <strong>1.93× faster</strong> and <strong>5.72× cheaper</strong> than the baseline.</li>
+  <li>The cold <code>flightplan-benchmarks</code> campaign passed 27/54 runs at $0.124307; the warm tiered sweep passed 21/27 at $0.011193.</li>
+  <li>Warm lock reuse reached L0 on <strong>273/279</strong> resolving steps (97.85%), with a 98.92% deterministic share and $0.000533 cost per pass.</li>
+  <li>Both benchmark reports recorded zero drift, and lock stability passed.</li>
 </ul>
-<p>Even COLD (first run, learning from scratch) the ladder beats the baseline ~2.8× cheaper / ~3.3× faster, and that run writes the locks the warm runs consume. The <code>vision</code> flow's cold-L3 → warm-L0 transition is a 28.9× speedup. <code>contexts</code> fails by design (iframe). <code>gauntlet</code> shows no warm benefit — its recipe is not L0-replayable (a known follow-up).</p>
+<p>The separate <code>benchmark-new</code> run passed 5/6 scenarios, kept all 34 resolving steps at L1, made zero AI calls, and cost $0. Its <code>contexts</code> failure was the direct <code>fill_iframe_input</code> target attempted before entering the iframe; the parent-mediated iframe interaction passed. Same-origin iframe targets succeed after <code>switch_frame</code>.</p>
 
 <h3>Known issues</h3>
 <p>From <span class="fileref">docs/KNOWN_ISSUES.md</span>:</p>
 <ul>
-  <li><strong>No <code>checked</code> / <code>enabled</code> assert type.</strong> Assert on a <code>value</code>/<code>text</code> proxy or use <code>ai_judge</code>. (Note: the earlier limitation on selector/CSS asserts against non-interactive nodes is <span class="ok">FIXED</span> — those now resolve via <code>elementState</code>.)</li>
+  <li><strong>State assertions support <code>enabled</code>, <code>disabled</code>, <code>checked</code>, <code>unchecked</code>, and <code>selected</code>.</strong> Selector/CSS asserts against non-interactive nodes resolve via <code>elementState</code>.</li>
   <li><strong>Occluded elements need vision.</strong> An element present in the DOM but visually hidden may still report present via <code>elementState</code>; confirming true perceivability needs an <code>ai_judge</code> vision check.</li>
   <li><strong>The L5 planner is opt-in</strong> (see the callout in §4).</li>
-  <li><strong>Iframes are not pierced</strong> — L1 fails fast on iframe-bound targets.</li>
+  <li><strong>Same-origin iframe targets succeed after <code>switch_frame</code>.</strong> A direct target inside an unentered iframe is not reachable through the top-document snapshot; L1 fails fast instead of acting on a look-alike parent.</li>
   <li><strong>A mid-run crash is exit 2</strong> with no reconnect.</li>
 </ul>
 </section>
 
 <hr>
-<p class="small">Generated from source research over the flightplan repository. File:line references point into <code>src/</code>; verify against the working tree, as line numbers drift with edits. Where README/PERFORMANCE and the code disagree on the L5 planner default, the code and KNOWN_ISSUES.md are authoritative: the planner ships disabled.</p>
+<p class="small">Maintained manually from repository source and research; no generator or template for this file is present in this checkout. File:line references point into <code>src/</code>; verify against the working tree, as line numbers drift with edits. The L5 planner is disabled by default; the code, README.md, docs/KNOWN_ISSUES.md, and docs/PERFORMANCE.md agree.</p>
 </main>
 </div>
 </body>

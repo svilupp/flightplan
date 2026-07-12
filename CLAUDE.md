@@ -5,10 +5,26 @@ as ordered steps with attached assertions; flightplan executes it, self-heals se
 through a layered cost ladder (L0→L4), and validates outcomes with deterministic + AI assertions.
 Bun + TypeScript + AI SDK v6 + browser-pilot. See `README.md` and `docs/` for the full design.
 
+## Browser-pilot integration boundary
+
+- Consumer guidance must use a released `browser-pilot` package. The local sibling `file:` dependency
+  and `bun run dev:link-browser-pilot` are Flightplan-development tools only; do not turn this private
+  repository into a publishable package as part of documentation work.
+- The canonical authoring path is `bp record`, `bp record summary` / `bp record inspect`, `bp record
+  derive`, manual TOML translation, `flightplan lint`, an unlocked first run for lock learning, then
+  `flightplan run <flow> --frozen` for CI or shared replay. See `docs/BROWSER_PILOT_INTEGRATION.md`.
+- Never persist browser-pilot `ref:eN` values. Translate them to a durable Flightplan selector or a
+  concise natural-language intent. Flightplan's `css:` prefix is authoring syntax and is stripped
+  before the selector reaches browser-pilot.
+- A clean L0/L1 path can be keyless. L2-L5, AI-backed `ai_pick`, and `ai_judge` paths need
+  `OPENROUTER_API_KEY`; `--frozen` suppresses lock writes but does not bypass required AI calls.
+- Promote a learned `<flow>.lock.toml` only with the flow after its assertions pass and the lock diff
+  has been reviewed. Frozen replay reports drift and fails without changing the promoted lock.
+
 ## Dev harness — quiet on success
 
-One runner drives every check: `scripts/check.ts`. Success is silence — each leg prints a single
-`<Label>: OK`; on failure it prints `<Label>: FAIL` and the tool's full output, then exits non-zero.
+One runner drives every check: `scripts/check.ts`. A successful run prints one `<Label>: OK` line
+per leg; on failure it prints `<Label>: FAIL` and the tool's full output, then exits non-zero.
 
 ```sh
 bun run check        # all legs: lint + typecheck + test
@@ -59,7 +75,11 @@ zero. Deliberately relaxed rules (don't "fix" them without reason):
 - **Lock files are tracked, intentionally.** `bun.lock` (deps) and per-flow `*.lock.toml` (learned
   selector recipes) are committed source artifacts — never gitignore them.
 - **Run output** lands in `.flightplan-runs/<run-id>/` (gitignored); override with `-o <dir>`.
-- **Example flows** (`examples/flows/*.toml`) resolve deterministically (L0/L1) and need no API key.
-  The AI tiers (L2 resolver / L3 vision / L4 advisor, `ai_judge` / `ai_pick`) require
-  `OPENROUTER_API_KEY` — see `.env.example` and `docs/`.
+- **Deterministic examples** (`wizard`, `async`, `rerender`, `overlays`, `contexts`) resolve at
+  L0/L1 and need no API key. Warm lock replay can also be keyless when it stays at L0. Cold runs
+  that escalate to L2-L5, or `ai_pick`/AI assertion steps that invoke a model, need
+  `OPENROUTER_API_KEY`. **AI-tier examples** (`gauntlet`, `vision`, `drift`, `signature`) invoke
+  AI on their escalation or assertion paths: `gauntlet` uses L2, `vision` uses L3, and
+  `drift`/`signature` include `ai_judge` assertions. The `drift` fixture's `variant=c` also
+  reaches L3. See `.env.example` and `docs/`.
 - **`spikes/`** is a gitignored throwaway sub-package excluded from the harness; don't rely on it.

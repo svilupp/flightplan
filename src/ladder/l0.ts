@@ -182,7 +182,19 @@ export async function resolveL0(
   // Actionability demotion (disabled → back). Rivals were already dropped by the identity gate, so
   // this is a pre-dispatch policy gate. Do not put unsafe fallbacks back into the batch: a failed
   // safe selector must not silently fall through to a disabled/non-discriminating side effect.
-  const { acceptable } = partitionByActionability(plan.ordered, snap.interactiveElements);
+  // Structural fingerprints are Flightplan identity tokens, not browser-pilot action selectors.
+  // Once the snapshot proves which element they identify, replay through its ephemeral ref instead
+  // of letting the token fall through to CSS lookup and fail as an invalid selector.
+  const replaySelectors = plan.ordered
+    .map((selector) => selectorForReplay(selector, snap.interactiveElements))
+    .filter((selector): selector is string => selector !== undefined);
+  if (replaySelectors.length === 0) {
+    return {
+      ...miss("L0 miss: cached target has no browser-actionable selector"),
+      signatureBasis: basis,
+    };
+  }
+  const { acceptable } = partitionByActionability(replaySelectors, snap.interactiveElements);
   if (acceptable.length === 0) {
     return {
       ...miss("L0 miss: cached target has no unique actionable selector — dispatch vetoed"),
@@ -518,4 +530,17 @@ function partitionByActionability(
     else acceptable.push(s);
   }
   return { acceptable, unsafe };
+}
+
+/** Convert Flightplan-only selector tokens into a selector browser-pilot can execute. */
+function selectorForReplay(
+  selector: string,
+  elements: readonly InteractiveElement[],
+): string | undefined {
+  // `label:` is a legacy Flightplan strategy spelling, not a browser-pilot selector. Fail closed
+  // so a stale lock escalates to L1 rather than being parsed as CSS.
+  if (/^label:/i.test(selector)) return undefined;
+  if (!/^(?:fingerprint|fp|structure):/i.test(selector)) return selector;
+  const element = resolveSelectorToElement(selector, elements);
+  return element ? `ref:${element.ref}` : undefined;
 }

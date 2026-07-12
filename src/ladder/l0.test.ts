@@ -108,6 +108,20 @@ describe("L0 — validate + replay", () => {
     expect(driver.callsTo("batch")).toHaveLength(1);
   });
 
+  test("structural fingerprint replay uses the live ref, never the non-actionable token", async () => {
+    const driver = validDriver(makeSuccessBatch("ref:e2"));
+    const recipe: CachedRecipe = {
+      selector: "fingerprint:role=button;name=Create order",
+      strategy: "structural_fingerprint",
+      match: { url_glob: "http://localhost:3000/drift*", sig: matchingSig() },
+    };
+    const r = await resolveL0(step, { driver, now: () => 0, lock: hookFor(recipe) });
+    expect(r.ok).toBe(true);
+    const sent = (driver.callsTo("batch")[0]!.args[0] as BatchStep[])[0]!.selector;
+    expect(sent).toEqual(["ref:e2"]);
+    expect(sent).not.toContain("fingerprint:role=button;name=Create order");
+  });
+
   test("signature mismatch AND selector no longer resolves → clean MISS (no replay)", async () => {
     // A GENUINE drift: the signature changed AND the cached element is gone from the snapshot, so
     // Layer 3 revalidation cannot rescue it → clean miss → L1 (as before Layer 3).

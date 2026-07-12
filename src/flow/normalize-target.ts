@@ -28,7 +28,7 @@ const SELECTOR_PREFIXES = [
 export function classifyLocator(entry: string): LocatorClass {
   const v = entry.trimStart();
   for (const [prefix, cls] of SELECTOR_PREFIXES) {
-    if (v.startsWith(prefix)) return cls;
+    if (prefix === "css:" ? v.toLowerCase().startsWith(prefix) : v.startsWith(prefix)) return cls;
   }
   if (v.startsWith("[")) return "css";
   return "nl";
@@ -58,10 +58,10 @@ export function normalizeTarget(target: string | readonly string[] | undefined):
     const cls = classifyLocator(entry);
     if (cls === "nl") {
       nlParts.push(entry);
-    } else if (entry.startsWith("css:")) {
+    } else if (/^css:/i.test(entry)) {
       // Explicit `css:` escape hatch for bare CSS (e.g. `css:button.primary`) — strip the prefix
       // so the driver sees a plain CSS selector.
-      const stripped = entry.slice("css:".length).trim();
+      const stripped = entry.slice(entry.indexOf(":") + 1).trim();
       if (stripped.length > 0) selectors.push(stripped);
     } else {
       selectors.push(entry);

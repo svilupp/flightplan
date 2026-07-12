@@ -1,6 +1,6 @@
 version = 2
 source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/wizard.toml"
-source_hash = "sha256:2752f636ab6228b830b8f78c82c38138c7016cd791489d11baa2829e88332a5f"
+source_hash = "sha256:c8d4e9234e249eba6ac7d958bd49f750600fe17fbba6453bee6159ec462dcac9"
 description = "Complete the multi-step wizard and assert the welcome result"
 
 [[targets]]

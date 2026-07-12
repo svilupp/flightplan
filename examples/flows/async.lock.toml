@@ -40,5 +40,5 @@ greens = 0
 
 [[targets.strategies]]
 kind = "structural_fingerprint"
-selector = "fingerprint:button|Load data|"
+selector = "fingerprint:role=button;name=Load data"
 greens = 0

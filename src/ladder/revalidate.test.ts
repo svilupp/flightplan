@@ -42,6 +42,15 @@ describe("parseDurableSelector", () => {
     expect(parseDurableSelector("fingerprint:role=button;name=Save")).toEqual({
       fingerprint: { role: "button", name: "Save" },
     });
+    expect(parseDurableSelector("fingerprint:button|Save|")).toEqual({
+      fingerprint: { role: "button", name: "Save" },
+    });
+  });
+  test("native role bracket name → role + name", () => {
+    expect(parseDurableSelector('role:button[name="Save"]')).toEqual({
+      role: "button",
+      name: "Save",
+    });
   });
   test("a bare css / unknown selector → undefined (cannot revalidate on it)", () => {
     expect(parseDurableSelector(".btn.primary")).toBeUndefined();
