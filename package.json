@@ -11,6 +11,9 @@
     "url": "https://github.com/svilupp/flightplan/issues"
   },
   "homepage": "https://github.com/svilupp/flightplan#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "module": "src/index.ts",
   "type": "module",
   "files": [
