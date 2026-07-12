@@ -98,10 +98,10 @@ describe("createRedactor — disabled identity", () => {
 describe("createRedactor — redactInputs", () => {
   test("secret-backing inputs masked wholesale, other inputs PII-scrubbed", () => {
     const r = createRedactor({ maskText: true, secrets: ["pw-value"] });
-    const out = r.redactInputs({ PASSWORD: "pw-value", EMAIL: "a@b.com", NAME: "Jan" });
+    const out = r.redactInputs({ PASSWORD: "pw-value", EMAIL: "a@b.com", NAME: "Test User" });
     expect(out.PASSWORD).toBe(REDACTED);
     expect(out.EMAIL).toBe(REDACTED); // email PII pattern
-    expect(out.NAME).toBe("Jan");
+    expect(out.NAME).toBe("Test User");
   });
 });
 

@@ -1,5 +1,5 @@
 version = 2
-source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/gauntlet.toml"
+source = "examples/flows/gauntlet.toml"
 source_hash = "sha256:a876a3559c0417fc3727dfdad745b5c55080bdf13e1f9d7eadc963b6d1c08961"
 description = "Resolve and save the billing address among identical Save buttons"
 

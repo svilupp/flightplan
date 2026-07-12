@@ -22,8 +22,8 @@ The AI-only baseline took 200.530s and cost $0.044031. On this run, tiered execu
 
 ## Context and environment
 
-- Date: 2026-07-12, Darwin 24.6.0 arm64 development environment.
-- Project: `/Users/jan/Documents/GitHub/flightplan`.
+- Date: 2026-07-12, local development environment.
+- Project: the Flightplan checkout.
 - Runtime: Bun 1.3.12 + TypeScript, using the repository's documented check harness.
 - Browser provider in raw run metadata: browser-pilot 0.1.0 from the released npm package.
 - `benchmark-new` used a fixture server on port 3001 and ran with

@@ -1,5 +1,5 @@
 version = 2
-source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/rerender.toml"
+source = "examples/flows/rerender.toml"
 source_hash = "sha256:f50d20a6cc6eea8fe9c955a46958c77a0b96dd6b20f3c19d7311b914880cdc51"
 description = "Refresh the widget, then confirm on the re-rendered (fresh-ref) node"
 

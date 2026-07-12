@@ -1,5 +1,5 @@
 version = 2
-source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/wizard.toml"
+source = "examples/flows/wizard.toml"
 source_hash = "sha256:c9e5bb77812c181d5c798331552d154d5b5339408deb5a5b1f9cad353c5889a8"
 description = "Complete the multi-step wizard and assert the welcome result"
 

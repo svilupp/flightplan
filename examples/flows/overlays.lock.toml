@@ -1,5 +1,5 @@
 version = 2
-source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/overlays.toml"
+source = "examples/flows/overlays.toml"
 source_hash = "sha256:6f383bea96c3ff6d54fd321d9147ee6af326b4f9d64f60111ac47a43b4eca461"
 description = "Dismiss the cookie overlay and place an order on the overlays fixture"
 

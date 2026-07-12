@@ -157,12 +157,15 @@ parent budget, and `on_fail` targets cannot cross a `run` boundary.
 For local admin fixtures:
 
 ```sh
-cd /Users/jan/Documents/GitHub/browser-pilot-testing
+export BROWSER_PILOT_TESTING_ROOT=/path/to/browser-pilot-testing
+export FLIGHTPLAN_ROOT=/path/to/flightplan
+
+cd "$BROWSER_PILOT_TESTING_ROOT"
 PORT=3000 bun run start
 
-cd /Users/jan/Documents/GitHub/flightplan
+cd "$FLIGHTPLAN_ROOT"
 ALLOW_MUTATIONS=1 bun run flightplan run \
-  /Users/jan/Documents/GitHub/browser-pilot-testing/automations/flightplan/swap-return-approve.toml \
+  "$BROWSER_PILOT_TESTING_ROOT/automations/flightplan/swap-return-approve.toml" \
   --frozen --no-lock-write --json -o /tmp/flightplan-proof
 ```
 

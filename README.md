@@ -222,12 +222,15 @@ development-only local-fixture workflow, not a consumer setup. Start the server,
 lanes, and run the TOMLs through Flightplan:
 
 ```sh
-cd /Users/jan/Documents/GitHub/browser-pilot-testing
+export BROWSER_PILOT_TESTING_ROOT=/path/to/browser-pilot-testing
+export FLIGHTPLAN_ROOT=/path/to/flightplan
+
+cd "$BROWSER_PILOT_TESTING_ROOT"
 PORT=3000 bun run start
 
-cd /Users/jan/Documents/GitHub/flightplan
+cd "$FLIGHTPLAN_ROOT"
 bun run flightplan run \
-  /Users/jan/Documents/GitHub/browser-pilot-testing/automations/flightplan/shopify-duplicate.toml \
+  "$BROWSER_PILOT_TESTING_ROOT/automations/flightplan/shopify-duplicate.toml" \
   --frozen --no-lock-write --json -o /tmp/flightplan-proof
 ```
 
@@ -235,7 +238,7 @@ For seeded local mutations only:
 
 ```sh
 ALLOW_MUTATIONS=1 bun run flightplan run \
-  /Users/jan/Documents/GitHub/browser-pilot-testing/automations/flightplan/swap-return-approve.toml \
+  "$BROWSER_PILOT_TESTING_ROOT/automations/flightplan/swap-return-approve.toml" \
   --frozen --no-lock-write --json -o /tmp/flightplan-proof
 ```
 
