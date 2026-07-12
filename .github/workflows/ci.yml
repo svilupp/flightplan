@@ -22,29 +22,13 @@ jobs:
         with:
           bun-version: latest
 
-      # Flightplan currently exercises the unreleased browser-pilot API. Build the
-      # public sibling repository in CI, then install Flightplan against that build.
-      - name: Check out browser-pilot
-        uses: actions/checkout@v4
-        with:
-          repository: svilupp/browser-pilot
-          path: .ci/browser-pilot
-
-      - name: Build browser-pilot
-        working-directory: .ci/browser-pilot
-        run: |
-          bun install --frozen-lockfile
-          bun run build
-
-      - name: Move browser-pilot outside the workspace
-        run: |
-          mv .ci/browser-pilot "$RUNNER_TEMP/browser-pilot"
-          rm -rf .ci
-
       - name: Install dependencies
-        run: |
-          node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync('package.json', 'utf8')); p.dependencies['browser-pilot'] = 'file:' + process.env.RUNNER_TEMP + '/browser-pilot'; fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\\n');"
-          bun install
+        run: bun install --frozen-lockfile
 
       - name: Run checks
         run: bun run check
+
+      - name: Verify browser-pilot boundary
+        run: |
+          bun run verify:browser-pilot
+          bun run verify:browser-pilot:packed
