@@ -65,6 +65,8 @@ export const ASSERT_TYPES = [
   "url",
   "value",
   "count",
+  "state",
+  "transition",
   "ai_judge",
 ] as const;
 export type AssertType = (typeof ASSERT_TYPES)[number];
@@ -77,6 +79,8 @@ export const DETERMINISTIC_ASSERT_TYPES = [
   "url",
   "value",
   "count",
+  "state",
+  "transition",
 ] as const;
 export type DeterministicAssertType = (typeof DETERMINISTIC_ASSERT_TYPES)[number];
 
@@ -87,6 +91,50 @@ export type DeterministicAssertType = (typeof DETERMINISTIC_ASSERT_TYPES)[number
 /** When an attached assertion runs relative to its step's action. Defaults to 'after'. */
 export const ASSERT_WHENS = ["before", "after"] as const;
 export type AssertWhen = (typeof ASSERT_WHENS)[number];
+
+/** The side-effect contract attached to a flow step. */
+export const EFFECTS = ["observe", "idempotent", "at_most_once"] as const;
+export type Effect = (typeof EFFECTS)[number];
+
+/** Dynamic retry authorization. Failure routing (`on_fail`) remains a separate concern. */
+export const RETRY_POLICIES = ["safe_only", "never"] as const;
+export type RetryPolicy = (typeof RETRY_POLICIES)[number];
+
+/** Assertion intent, used to distinguish preconditions from postcondition rescue evidence. */
+export const ASSERT_PURPOSES = ["precondition", "postcondition"] as const;
+export type AssertPurpose = (typeof ASSERT_PURPOSES)[number];
+
+/** URL comparison modes. The old glob/substring behavior remains the default for compatibility. */
+export const URL_MATCH_MODES = ["exact", "origin_path", "glob", "contains"] as const;
+export type UrlMatchMode = (typeof URL_MATCH_MODES)[number];
+
+/** Text comparison modes. */
+export const TEXT_MATCH_MODES = ["exact", "contains", "regex"] as const;
+export type TextMatchMode = (typeof TEXT_MATCH_MODES)[number];
+
+/** Deterministic element/page state predicates. */
+export const STATE_ASSERTIONS = [
+  "visible",
+  "hidden",
+  "enabled",
+  "disabled",
+  "checked",
+  "unchecked",
+  "selected",
+  "dialog",
+  "menu",
+  "new_page",
+] as const;
+export type StateAssertion = (typeof STATE_ASSERTIONS)[number];
+
+/** Deterministic before/after transition predicates. */
+export const TRANSITION_ASSERTIONS = [
+  "url_changed",
+  "text_changed",
+  "value_changed",
+  "state_changed",
+] as const;
+export type TransitionAssertion = (typeof TRANSITION_ASSERTIONS)[number];
 
 // ---------------------------------------------------------------------------
 // ai_judge input modalities — PLAN.md §4 / PROPOSAL "AI judge"

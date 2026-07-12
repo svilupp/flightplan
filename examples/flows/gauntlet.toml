@@ -36,6 +36,7 @@ text = "Billing address"
 [[steps]]
 id = "save_billing_address"
 do = "click"
+effect = "at_most_once"
 target = "the Save button inside the Billing address panel, not the search filters or the draft message"
 
 [[steps.assert]]
@@ -46,5 +47,6 @@ timeout_ms = 4000
 [[steps.assert]]
 type = "text"
 selector = "[data-testid='result']"
+match = "exact"
 text = "Saved billing address"
 timeout_ms = 4000

@@ -16,6 +16,7 @@
 // wires the AI tiers in by supplying `ctx.ai` — no change to this file's core is needed.
 
 import type { Step } from "../flow/types.ts";
+import { mayHaveDispatched } from "./dispatch.ts";
 import { resolveL0 } from "./l0.ts";
 import { type L1Options, resolveL1 } from "./l1.ts";
 import { attemptRepair, type RepairOptions } from "./repair.ts";
@@ -57,6 +58,15 @@ function attemptOf(exec: StepExecution, durationMs: number): ResolutionAttempt {
   if (exec.selectorUsed !== undefined) a.selectorUsed = exec.selectorUsed;
   if (exec.strategy !== undefined) a.strategy = exec.strategy;
   if (exec.failureReason !== undefined) a.failureReason = exec.failureReason;
+  if (exec.dispatchState !== undefined) a.dispatchState = exec.dispatchState;
+  if (exec.retrySafe !== undefined) a.retrySafe = exec.retrySafe;
+  if (exec.matchedConditions !== undefined) a.matchedConditions = exec.matchedConditions;
+  if (exec.attempts !== undefined) a.attempts = exec.attempts;
+  if (exec.retryDecisionReason !== undefined) a.retryDecisionReason = exec.retryDecisionReason;
+  if (exec.retryReason !== undefined) a.retryReason = exec.retryReason;
+  if (exec.receipt !== undefined) a.receipt = exec.receipt;
+  if (exec.effect !== undefined) a.effect = exec.effect;
+  if (exec.anchor !== undefined) a.anchor = exec.anchor;
   if (exec.error !== undefined) a.note = exec.error;
   return a;
 }
@@ -149,6 +159,9 @@ export async function resolveStep(
   const l0 = await resolveL0(step, ctx, sharedSnapshot);
   attempts.push(attemptOf(l0, now() - t0));
   if (l0.ok) return { execution: l0, attempts };
+  // A failed L0 replay that may have crossed the effect boundary is terminal for this logical
+  // step. Do not hand it to L1/repair/AI, which would turn a transport ambiguity into a replay.
+  if (mayHaveDispatched(l0.dispatchState)) return { execution: l0, attempts };
 
   // CRITICAL: if L0 VALIDATED then REPLAYED and the replay FAILED (`l0.replayed`), the page may
   // have mutated → L1 must take a FRESH snapshot. A clean pre-replay L0 miss did NOT act, so L1
@@ -163,6 +176,7 @@ export async function resolveStep(
   const l1 = await resolveL1(step, ctx, opts.l1 ?? {}, l1Snapshot, l1Basis);
   attempts.push(attemptOf(l1, now() - t0));
   if (l1.ok || !l1.escalate) return { execution: l1, attempts };
+  if (mayHaveDispatched(l1.dispatchState)) return { execution: l1, attempts };
 
   // --- Auto-repair (Unit D — Phase 5): deterministic, pre-model recovery (PLAN §5 / §7) ---
   // On an L1 escalation carrying a structured `failureReason` (covered/disabled/missing), attempt a
@@ -189,6 +203,7 @@ export async function resolveStep(
     const next = await hook(step, prior, ctx);
     attempts.push(attemptOf(next, now() - t0));
     if (next.ok || !next.escalate) return { execution: next, attempts };
+    if (mayHaveDispatched(next.dispatchState)) return { execution: next, attempts };
     prior = next;
   }
 
@@ -252,7 +267,7 @@ export async function resolveVisionBatch(
     const attempts: ResolutionAttempt[] = [attemptOf(l3, dt)];
 
     // L3 escalated → climb to the advisor exactly like `resolveStep`'s tail (if wired).
-    if (!l3.ok && l3.escalate && ctx.ai?.classifyL4) {
+    if (!l3.ok && l3.escalate && !mayHaveDispatched(l3.dispatchState) && ctx.ai?.classifyL4) {
       const t1 = now();
       const l4 = await ctx.ai.classifyL4(step, l3, ctx);
       attempts.push(attemptOf(l4, now() - t1));

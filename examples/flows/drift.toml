@@ -33,6 +33,7 @@ url = "${inputs.base_url}/drift?variant=${inputs.variant}"
 [[steps]]
 id = "create_order"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='create-order']", "the primary create-order call to action"]
 
 [[steps.assert]]
@@ -42,6 +43,7 @@ selector = "[data-testid='result']"
 [[steps.assert]]
 type = "text"
 selector = "[data-testid='result']"
+match = "exact"
 text = "Order created"
 
 [[steps.assert]]

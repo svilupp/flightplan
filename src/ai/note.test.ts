@@ -200,7 +200,8 @@ describe("L2 resolver — note confidence gate (PLAN_v003 §6 v003-4)", () => {
       makeRankedCandidate({ ref: "e2", role: "button", name: "Save draft", score: 0.8 }),
     ]);
     d.setSignature("http://x/save|sig");
-    d.enqueueBatchResult(makeFailureBatch("hidden")); // L1 escalates
+    // L1 now vetoes the close Save/Save draft ranking before dispatch, so only L2 consumes a
+    // scripted browser result.
     d.enqueueBatchResult(makeSuccessBatch("role:button:Save draft")); // L2 acts
 
     const { fn } = makeFakeGenerate([

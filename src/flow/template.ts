@@ -1,4 +1,4 @@
-// Flightplan — templating: ${inputs.*} and ${env.*} substitution.
+// Flightplan — templating: ${inputs.*}, ${env.*}, and runtime ${capture.*} substitution.
 //
 // v0 supports exactly two sources (PROPOSAL "Data flow and templating"):
 //   ${inputs.<name>} — values declared in [inputs] (plus `with` overrides from imports)
@@ -25,12 +25,14 @@ export interface TemplateContext {
   inputs: Record<string, string>;
   /** Defaults to `process.env`. Override for hermetic tests. */
   env?: Record<string, string | undefined>;
+  /** Values captured by earlier runtime steps. */
+  captures?: Record<string, string | undefined>;
 }
 
 /** A single `${...}` reference found in a template string. */
 export interface TemplateRef {
-  /** `'inputs'` or `'env'`. */
-  source: "inputs" | "env";
+  /** `'inputs'`, `'env'`, or runtime `'capture'`. */
+  source: "inputs" | "env" | "capture";
   /** The dotted name after the source, e.g. `base_url` in `${inputs.base_url}`. */
   name: string;
   /** The full matched token, e.g. `${inputs.base_url}`. */
@@ -51,7 +53,7 @@ export function collectRefs(value: string): TemplateRef[] {
   for (const m of value.matchAll(TOKEN_RE)) {
     const source = m[1];
     const name = m[2];
-    if ((source === "inputs" || source === "env") && name !== undefined) {
+    if ((source === "inputs" || source === "env" || source === "capture") && name !== undefined) {
       refs.push({ source, name, raw: m[0] });
     }
   }
@@ -65,6 +67,7 @@ export function collectRefs(value: string): TemplateRef[] {
  */
 export function applyTemplating(value: string, ctx: TemplateContext): string {
   const env = ctx.env ?? process.env;
+  const captures = ctx.captures ?? {};
   return value.replace(TOKEN_RE, (raw, source: string, name: string) => {
     if (source === "inputs") {
       const v = ctx.inputs[name];
@@ -85,10 +88,20 @@ export function applyTemplating(value: string, ctx: TemplateContext): string {
       }
       return v;
     }
+    if (source === "capture") {
+      const v = captures[name];
+      if (v === undefined) {
+        throw new TemplateError(
+          `Runtime capture \`${name}\` referenced by \`${raw}\` is not available yet. ` +
+            `Capture it in an earlier step before using it.`,
+        );
+      }
+      return v;
+    }
     // Unknown source — not a valid v0 template source.
     throw new TemplateError(
       `Unsupported template source \`${source}\` in \`${raw}\`. ` +
-        `v0 supports only \${inputs.*} and \${env.*}.`,
+        `Supported sources are \${inputs.*}, \${env.*}, and runtime \${capture.*}.`,
     );
   });
 }

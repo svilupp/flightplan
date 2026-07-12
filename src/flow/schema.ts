@@ -9,7 +9,18 @@
 
 import { z } from "zod";
 import { ConfigSchema, RunLimitsSchema } from "../config/schema.ts";
-import { AI_JUDGE_INPUTS, ASSERT_WHENS, FILE_KINDS } from "../types.ts";
+import {
+  AI_JUDGE_INPUTS,
+  ASSERT_PURPOSES,
+  ASSERT_WHENS,
+  EFFECTS,
+  FILE_KINDS,
+  RETRY_POLICIES,
+  STATE_ASSERTIONS,
+  TEXT_MATCH_MODES,
+  TRANSITION_ASSERTIONS,
+  URL_MATCH_MODES,
+} from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Assertion — discriminated union on `type` (PLAN.md §4 AssertType).
@@ -18,6 +29,7 @@ import { AI_JUDGE_INPUTS, ASSERT_WHENS, FILE_KINDS } from "../types.ts";
 /** Fields common to every assertion: timing + per-assertion timeout. */
 const assertionCommon = {
   when: z.enum(ASSERT_WHENS).optional(), // default 'after' (applied at use-site)
+  purpose: z.enum(ASSERT_PURPOSES).optional(),
   timeout_ms: z.number().int().positive().optional(),
 } as const;
 
@@ -47,6 +59,9 @@ export const TextAssertionSchema = z
     ...assertionCommon,
     text: z.string(), // text assertion requires the expected text
     selector: z.string().optional(),
+    match: z.enum(TEXT_MATCH_MODES).optional(),
+    /** Optional landmark selector; when supplied it scopes the read independently of `selector`. */
+    landmark: z.string().optional(),
   })
   .strict();
 
@@ -55,6 +70,7 @@ export const UrlAssertionSchema = z
     type: z.literal("url"),
     ...assertionCommon,
     url: z.string(), // url assertion requires the expected URL (glob/substring)
+    match: z.enum(URL_MATCH_MODES).optional(),
   })
   .strict();
 
@@ -73,6 +89,31 @@ export const CountAssertionSchema = z
     ...assertionCommon,
     count: z.number().int().nonnegative(), // expected count
     selector: z.string().optional(),
+  })
+  .strict();
+
+/** Deterministic UI/business state assertion. */
+export const StateAssertionSchema = z
+  .object({
+    type: z.literal("state"),
+    ...assertionCommon,
+    state: z.enum(STATE_ASSERTIONS),
+    selector: z.string().optional(),
+    value: z.string().optional(),
+    count: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+/** Deterministic transition assertion, normally evaluated after an action. */
+export const TransitionAssertionSchema = z
+  .object({
+    type: z.literal("transition"),
+    ...assertionCommon,
+    kind: z.enum(TRANSITION_ASSERTIONS),
+    selector: z.string().optional(),
+    /** A named capture to compare against; omitted means the step's before-state. */
+    from: z.string().optional(),
+    capture: z.string().optional(),
   })
   .strict();
 
@@ -97,6 +138,8 @@ export const DeterministicAssertionSchema = z.discriminatedUnion("type", [
   UrlAssertionSchema,
   ValueAssertionSchema,
   CountAssertionSchema,
+  StateAssertionSchema,
+  TransitionAssertionSchema,
 ]);
 
 export const AssertionSchema = z.discriminatedUnion("type", [
@@ -106,8 +149,32 @@ export const AssertionSchema = z.discriminatedUnion("type", [
   UrlAssertionSchema,
   ValueAssertionSchema,
   CountAssertionSchema,
+  StateAssertionSchema,
+  TransitionAssertionSchema,
   AiJudgeAssertionSchema,
 ]);
+
+/** A value captured from the live page for later templating or transition checks. */
+export const CaptureSchema = z
+  .object({
+    name: z.string().min(1),
+    type: z.enum(["url", "text", "value", "state"]),
+    selector: z.string().optional(),
+    state: z.enum(STATE_ASSERTIONS).optional(),
+  })
+  .strict();
+
+/** Declarative popup/new-page expectation attached to the triggering step. */
+export const PopupExpectationSchema = z
+  .object({
+    opener: z.string().min(1).optional(),
+    url: z.string().min(1).optional(),
+    title: z.string().min(1).optional(),
+    type: z.string().min(1).optional(),
+    target_id: z.string().min(1).optional(),
+    timeout_ms: z.number().int().positive().optional(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Step — discriminated union on `do` (PLAN.md §4 StepDo).
@@ -136,6 +203,26 @@ const stepCommon = {
   timeout_ms: z.number().int().positive().optional(),
   /** Control flow: jump to another step (or retry `self`) instead of failing the run. */
   on_fail: OnFailSchema.optional(),
+  /** Side-effect contract. Omitted is accepted for backwards compatibility and linted. */
+  effect: z.enum(EFFECTS).optional(),
+  /** Optional explicit natural-language anchor; otherwise the target's NL entry is carried. */
+  anchor: z.string().min(1).optional(),
+  /** Dynamic retry authorization, deliberately separate from on_fail routing. */
+  retry: z
+    .object({
+      policy: z.enum(RETRY_POLICIES).optional(),
+      max: z.number().int().nonnegative().optional(),
+    })
+    .strict()
+    .optional(),
+  /** Native dialog behavior for this step; the flow-level browser setting remains the default. */
+  dialog: z.enum(["accept", "dismiss", "fail", "prompt", "manual"]).optional(),
+  /** Values captured after this step's action. A single object is shorthand for a one-item list. */
+  capture: z.union([CaptureSchema, z.array(CaptureSchema)]).optional(),
+  /** New-page expectation aliases are accepted to keep TOML ergonomic across callers. */
+  expect_page: PopupExpectationSchema.optional(),
+  popup: PopupExpectationSchema.optional(),
+  new_page: PopupExpectationSchema.optional(),
 } as const;
 
 /** Fields shared by the locator-targeting actions (click / fill / select / ai_pick). */

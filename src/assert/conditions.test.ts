@@ -15,7 +15,10 @@ import {
   count,
   evaluateDeterministic,
   hidden,
+  pageState,
+  state,
   text,
+  transition,
   urlMatchesPattern,
   value,
   visible,
@@ -130,6 +133,23 @@ describe("url (glob or substring)", () => {
     expect(urlMatchesPattern("http://localhost:3000/home", "*/wizard/*")).toBe(false);
   });
 
+  test("urlMatchesPattern supports exact and normalized origin/path modes", () => {
+    expect(
+      urlMatchesPattern(
+        "https://x.example/orders/7?tab=paid",
+        "https://x.example/orders/7",
+        "exact",
+      ),
+    ).toBe(false);
+    expect(
+      urlMatchesPattern(
+        "https://x.example/orders/7?tab=paid",
+        "https://x.example/orders/7",
+        "origin_path",
+      ),
+    ).toBe(true);
+  });
+
   test("passes when the current url matches", async () => {
     const d = new MockDriver().setSnapshot(SNAP_WITH_BUTTON);
     const { opts: o } = opts(d);
@@ -143,6 +163,52 @@ describe("url (glob or substring)", () => {
     const { url } = await import("./conditions.ts");
     const r = await url("/done", o);
     expect(r.pass).toBe(false);
+  });
+});
+
+describe("effect-aware state and transitions", () => {
+  test("text regex, element state, page state, and captured transitions are deterministic", async () => {
+    const d = new MockDriver()
+      .setSnapshot(
+        makeSnapshot({
+          url: "http://localhost:3000/after",
+          text: "Order #42 committed",
+          interactiveElements: [
+            makeInteractiveElement({
+              ref: "e1",
+              role: "checkbox",
+              name: "Gift card",
+              checked: true,
+              disabled: false,
+            }),
+          ],
+        }),
+      )
+      .setElementState(
+        es({
+          exists: true,
+          visible: true,
+          count: 1,
+          value: "11",
+          checked: true,
+          disabled: false,
+          selected: true,
+        }),
+      )
+      .setPageState({ popupCount: 1, menuOpen: true });
+    const { opts: o } = opts(d);
+
+    expect((await text(undefined, "^Order #[0-9]+ committed$", o, "regex")).pass).toBe(true);
+    expect((await state("#gift-card", "checked", o)).pass).toBe(true);
+    expect((await pageState("new_page", o)).pass).toBe(true);
+    expect(
+      (
+        await transition("url_changed", undefined, {
+          ...o,
+          beforeState: { url: "http://localhost:3000/before" },
+        })
+      ).pass,
+    ).toBe(true);
   });
 });
 

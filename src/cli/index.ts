@@ -19,7 +19,7 @@ import { runExplain } from "./explain.ts";
 import { runReport } from "./report.ts";
 import { runSweep } from "./sweep.ts";
 
-export const COMMANDS = ["lint", "run", "explain", "report", "sweep"] as const;
+export const COMMANDS = ["lint", "run", "explain", "report", "sweep", "migrate-effects"] as const;
 export type Command = (typeof COMMANDS)[number];
 
 /** Parsed, validated command line. */
@@ -201,6 +201,8 @@ Commands:
   explain <run.jsonl>   Render a human-readable failure diagnosis for a run
   report <run-dir>...   Aggregate one or many runs into a campaign metrics report
   sweep <flows-dir>     Run N trials of every flow (tiered, +baseline) into a campaign dir
+  migrate-effects <flow.toml>
+                        Review-only effect suggestions; never edits flows or locks
 
 Flags:
   --json                Emit machine-readable JSON (run-summary contract)
@@ -228,8 +230,10 @@ Examples:
   flightplan report .flightplan-runs/    Aggregate runs into a metrics report
   flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/campaign
                                           Sweep every flow, tiered + baseline, into a campaign dir
+  flightplan migrate-effects examples/flows/wizard.toml
+                                          Review effect-policy suggestions (no files changed)
 
-See docs/PLAN.md for the full design. This project is under active development.`;
+See docs/plans/ for the full design. This project is under active development.`;
 
 export function printUsage(write: (s: string) => void = (s) => console.log(s)): void {
   write(USAGE);
@@ -278,6 +282,60 @@ export async function runLint(args: ParsedArgs): Promise<number> {
   }
 
   return multi.ok ? 0 : 1;
+}
+
+/**
+ * Review-only effect migration aid. It prints suggestions and intentionally never rewrites the
+ * flow or its lock; a human must choose observe/idempotent/at_most_once and add postconditions.
+ */
+export async function runMigrateEffects(args: ParsedArgs): Promise<number> {
+  const flowPath = args.positionals[0];
+  if (!flowPath) {
+    console.error("flightplan migrate-effects: expected a flow file path.");
+    return 2;
+  }
+  try {
+    const loaded = await loadFlowFile(flowPath);
+    const suggestions = loaded.flow.steps.map((step) => {
+      const effect = step.effect;
+      const suggestion =
+        effect ??
+        (step.do === "wait" ||
+        step.do === "assert" ||
+        step.do === "switch_frame" ||
+        step.do === "switch_to_main"
+          ? "observe"
+          : "review_required");
+      return {
+        step: step.id,
+        do: step.do,
+        current: effect ?? null,
+        suggestion,
+        retry: step.retry ?? null,
+        note:
+          suggestion === "review_required"
+            ? "Choose the effect explicitly; migration never assumes idempotency."
+            : "No file was changed.",
+      };
+    });
+    const result = { file: loaded.path, source_hash: loaded.sourceHash, suggestions };
+    if (args.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`Review-only effect suggestions for ${loaded.path}`);
+      for (const item of suggestions) {
+        console.log(
+          `  ${item.step} (${item.do}): ${item.current ?? "unset"} -> ${item.suggestion}`,
+        );
+      }
+      console.log("No flow or lock files were modified.");
+    }
+    return 0;
+  } catch (err) {
+    console.error(
+      `flightplan migrate-effects: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return 2;
+  }
 }
 
 /**
@@ -380,6 +438,8 @@ async function dispatch(args: ParsedArgs): Promise<number> {
       return runReport(args);
     case "sweep":
       return runSweep(args);
+    case "migrate-effects":
+      return runMigrateEffects(args);
     case null:
       // No command and no help/version handled upstream → show usage as an error.
       printUsage((s) => console.error(s));

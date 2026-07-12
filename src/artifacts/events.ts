@@ -17,6 +17,12 @@
 // Canonical references: PLAN.md §4 (data model, run-summary contract) and §5 Phase 2/4/5.
 
 import type {
+  ActionReceipt,
+  BrowserPilotProvenance,
+  DispatchState,
+  MatchedCondition,
+} from "../driver/types.ts";
+import type {
   AdvisoryVerdictKind,
   AssertType,
   ModelRoleName,
@@ -55,6 +61,11 @@ export interface RunTotals {
   model_usage: ModelUsage[];
 }
 
+/** Dependency provenance carried by run artifacts. */
+export interface ArtifactProvenance {
+  browserPilot: BrowserPilotProvenance;
+}
+
 // ---------------------------------------------------------------------------
 // run.jsonl events — the run/step/assertion lifecycle
 // ---------------------------------------------------------------------------
@@ -71,6 +82,7 @@ export interface RunStartEvent {
   configSummary: Record<string, string | number | boolean>;
   /** The run limits in force (max_steps / max_cost_usd / etc.), null fields omitted by caller. */
   limits: Record<string, number | string | boolean>;
+  provenance?: ArtifactProvenance;
 }
 
 /** Emitted when a step begins, before resolution. */
@@ -82,6 +94,8 @@ export interface StepStartEvent {
   do: string;
   /** The natural-language intent, when present. */
   intent?: string;
+  effect?: "observe" | "idempotent" | "at_most_once";
+  anchor?: string;
 }
 
 /** Emitted when a step completes (success or failure), after any heal. */
@@ -97,6 +111,27 @@ export interface StepEndEvent {
   durationMs: number;
   /** Present only when `ok` is false. */
   error?: string;
+  dispatchState?: DispatchState;
+  retrySafe?: boolean;
+  matchedConditions?: MatchedCondition[];
+  attempts?: number;
+  retryDecisionReason?: string;
+  retryReason?: string;
+  receipt?: ActionReceipt;
+  transportAmbiguous?: boolean;
+  captures?: Record<string, string>;
+  popup?: {
+    matched: boolean;
+    targetId?: string;
+    type?: string;
+    url?: string;
+    title?: string;
+    opener?: string;
+    openerTargetId?: string;
+    reason?: string;
+  };
+  effect?: "observe" | "idempotent" | "at_most_once";
+  anchor?: string;
 }
 
 /** Emitted for each assertion evaluated against a step. */
@@ -156,6 +191,15 @@ export interface BrowserActionEvent {
   /** browser-pilot `coveringElement` (overlay blocking the target), when reported. */
   coveringElement?: string;
   durationMs: number;
+  dispatchState?: DispatchState;
+  retrySafe?: boolean;
+  matchedConditions?: MatchedCondition[];
+  attempts?: number;
+  retryDecisionReason?: string;
+  retryReason?: string;
+  receipt?: ActionReceipt;
+  effect?: "observe" | "idempotent" | "at_most_once";
+  anchor?: string;
 }
 
 /** A single rung of the resolution ladder being attempted for a step. */
@@ -171,6 +215,15 @@ export interface ResolutionAttemptEvent {
   /** The result of the attempt, e.g. "resolved" / "unresolved" / "escalated" / "ambiguous". */
   outcome: string;
   durationMs: number;
+  dispatchState?: DispatchState;
+  retrySafe?: boolean;
+  matchedConditions?: MatchedCondition[];
+  attempts?: number;
+  retryDecisionReason?: string;
+  retryReason?: string;
+  receipt?: ActionReceipt;
+  effect?: "observe" | "idempotent" | "at_most_once";
+  anchor?: string;
 }
 
 /** Any event written to trace.jsonl. */
@@ -233,6 +286,27 @@ export interface StepSummary {
   healed: boolean;
   durationMs: number;
   error?: string;
+  dispatchState?: DispatchState;
+  retrySafe?: boolean;
+  matchedConditions?: MatchedCondition[];
+  attempts?: number;
+  retryDecisionReason?: string;
+  retryReason?: string;
+  receipt?: ActionReceipt;
+  transportAmbiguous?: boolean;
+  captures?: Record<string, string>;
+  popup?: {
+    matched: boolean;
+    targetId?: string;
+    type?: string;
+    url?: string;
+    title?: string;
+    opener?: string;
+    openerTargetId?: string;
+    reason?: string;
+  };
+  effect?: "observe" | "idempotent" | "at_most_once";
+  anchor?: string;
 }
 
 /**
@@ -269,6 +343,20 @@ export interface RunSummary {
    */
   replan_count: number;
   repaired_steps: string[];
+  /** Runtime browser-pilot package/source/build identity. */
+  provenance?: ArtifactProvenance;
+  /** Runtime named captures, redacted before serialization. */
+  captures?: Record<string, string>;
+  /** Original and newly observed page identities for declarative popup steps. */
+  pages?: Array<{
+    targetId?: string;
+    type?: string;
+    opener?: string;
+    openerTargetId?: string;
+    url?: string;
+    title?: string;
+    role: "active" | "popup";
+  }>;
   /** Per-step rollup (the addition over the wire RunSummary; consumed by `explain`). */
   steps: StepSummary[];
 }

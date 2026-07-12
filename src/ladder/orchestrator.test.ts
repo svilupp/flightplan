@@ -205,6 +205,69 @@ describe("orchestrator — L1 escalation", () => {
   });
 });
 
+describe("orchestrator — dispatch boundary", () => {
+  test("uncertain L0 replay is terminal and is not sent to L1", async () => {
+    const d = new MockDriver()
+      .setSnapshot(snapshotWith("Create order"))
+      .setSignature("http://localhost:3000/|t")
+      .setStructureSignature("/|s")
+      .setBatchResult(
+        makeFailureBatch("missing", {
+          dispatchState: "uncertain",
+          retrySafe: false,
+          retryReason: "response lost after input",
+        }),
+      );
+    ranksTo(d, "Create order");
+    const recipe: CachedRecipe = {
+      selector: "role:button:Create order",
+      strategy: "role_name",
+      match: {
+        url_glob: "http://localhost:3000/*",
+        sig: computeMatchSignature("http://localhost:3000/|t", "/|s"),
+      },
+    };
+
+    const { execution, attempts } = await resolveStep(clickStep(), {
+      driver: d,
+      now: () => 0,
+      lock: hookFor(recipe),
+    });
+
+    expect(attempts.map((a) => a.tier)).toEqual(["L0"]);
+    expect(d.callsTo("batch")).toHaveLength(1);
+    expect(d.callsTo("resolveAll")).toHaveLength(0);
+    expect(execution.dispatchState).toBe("uncertain");
+    expect(execution.retrySafe).toBe(false);
+  });
+
+  test("dispatched L1 failure does not climb to another tier", async () => {
+    const d = ranksTo(new MockDriver(), "Create order");
+    d.setSnapshot(snapshotWith("Create order"));
+    d.setBatchResult(
+      makeFailureBatch("hidden", {
+        dispatchState: "dispatched",
+        retrySafe: false,
+        retryReason: "post-dispatch outcome failed",
+      }),
+    );
+    let l2Called = false;
+    const ai: AiHooks = {
+      resolveL2: async () => {
+        l2Called = true;
+        return { ok: true, tier: "L2", escalate: false };
+      },
+    };
+
+    const { execution, attempts } = await resolveStep(clickStep(), { driver: d, now: () => 0, ai });
+
+    expect(attempts.map((a) => a.tier)).toEqual(["L0", "L1"]);
+    expect(d.callsTo("batch")).toHaveLength(1);
+    expect(l2Called).toBe(false);
+    expect(execution.dispatchState).toBe("dispatched");
+  });
+});
+
 describe("orchestrator — auto-repair (Phase 5, Unit D) wires between L1 and the AI climb", () => {
   test("covered → overlay dismissed + retry resolves at L1; AI never consulted", async () => {
     const d = ranksTo(new MockDriver(), "Create order");

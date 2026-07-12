@@ -23,6 +23,7 @@ export type {
   Resolution,
   ResolutionAttempt,
   ResolveContext,
+  ResolvedTarget,
   SingleStepBatch,
   StepExecution,
   StrategyCandidate,
@@ -32,6 +33,12 @@ export type {
 // `artifacts/` (the cross-agent trace contract) and already reach the root via its `export *`.
 // Re-exporting them from the ladder too would collide under `src/index.ts`'s `export *`.
 
+export {
+  type DispatchPolicy,
+  type DispatchResult,
+  dispatchResolved,
+  mayHaveDispatched,
+} from "./dispatch.ts";
 // --- L1 building blocks (role guard + ambiguity + handoff policy; strategy-array construction) ---
 export {
   buildHandoff,

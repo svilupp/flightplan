@@ -38,31 +38,54 @@ text = "Full name"
 [[steps]]
 id = "enter_name"
 do = "fill"
+effect = "at_most_once"
 target = ["[data-testid='wizard-name']", "the full name field"]
+value = "${inputs.full_name}"
+
+[[steps.assert]]
+type = "value"
+selector = "[data-testid='wizard-name']"
 value = "${inputs.full_name}"
 
 [[steps]]
 id = "advance_to_plan"
 do = "click"
+effect = "at_most_once"
 # The NL entry is the fuzzy-match query (PLAN §7) — it must point squarely at the "Next" button,
 # so we keep it button-name-centric. (A wordy query mentioning "plan" would mis-rank the Plan
 # dropdown over Next on the v0.0.18 AX snapshot.)
 target = ["[data-testid='wizard-next-1']", "the Next button"]
 
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='wizard-plan']"
+
 [[steps]]
 id = "choose_plan"
 do = "select"
+effect = "at_most_once"
 target = ["[data-testid='wizard-plan']", "the plan dropdown"]
+value = "${inputs.plan}"
+
+[[steps.assert]]
+type = "value"
+selector = "[data-testid='wizard-plan']"
 value = "${inputs.plan}"
 
 [[steps]]
 id = "advance_to_review"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='wizard-next-2']", "the Next button"]
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='wizard-submit']"
 
 [[steps]]
 id = "submit_wizard"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='wizard-submit']", "the Submit button"]
 
 # The result text is surfaced in the page after submit. Assert against the whole-page text
@@ -71,5 +94,7 @@ target = ["[data-testid='wizard-submit']", "the Submit button"]
 # the driver's elementState.
 [[steps.assert]]
 type = "text"
+selector = "[data-testid='result']"
+match = "exact"
 text = "Welcome, ${inputs.full_name}! Plan: ${inputs.plan}."
 timeout_ms = 4000

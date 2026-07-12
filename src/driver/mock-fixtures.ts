@@ -8,10 +8,12 @@
 import type {
   BatchResult,
   CoveringElement,
+  DispatchState,
   FailureReason,
   InteractiveElement,
   PageSnapshot,
   RankedCandidate,
+  RetryDecisionReason,
   StepResult,
 } from "./types.ts";
 
@@ -91,14 +93,29 @@ export function makeSuccessBatch(
  */
 export function makeFailureBatch(
   failureReason: FailureReason,
-  opts: { coveringElement?: CoveringElement; action?: StepResult["action"] } = {},
+  opts: {
+    coveringElement?: CoveringElement;
+    action?: StepResult["action"];
+    dispatchState?: DispatchState;
+    retrySafe?: boolean;
+    retryDecisionReason?: RetryDecisionReason;
+    retryReason?: string;
+  } = {},
 ): BatchResult {
+  const dispatchState = opts.dispatchState ?? "not_dispatched";
+  const retrySafe = opts.retrySafe ?? dispatchState === "not_dispatched";
   return makeBatchResult(
     [
       makeStepResult({
         action: opts.action ?? "click",
         success: false,
         outcomeStatus: "failed",
+        dispatchState,
+        retrySafe,
+        ...(opts.retryDecisionReason !== undefined
+          ? { retryDecisionReason: opts.retryDecisionReason }
+          : {}),
+        ...(opts.retryReason !== undefined ? { retryReason: opts.retryReason } : {}),
         failureReason,
         ...(opts.coveringElement ? { coveringElement: opts.coveringElement } : {}),
       }),

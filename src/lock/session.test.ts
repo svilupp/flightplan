@@ -54,8 +54,8 @@ function exec(selector: string): StepExecution {
   };
 }
 
-function lockWith(source: string, selector: string): LockFile {
-  const lock = emptyLock(source, "sha256:x", "");
+function lockWith(source: string, selector: string, sourceHash = "sha256:x"): LockFile {
+  const lock = emptyLock(source, sourceHash, "");
   lock.targets.push({
     step: "s1",
     target: "the button",
@@ -242,13 +242,52 @@ describe("LockSession — no-write", () => {
   });
 });
 
+describe("LockSession — runtime source hash validation", () => {
+  test("auto quarantines a stale lock and flushes only the fresh header", async () => {
+    const dir = await tmp();
+    const lockPath = join(dir, "flow.lock.toml");
+    await writeLockFile(lockPath, lockWith("flow.toml", "role:button:Old"));
+    const warnings: string[] = [];
+    const session = await openLockSession({
+      lockPath,
+      source: "flow.toml",
+      sourceHash: "sha256:fresh",
+      mode: "auto",
+      inferStrategy,
+      now: NOW,
+      onWarn: (message) => warnings.push(message),
+    });
+    expect(session.collisions).toEqual([]);
+    expect(warnings[0]).toContain("expected sha256:fresh");
+    expect(await session.flush()).toEqual([lockPath]);
+    expect((await loadLockFile(lockPath, undefined, NOW)).source_hash).toBe("sha256:fresh");
+    expect((await loadLockFile(lockPath, undefined, NOW)).targets).toEqual([]);
+  });
+
+  test("frozen rejects stale source hashes before exposing a session", async () => {
+    const dir = await tmp();
+    const lockPath = join(dir, "flow.lock.toml");
+    await writeLockFile(lockPath, lockWith("flow.toml", "role:button:Old"));
+    await expect(
+      openLockSession({
+        lockPath,
+        source: "flow.toml",
+        sourceHash: "sha256:fresh",
+        mode: "frozen",
+        inferStrategy,
+        now: NOW,
+      }),
+    ).rejects.toThrow(/expected sha256:fresh/);
+  });
+});
+
 describe("LockSession — imported-module composition", () => {
   test("the L0 hook resolves a namespaced recipe from an imported module's lock", async () => {
     const dir = await tmp();
     const rootPath = join(dir, "root.lock.toml");
     const modPath = join(dir, "mod.lock.toml");
     await writeLockFile(rootPath, emptyLock("root.toml", "sha256:r", ""));
-    await writeLockFile(modPath, lockWith("mod.toml", "role:button:Imported"));
+    await writeLockFile(modPath, lockWith("mod.toml", "role:button:Imported", "sha256:m"));
 
     const session = await openLockSession({
       lockPath: rootPath,

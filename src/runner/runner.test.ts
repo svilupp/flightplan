@@ -22,12 +22,16 @@ import type { ConnectConfig, ResolvedConfig } from "../config/index.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
 import {
   BrowserPilotDriver,
+  getBrowserPilotProvenance,
   MockDriver,
+  makeBatchResult,
   makeFailureBatch,
   makeInteractiveElement,
+  makeRankedCandidate,
   makeSnapshot,
   makeSuccessBatch,
 } from "../driver/index.ts";
+import { computeSourceHash } from "../flow/index.ts";
 import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
 import {
   DEFAULT_CONNECT_CONFIG,
@@ -181,6 +185,9 @@ text = "Welcome, Jane Doe! Plan: pro."
     const runEvents = await readJsonl(join(result.runDir, "run.jsonl"));
     const types = runEvents.map((e) => e.type);
     expect(types[0]).toBe("run_start");
+    expect(runEvents[0]?.provenance).toEqual({
+      browserPilot: getBrowserPilotProvenance(),
+    });
     expect(types[types.length - 1]).toBe("run_end");
     // 3 step_start + 3 step_end.
     expect(types.filter((t) => t === "step_start").length).toBe(3);
@@ -205,6 +212,7 @@ text = "Welcome, Jane Doe! Plan: pro."
     const summaryOnDisk = JSON.parse(await readFile(join(result.runDir, "summary.json"), "utf8"));
     expect(summaryOnDisk.verdict).toBe("passed");
     expect(summaryOnDisk.run_id).toBe("testrun-0001");
+    expect(summaryOnDisk.provenance).toEqual(result.summary.provenance);
   });
 });
 
@@ -762,10 +770,9 @@ describe("runFlow — on_fail jumps", () => {
     return driver;
   }
 
-  test("on_fail = { goto = self } retries a step whose after-assertion fails then RECOVERS → passed", async () => {
-    // The click succeeds, but its after-assertion (`text = "ready"`) fails on the first attempt.
-    // on_fail jumps back to the SAME step; on the 2nd attempt the page text has flipped to
-    // "ready" (the 2nd click action), so the assertion passes and the run recovers.
+  test("on_fail = { goto = self } does not replay after a dispatched action", async () => {
+    // The click succeeds, but its after-assertion (`text = "ready"`) fails. The dispatch receipt
+    // makes the self-retry unsafe, so the runner records one attempt and stops.
     const FLOW = `
 version = 1
 kind = "flow"
@@ -785,29 +792,26 @@ on_fail = { goto = "self", max = 2 }
   text = "READY"
 `;
     const { flowPath, outDir } = await writeFlow(FLOW);
-    // Page becomes "ready" after the 2nd click action (i.e. on the self-retry).
+    // The fixture would become ready after a second click, but a second dispatch is forbidden.
     const driver = recoveringDriver("click", 2);
 
     const result = await runFlow(
       optsFor(flowPath, outDir, driver, defaultConfig({ assert_timeout_ms: 10 })),
     );
 
-    expect(result.summary.verdict).toBe("passed");
-    expect(result.exitCode).toBe(0);
-    expect(result.summary.failed_step).toBeNull();
-    // The recovered attempt's failing assertion is discarded (not reported).
-    expect(result.summary.failed_assertions).toEqual([]);
-    // The step was entered twice (fail, then success): two step rows for the same id.
+    expect(result.summary.verdict).toBe("failed");
+    expect(result.exitCode).toBe(1);
+    expect(result.summary.failed_step).toBe("flaky_click");
+    expect(result.summary.failed_assertions).toHaveLength(1);
     const rows = result.summary.steps.filter((s) => s.stepId === "flaky_click");
-    expect(rows.length).toBe(2);
+    expect(rows.length).toBe(1);
     expect(rows[0]?.ok).toBe(false);
-    expect(rows[1]?.ok).toBe(true);
+    expect(driver.callsTo("batch")).toHaveLength(1);
   });
 
-  test("on_fail = { goto } jumps BACK to a recovery step then flows forward → verdict passed", async () => {
-    // Mirrors the saas-onboarding recovery: `submit`'s after-assertion fails, on_fail jumps back to
-    // the earlier `fix` step (a re-fill), which then flows forward through `submit` again (now
-    // passing, because the 2nd fill flips the page to "ready") to `done`.
+  test("on_fail = { goto } does not jump after a dispatched action", async () => {
+    // The failed postcondition cannot authorize replaying `submit` or jumping through a recovery
+    // path that would dispatch it again.
     const FLOW = `
 version = 1
 kind = "flow"
@@ -838,23 +842,18 @@ do = "wait"
 ms = 1
 `;
     const { flowPath, outDir } = await writeFlow(FLOW);
-    // Page becomes "ready" after the 2nd fill action (i.e. after the recovery re-fill).
+    // The fixture would become ready after a recovery re-fill, but the submit action already ran.
     const driver = recoveringDriver("fill", 2);
 
     const result = await runFlow(
       optsFor(flowPath, outDir, driver, defaultConfig({ assert_timeout_ms: 10 })),
     );
 
-    expect(result.summary.verdict).toBe("passed");
-    // Execution order: fix → submit(fail) → fix → submit(ok) → done.
-    expect(result.summary.steps.map((s) => s.stepId)).toEqual([
-      "fix",
-      "submit",
-      "fix",
-      "submit",
-      "done",
-    ]);
-    expect(result.summary.steps.map((s) => s.ok)).toEqual([true, false, true, true, true]);
+    expect(result.summary.verdict).toBe("failed");
+    // Execution stops after the dispatched submit's failed postcondition.
+    expect(result.summary.steps.map((s) => s.stepId)).toEqual(["fix", "submit"]);
+    expect(result.summary.steps.map((s) => s.ok)).toEqual([true, false]);
+    expect(driver.callsTo("batch")).toHaveLength(2);
   });
 
   test("infinite-loop prevention: a step that ALWAYS fails stops after max re-entries and fails the run", async () => {
@@ -1051,7 +1050,7 @@ target = ["text:Primary", "click the primary button"]
 
   /** Pre-write a lock whose recipe drifts (stale selector) and whose signature won't match. */
   async function writeStaleLock(lockPath: string): Promise<void> {
-    const lock = emptyLock("test.lock", "sha256:x", "lock manager");
+    const lock = emptyLock("test.lock", computeSourceHash(CLICK_FLOW), "lock manager");
     lock.targets.push({
       step: "act",
       target: "the primary button",
@@ -1147,7 +1146,7 @@ target = ["text:Primary", "click the primary button"]
    * rescue this as an L0 hit — even under --frozen, where the lock cannot be re-healed.
    */
   async function writeStaleSigValidSelectorLock(lockPath: string): Promise<void> {
-    const lock = emptyLock("test.lock", "sha256:x", "lock manager");
+    const lock = emptyLock("test.lock", computeSourceHash(CLICK_FLOW), "lock manager");
     lock.targets.push({
       step: "act",
       target: "the primary button",
@@ -1188,7 +1187,7 @@ target = ["text:Primary", "click the primary button"]
     const { flowPath, outDir } = await writeFlow(CLICK_FLOW);
     const lockPath = lockPathFor(flowPath);
     // A v2 portfolio with two strategies for the same button; the sig is stale (forces the race).
-    const lock = emptyLock("test.lock", "sha256:x", "");
+    const lock = emptyLock("test.lock", computeSourceHash(CLICK_FLOW), "");
     lock.targets.push({
       step: "act",
       target: "the primary button",
@@ -1272,8 +1271,16 @@ target = ["text:Primary", "click the primary button"]
     // rather than silently downgrading to empty and re-resolving fresh (a masked drift_count=0 pass).
     await Bun.write(lockPath, "this = = not valid toml");
 
+    const frozenDriver = healingDriver();
+    let factoryCalls = 0;
     const result = await runFlow(
-      optsFor(flowPath, outDir, healingDriver(), defaultConfig(), { frozen: true }),
+      optsFor(flowPath, outDir, frozenDriver, defaultConfig(), {
+        frozen: true,
+        driverFactory: () => {
+          factoryCalls += 1;
+          return frozenDriver;
+        },
+      }),
     );
 
     expect(result.summary.verdict).toBe("error");
@@ -1284,6 +1291,8 @@ target = ["text:Primary", "click the primary button"]
     const runEnd = runEvents.find((e) => e.type === "run_end") as Record<string, any>;
     expect(String(runEnd?.error ?? "")).toContain("malformed lock");
     expect(result.summary.steps).toHaveLength(0);
+    expect(factoryCalls).toBe(0);
+    expect(frozenDriver.callsTo("connect")).toHaveLength(0);
 
     // Sanity: the SAME malformed lock under auto mode does NOT error (auto-heal downgrade preserved).
     const auto = await runFlow(
@@ -1405,6 +1414,138 @@ describe("resolveConnectConfig", () => {
     const connect: ConnectConfig = { mode: "launch", headless: true };
     const config = resolveConfigWithDefaults([{ connect }]);
     expect(resolveConnectConfig(config)).toEqual(connect);
+  });
+});
+
+describe("runFlow — dispatch metadata artifacts", () => {
+  test("propagates uncertain dispatch, retry evidence, conditions, and receipt", async () => {
+    const FLOW = `
+version = 1
+kind = "flow"
+id = "test.dispatch-metadata"
+description = "dispatch metadata"
+
+[[steps]]
+id = "save"
+do = "click"
+target = "Save"
+`;
+    const { flowPath, outDir } = await writeFlow(FLOW);
+    const driver = new MockDriver();
+    driver.setSnapshot(
+      makeSnapshot({
+        url: "http://localhost:3000/form",
+        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Save" })],
+      }),
+    );
+    driver.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Save" })]);
+    driver.setBatchResult(
+      makeBatchResult(
+        [
+          {
+            action: "click",
+            index: 0,
+            durationMs: 3,
+            success: false,
+            selectorUsed: "ref:e1",
+            outcomeStatus: "ambiguous",
+            dispatchState: "uncertain",
+            retrySafe: false,
+            matchedConditions: [
+              {
+                condition: { kind: "urlMatches", pattern: "/form" },
+                matched: true,
+                detail: "same page",
+              },
+            ],
+            attempts: 2,
+            retryReason: "response lost after input",
+            receipt: {
+              dispatchState: "uncertain",
+              retrySafe: false,
+              inputEventsSent: ["mousePressed"],
+              attempts: 2,
+              retryReason: "response lost after input",
+            },
+          },
+        ],
+        false,
+      ),
+    );
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+    const summaryStep = result.summary.steps[0]!;
+    const trace = await readJsonl(join(result.runDir, "trace.jsonl"));
+    const browserAction = trace.find((event) => event.type === "browser_action")!;
+    const resolution = trace.find(
+      (event) => event.type === "resolution_attempt" && event.dispatchState === "uncertain",
+    )!;
+    const runEvents = await readJsonl(join(result.runDir, "run.jsonl"));
+    const stepEnd = runEvents.find((event) => event.type === "step_end")!;
+
+    expect(result.summary.verdict).toBe("failed");
+    expect(summaryStep.dispatchState).toBe("uncertain");
+    expect(summaryStep.retrySafe).toBe(false);
+    expect(summaryStep.attempts).toBe(2);
+    expect(summaryStep.retryReason).toBe("response lost after input");
+    expect((browserAction.receipt as { inputEventsSent: string[] }).inputEventsSent).toEqual([
+      "mousePressed",
+    ]);
+    expect(resolution.dispatchState).toBe("uncertain");
+    expect((stepEnd.receipt as { dispatchState: string }).dispatchState).toBe("uncertain");
+    expect(driver.callsTo("batch")).toHaveLength(1);
+  });
+
+  test("a deterministic postcondition rescues an uncertain at-most-once dispatch without retry", async () => {
+    const FLOW = `
+version = 1
+kind = "flow"
+id = "test.rescue"
+description = "postcondition rescue"
+
+[[steps]]
+id = "save"
+do = "click"
+effect = "at_most_once"
+target = "Save"
+
+[[steps.assert]]
+when = "after"
+purpose = "postcondition"
+type = "text"
+text = "Committed"
+`;
+    const { flowPath, outDir } = await writeFlow(FLOW);
+    const driver = new MockDriver().setSnapshot(
+      makeSnapshot({
+        url: "http://localhost:3000/form",
+        text: "Committed",
+        interactiveElements: [makeInteractiveElement({ ref: "e1", role: "button", name: "Save" })],
+      }),
+    );
+    driver.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Save" })]);
+    driver.setBatchResult(
+      makeBatchResult(
+        [
+          {
+            action: "click",
+            index: 0,
+            durationMs: 1,
+            success: false,
+            selectorUsed: "ref:e1",
+            outcomeStatus: "ambiguous",
+            dispatchState: "uncertain",
+            retrySafe: false,
+          },
+        ],
+        false,
+      ),
+    );
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+    expect(result.summary.verdict).toBe("passed");
+    expect(result.summary.steps[0]?.transportAmbiguous).toBe(true);
+    expect(driver.callsTo("batch")).toHaveLength(1);
   });
 });
 

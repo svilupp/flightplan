@@ -7,15 +7,15 @@
 // (cost ladder + own fuzzy match), §8 risks #7/#8/#11.
 //
 // =========================================================================================
-// The L1 coupling principle (PLAN.md §7 "Parallel L1 strategies")
+// The L1 resolution/dispatch boundary (PLAN.md §7 "Parallel L1 strategies")
 // =========================================================================================
-// At L1, RESOLUTION and ACTION are coupled: Flightplan takes exactly ONE `snapshot()`, builds
-// an ORDERED array of candidate selector strings (the strategy ladder), and passes that array
-// to `driver.batch(...)` / a single action. browser-pilot resolves ref-first then walks the
-// ordered fallbacks in-process and reports which one won via `StepResult.selectorUsed`. The
-// act of acting IS the resolution — there is no separate "resolve then act" round-trip. We
-// then map `selectorUsed` → `Strategy` (via `selectorUsedToStrategy`) to learn which strategy
-// carried the step, and derive a durable (re-resolvable, never `ref:eN`) selector for the lock.
+// L1 takes exactly ONE `snapshot()`, ranks candidates, and builds an ORDERED array of selector
+// strings (the strategy ladder). Ambiguity and other policy vetoes are evaluated before the
+// shared dispatch owner makes the one `driver.batch(...)` call. On an approved dispatch,
+// browser-pilot resolves ref-first and walks the ordered fallbacks in-process, reporting which
+// one won via `StepResult.selectorUsed`; Flightplan then maps that to `Strategy` and derives a
+// durable (re-resolvable, never `ref:eN`) selector for the lock. A dispatched or uncertain
+// failure is terminal and cannot be replayed by another ladder tier.
 //
 // =========================================================================================
 // Enriched snapshots (browser-pilot 0.1.0, Phase 7 Change 3a) — the full strategy ladder
@@ -32,11 +32,14 @@
 
 import type { LadderTier } from "../artifacts/index.ts";
 import type {
+  ActionReceipt,
   BatchResult,
   CoveringElement,
+  DispatchState,
   Driver,
   FailureReason,
   InteractiveElement,
+  MatchedCondition,
   StepResult,
 } from "../driver/index.ts";
 import type { Step } from "../flow/types.ts";
@@ -83,6 +86,16 @@ export interface RankedCandidate {
   selector: string;
   strategy: Strategy;
   score: number;
+}
+
+/** A side-effect-free candidate proposal produced before a dispatch owner acts. */
+export interface ResolvedTarget {
+  selector: string;
+  confidence: number;
+  ambiguous: boolean;
+  alternatives: RankedCandidate[];
+  strategy?: Strategy;
+  signatureBasis?: { url: string; sig: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +211,26 @@ export interface StepExecution {
   handoff?: L2Handoff;
   escalate: boolean;
   error?: string;
+  /** browser-pilot's effect-boundary classification, when the step was attempted or vetoed. */
+  dispatchState?: DispatchState;
+  /** Dynamic permission to repeat the browser action. Missing metadata is handled fail-closed. */
+  retrySafe?: boolean;
+  /** Conditions observed by browser-pilot while evaluating the step outcome. */
+  matchedConditions?: MatchedCondition[];
+  /** Number of executor/dispatch attempts reported for this logical step. */
+  attempts?: number;
+  /** browser-pilot's retry decision reason, when available. */
+  retryDecisionReason?: string;
+  /** Why the executor allowed or denied a retry. */
+  retryReason?: string;
+  /** The low-level browser-pilot receipt, when available. */
+  receipt?: ActionReceipt;
+  /** Flow-level effect contract copied into the accepted driver batch step. */
+  effect?: "observe" | "idempotent" | "at_most_once";
+  /** Natural-language target anchor copied into the accepted driver batch step. */
+  anchor?: string;
+  /** browser-pilot's outcome classification, when present. */
+  outcomeStatus?: "success" | "failed" | "ambiguous" | "unsafe_to_retry";
   signatureBasis?: { sig: string; url: string };
   /** L0-only: true when a cached recipe was validated and its replay ran (see the field doc). */
   replayed?: boolean;
@@ -379,6 +412,15 @@ export interface ResolutionAttempt {
   durationMs?: number;
   /** Short human note (e.g. "L0 miss: no cached recipe", "L1: role_name won"). */
   note?: string;
+  dispatchState?: DispatchState;
+  retrySafe?: boolean;
+  matchedConditions?: MatchedCondition[];
+  attempts?: number;
+  retryDecisionReason?: string;
+  retryReason?: string;
+  receipt?: ActionReceipt;
+  effect?: "observe" | "idempotent" | "at_most_once";
+  anchor?: string;
 }
 
 /**

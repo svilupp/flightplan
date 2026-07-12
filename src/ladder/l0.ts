@@ -26,6 +26,7 @@ import type { Step } from "../flow/types.ts";
 import { signatureMatches, urlGlobMatches } from "../lock/signature.ts";
 import type { StrategyEntry } from "../lock/types.ts";
 import type { Strategy } from "../types.ts";
+import { dispatchResolved } from "./dispatch.ts";
 import { isInteractiveRole } from "./fuzzy.ts";
 import { actionVerbForStep, buildBatchStep } from "./l1.ts";
 import { capturePageSignature } from "./page-signature.ts";
@@ -47,8 +48,31 @@ function miss(note: string): StepExecution {
  * An L0 miss AFTER a validated recipe was replayed (the batch acted then failed). Flags `replayed`
  * so the orchestrator has L1 take a FRESH snapshot — the replay may have mutated the page.
  */
-function replayMiss(note: string): StepExecution {
-  return { ok: false, tier: "L0", escalate: true, error: note, replayed: true };
+function replayMiss(
+  note: string,
+  dispatch?: Awaited<ReturnType<typeof dispatchResolved>>,
+): StepExecution {
+  return {
+    ok: false,
+    tier: "L0",
+    // A failed replay is eligible for a fresh L1 attempt only when browser-pilot explicitly proves
+    // that no input was dispatched. Missing metadata is normalized to `uncertain` and stops here.
+    escalate: dispatch?.dispatchState === "not_dispatched",
+    error: note,
+    replayed: true,
+    ...(dispatch
+      ? {
+          dispatchState: dispatch.dispatchState,
+          retrySafe: dispatch.retrySafe,
+          attempts: dispatch.attempts,
+          ...(dispatch.retryDecisionReason !== undefined
+            ? { retryDecisionReason: dispatch.retryDecisionReason }
+            : {}),
+          ...(dispatch.retryReason !== undefined ? { retryReason: dispatch.retryReason } : {}),
+          receipt: dispatch.receipt,
+        }
+      : {}),
+  };
 }
 
 /**
@@ -156,14 +180,36 @@ export async function resolveL0(
   }
 
   // Actionability demotion (disabled → back). Rivals were already dropped by the identity gate, so
-  // this never hard-misses; a disabled/blocked lead is bounded by the driver `[timeouts] action_ms`.
-  const { acceptable, unsafe } = partitionByActionability(plan.ordered, snap.interactiveElements);
-  const orderedSelectors = acceptable.length > 0 ? [...acceptable, ...unsafe] : plan.ordered;
+  // this is a pre-dispatch policy gate. Do not put unsafe fallbacks back into the batch: a failed
+  // safe selector must not silently fall through to a disabled/non-discriminating side effect.
+  const { acceptable } = partitionByActionability(plan.ordered, snap.interactiveElements);
+  if (acceptable.length === 0) {
+    return {
+      ...miss("L0 miss: cached target has no unique actionable selector — dispatch vetoed"),
+      retrySafe: true,
+      dispatchState: "not_dispatched",
+      attempts: 0,
+      retryDecisionReason: "retry_unsafe",
+      retryReason: "dispatch vetoed before input: all cached selectors are unsafe",
+      receipt: {
+        dispatchState: "not_dispatched",
+        retrySafe: true,
+        inputEventsSent: [],
+        attempts: 0,
+        retryDecisionReason: "retry_unsafe",
+        retryReason: "dispatch vetoed before input: all cached selectors are unsafe",
+      },
+    };
+  }
+  const orderedSelectors = acceptable;
   const batchStep = buildBatchStep(step, action, orderedSelectors);
-  const result = await ctx.driver.batch([batchStep], { onFail: "stop" });
-  const stepResult = result.steps[0];
+  const dispatched = await dispatchResolved(ctx.driver, [batchStep], { onFail: "stop" });
+  const stepResult = dispatched.stepResult;
+  if (!stepResult) {
+    return replayMiss("L0 miss: cached recipe returned no step result", dispatched);
+  }
   if (!stepResult?.success || stepResult.outcomeStatus === "ambiguous") {
-    return replayMiss("L0 miss: cached recipe failed to replay — re-resolve at L1");
+    return replayMiss("L0 miss: cached recipe failed to replay — re-resolve at L1", dispatched);
   }
   // SAFETY NET: reject a replay that acted via a selector we KNOW resolves to a DIFFERENT element
   // than the primary (a rival that somehow led) → escalate rather than trust a wrong click.
@@ -173,6 +219,7 @@ export async function resolveL0(
   ) {
     return replayMiss(
       "L0 miss: replay resolved a different element than the recipe's primary — re-resolve at L1",
+      dispatched,
     );
   }
 
@@ -183,6 +230,18 @@ export async function resolveL0(
     strategy: learned.strategy,
     durableSelector: learned.selector,
     escalate: false,
+    dispatchState: dispatched.dispatchState,
+    retrySafe: dispatched.retrySafe,
+    attempts: dispatched.attempts,
+    ...(dispatched.retryDecisionReason !== undefined
+      ? { retryDecisionReason: dispatched.retryDecisionReason }
+      : {}),
+    ...(dispatched.retryReason !== undefined ? { retryReason: dispatched.retryReason } : {}),
+    receipt: dispatched.receipt,
+    ...(stepResult.matchedConditions !== undefined
+      ? { matchedConditions: stepResult.matchedConditions }
+      : {}),
+    ...(stepResult.outcomeStatus !== undefined ? { outcomeStatus: stepResult.outcomeStatus } : {}),
     // Carry the FRESH basis so a non-frozen run refreshes a (possibly stale) stored sig and updates
     // track records (the runner's write-back reads `signatureBasis` + `portfolio`).
     signatureBasis: basis,

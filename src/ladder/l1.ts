@@ -12,12 +12,15 @@
 //      pick the best target element from the snapshot by its ref.
 //   3. Build the ORDERED selector-candidate array (author hints first, then the §4 strategy
 //      ladder for the best element: ref → testid → role_name → label → scoped_text).
-//   4. Pass that array to `driver.batch(...)` (one step) so bp tries them in order, then read
-//      `StepResult.selectorUsed` → `Strategy` (via `selectorUsedToStrategy`) to learn which won.
-//   5. Compute a DURABLE selector for the lock (never `ref:eN`): if bp returned only a ref,
+//   4. Apply ambiguity and actionability policy before dispatch; a veto returns without browser
+//      input. A unique author hint, exact testid, or positional selector may clear the veto.
+//   5. Pass the approved array to the shared dispatch owner, which makes the one `driver.batch(...)`
+//      call; then read `StepResult.selectorUsed` → `Strategy` (via `selectorUsedToStrategy`) to
+//      learn which selector won.
+//   6. Compute a DURABLE selector for the lock (never `ref:eN`): if bp returned only a ref,
 //      re-derive a stable selector from the matched element's role/name/etc.
-//   6. Surface `failureReason`/`coveringElement` as escalation signals; set `escalate:true` when
-//      L1 can't resolve OR the match is ambiguous (→ orchestrator hands off to L2 in Phase 4).
+//   7. Surface `failureReason`/`coveringElement` and dispatch metadata. A post-dispatch failure is
+//      terminal; only a known pre-dispatch failure may escalate to another tier.
 
 import type {
   BatchStep,
@@ -29,9 +32,10 @@ import type {
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { normalizeTarget } from "../flow/normalize-target.ts";
 import type { Step } from "../flow/types.ts";
-import { buildHandoff, isAmbiguous, isInTopCluster } from "./fuzzy.ts";
+import { dispatchResolved } from "./dispatch.ts";
+import { buildHandoff, isAmbiguous } from "./fuzzy.ts";
 import { capturePageSignature } from "./page-signature.ts";
-import { snapshotMatchCount } from "./revalidate.ts";
+import { resolveSelectorToElement, snapshotMatchCount } from "./revalidate.ts";
 import {
   buildHintCandidates,
   buildStrategyArray,
@@ -97,7 +101,14 @@ export function buildBatchStep(
   action: BatchActionVerb,
   selectors: string[],
 ): BatchStep {
-  const base: BatchStep = { action, selector: selectors };
+  const normalizedTarget = "target" in step ? normalizeTarget(step.target) : undefined;
+  const anchor = "anchor" in step && step.anchor ? step.anchor : normalizedTarget?.nl;
+  const base: BatchStep = {
+    action,
+    selector: selectors,
+    ...(step.effect !== undefined ? { effect: step.effect } : {}),
+    ...(anchor !== undefined ? { anchor } : {}),
+  };
   if ((step.do === "fill" || step.do === "select") && "value" in step) {
     return { ...base, value: step.value };
   }
@@ -223,29 +234,57 @@ function learnFromResult(
 // Winner correlation (for the ambiguity veto)
 // ---------------------------------------------------------------------------
 
-/**
- * Correlate the batch WINNER back to a ranked-candidate ref so the ambiguity veto can ask whether the
- * element we actually clicked is one of the close-scoring contenders (`isInTopCluster`). The fuzzy
- * `ranked` list scores candidates against the intent text — it says NOTHING about which element won
- * the batch — so we recover the winner's identity from the selector bp reported it resolved through:
- *
- *  - a bare `ref:eN` won → that ref is the derived candidate for the fuzzy target: return `eN`.
- *  - an AUTHOR HINT selector won → the hint resolved an element the fuzzy ranking never harvested
- *    (e.g. an AX-`ignored` button reached via `role:button:More actions`): return `undefined`, i.e.
- *    out-of-cluster — the author already disambiguated, there is nothing to veto.
- *  - a DERIVED durable selector won (the role_name/label/text rung of the fuzzy target) → the winner
- *    IS the fuzzy top: return the target's ref.
- *  - nothing reported (or no target) → indeterminate: fall back to the fuzzy target's ref so the veto
- *    stays exactly as conservative as before (an ambiguous fuzzy top still escalates).
- */
-function winningRef(
-  selectorUsed: string | undefined,
-  hintSelectors: ReadonlySet<string>,
-  target: { element: InteractiveElement } | undefined,
-): string | undefined {
-  if (selectorUsed?.startsWith("ref:")) return selectorUsed.slice("ref:".length);
-  if (selectorUsed !== undefined && hintSelectors.has(selectorUsed)) return undefined;
-  return target?.element.ref;
+/** Find an author hint that is provably unique without dispatching it. */
+async function uniqueAuthorHint(
+  hints: readonly StrategyCandidate[],
+  elements: InteractiveElement[],
+  driver: Driver,
+): Promise<StrategyCandidate | undefined> {
+  for (const hint of hints) {
+    if (resolveSelectorToElement(hint.selector, elements)) return hint;
+    const count = snapshotMatchCount(hint.selector, elements);
+    if (count === 1) return hint;
+    // CSS/compound selectors are not identity-parseable in the AX snapshot. When the optional
+    // live-DOM probe exists, a count of exactly one is enough to prove the author hint is unique.
+    if (count !== 1 && driver.elementState) {
+      try {
+        const state = await driver.elementState(hint.selector);
+        if (state.count === 1) return hint;
+      } catch {
+        // A failed probe is not evidence of uniqueness; keep the ambiguity veto closed.
+      }
+    }
+  }
+  return undefined;
+}
+
+function dispatchMetadataFields(result: Awaited<ReturnType<typeof dispatchResolved>>): {
+  dispatchState: NonNullable<StepExecution["dispatchState"]>;
+  retrySafe: boolean;
+  attempts: number;
+  retryDecisionReason?: string;
+  retryReason?: string;
+  receipt: NonNullable<StepExecution["receipt"]>;
+} {
+  return {
+    dispatchState: result.dispatchState,
+    retrySafe: result.retrySafe,
+    attempts: result.attempts,
+    ...(result.retryDecisionReason !== undefined
+      ? { retryDecisionReason: result.retryDecisionReason }
+      : {}),
+    ...(result.retryReason !== undefined ? { retryReason: result.retryReason } : {}),
+    receipt: result.receipt,
+  };
+}
+
+function stepMetadata(step: Step): Pick<StepExecution, "effect" | "anchor"> {
+  const normalizedTarget = "target" in step ? normalizeTarget(step.target) : undefined;
+  const anchor = "anchor" in step && step.anchor ? step.anchor : normalizedTarget?.nl;
+  return {
+    ...(step.effect !== undefined ? { effect: step.effect } : {}),
+    ...(anchor !== undefined ? { anchor } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +328,7 @@ export async function resolveL1(
       ok: false,
       tier: "L1",
       escalate: true,
+      ...stepMetadata(step),
       error: `L1 cannot resolve a non-targeting step (do=${step.do})`,
     };
   }
@@ -331,6 +371,7 @@ export async function resolveL1(
     return {
       ok: false,
       tier: "L1",
+      ...stepMetadata(step),
       candidates: ranked,
       escalate: true,
       handoff: buildHandoff({ intent: intentText, action, ranked }),
@@ -362,6 +403,7 @@ export async function resolveL1(
     return {
       ok: false,
       tier: "L1",
+      ...stepMetadata(step),
       candidates: ranked,
       escalate: false,
       error:
@@ -371,80 +413,95 @@ export async function resolveL1(
     };
   }
 
-  // (4) Act: one batch, ordered selectors.
+  // Resolve ambiguity and policy BEFORE dispatch. A unique author hint, an exact testid, or an
+  // explicit positional selector is enough to override an ambiguity in the natural-language
+  // ranking. Otherwise the close top cluster is a hard pre-dispatch veto.
   const selectors = allCandidates.map((c) => c.selector);
   const batchStep = buildBatchStep(step, action, selectors);
-  const result = await ctx.driver.batch([batchStep], { onFail: "stop" });
-  const stepResult = result.steps[0];
+  const uniqueHint = await uniqueAuthorHint(hintCandidates, elements, ctx.driver);
+  const targetStrategy = target ? strategyForElement(target.element) : null;
+  const ambiguous =
+    isAmbiguous(ranked, {
+      gap: opts.ambiguityGap ?? 0.1,
+      floor: opts.ambiguityFloor ?? 0.4,
+    }) &&
+    uniqueHint === undefined &&
+    targetStrategy !== "testid";
+  if (ambiguous) {
+    const veto = await dispatchResolved(
+      ctx.driver,
+      [batchStep],
+      { onFail: "stop" },
+      { allowed: false, reason: "dispatch vetoed before input: candidate ranking is ambiguous" },
+    );
+    return {
+      ok: false,
+      tier: "L1",
+      ...stepMetadata(step),
+      candidates: ranked,
+      escalate: true,
+      handoff: buildHandoff({ intent: intentText, action, ranked }),
+      ...dispatchMetadataFields(veto),
+      error: "L1: ambiguous candidates — dispatch vetoed before browser input",
+    };
+  }
+
+  // This is the sole L1 dispatch point. All candidate resolution and policy checks above are pure
+  // or observation-only; once this call happens, the result controls whether escalation is allowed.
+  const dispatched = await dispatchResolved(ctx.driver, [batchStep], { onFail: "stop" });
+  const stepResult = dispatched.stepResult;
 
   // Defensive: a driver should always return one step for one batch step.
   if (!stepResult) {
     return {
       ok: false,
       tier: "L1",
+      ...stepMetadata(step),
       candidates: ranked,
-      escalate: true,
+      escalate: false,
       handoff: buildHandoff({ intent: intentText, action, ranked }),
+      ...dispatchMetadataFields(dispatched),
       error: "L1: driver returned no step result",
     };
   }
 
-  // (5) Learn the winning strategy + durable selector FIRST — we need it to decide ambiguity.
+  // Learn the winning strategy + durable selector after the one dispatch. This is observation and
+  // lock evidence only; it never authorizes a second action.
   const learned = learnFromResult(stepResult, allCandidates, target?.element);
 
-  // The native `ranked` list scores candidates against the fuzzy INTENT text — it says nothing
-  // about which element actually won the batch. bp's batch RACES the ordered selector array and
-  // the `ref:eN` entry (prepended for same-cycle precision, see `buildStrategyArray`) typically
-  // wins that race on raw speed, so `stepResult.selectorUsed` is very often `ref:eN` even when an
-  // author hint (e.g. an exact testid) targets the very same element. Comparing the raw
-  // `selectorUsed` string against the hint candidates therefore misses the common case. What
-  // actually matters is the LEARNED strategy: a `testid` selector (`[data-testid=...]`) identifies
-  // at most one element in the DOM by construction, so once we've re-derived that the winning
-  // element resolves via `testid` (whether from a hint or the derived ladder), unrelated ambiguity
-  // in the fuzzy intent-ranked list must not override that exact, DOM-unique match.
-  const resolvedViaTestid = learned.strategy === "testid";
-  // AMBIGUITY VETO — gated on the WINNER. `isAmbiguous` reasons over the fuzzy INTENT ranking, which
-  // scores OTHER elements and knows nothing about which element the batch actually clicked. Firing it
-  // blindly discarded SUCCESSFUL clicks: when the true target is AX-`ignored` (never in `ranked`) but
-  // an author hint like `role:button:More actions` resolved and clicked it, two UNRELATED candidates
-  // scoring close ("View order status page" ×2 at 0.55/0.51) tripped the veto, and L1 threw the
-  // opened menu away and escalated — higher tiers then misclicked a look-alike. So the veto now fires
-  // only when the element that WON is itself inside the close-scoring top cluster (`isInTopCluster`):
-  // an out-of-cluster winner, or an author-hint hit on an element absent from `ranked`, has nothing
-  // to disambiguate against. A `testid` winner is DOM-unique by construction and bypasses as before.
-  const gap = opts.ambiguityGap ?? 0.1;
-  const floor = opts.ambiguityFloor ?? 0.4;
-  const hintSelectors = new Set(hintCandidates.map((c) => c.selector));
-  const winnerRef = winningRef(stepResult.selectorUsed, hintSelectors, target);
-  const ambiguous =
-    !resolvedViaTestid &&
-    isAmbiguous(ranked, { gap, floor }) &&
-    isInTopCluster(ranked, winnerRef, { gap, floor });
-  const succeeded = stepResult.success && stepResult.outcomeStatus !== "ambiguous";
+  const succeeded =
+    stepResult.success &&
+    stepResult.outcomeStatus !== "ambiguous" &&
+    dispatched.dispatchState !== "not_dispatched";
 
-  // (6) Decide escalation.
-  if (succeeded && !ambiguous) {
+  // A post-dispatch failure/ambiguity is terminal for the ladder. It is observation evidence, not
+  // permission for L2/L3/L4, repair, or on_fail to issue another side effect.
+  if (succeeded) {
     return {
       ok: true,
       tier: "L1",
+      ...stepMetadata(step),
       selectorUsed: learned.selectorUsed,
       strategy: learned.strategy,
       durableSelector: learned.durableSelector,
       candidates: ranked,
       escalate: false,
       signatureBasis,
+      ...dispatchMetadataFields(dispatched),
     };
   }
 
-  // Failed OR ambiguous → escalate. Attach the cheap signals + the L2 handoff.
+  const mayHaveActed = dispatched.dispatchState !== "not_dispatched";
   const exec: StepExecution = {
     ok: false,
     tier: "L1",
+    ...stepMetadata(step),
     selectorUsed: learned.selectorUsed,
     strategy: learned.strategy,
     durableSelector: learned.durableSelector,
     candidates: ranked,
-    escalate: true,
+    escalate: !mayHaveActed,
+    ...dispatchMetadataFields(dispatched),
     handoff: buildHandoff({
       intent: intentText,
       action,
@@ -459,8 +516,10 @@ export async function resolveL1(
   };
   if (stepResult.failureReason !== undefined) exec.failureReason = stepResult.failureReason;
   if (stepResult.coveringElement !== undefined) exec.coveringElement = stepResult.coveringElement;
-  if (ambiguous && stepResult.success) {
-    exec.error = "L1: ambiguous match (top two candidates too close) — escalating to disambiguate";
+  if (stepResult.outcomeStatus === "ambiguous" || mayHaveActed) {
+    exec.error =
+      stepResult.error ??
+      "L1: action result is post-dispatch/uncertain — stopping without replay or escalation";
   } else if (stepResult.error) {
     exec.error = stepResult.error;
   }

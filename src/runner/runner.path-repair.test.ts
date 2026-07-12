@@ -32,6 +32,7 @@ import {
   makeSnapshot,
   makeSuccessBatch,
 } from "../driver/index.ts";
+import { computeSourceHash } from "../flow/index.ts";
 import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
 import { isSyntheticRepairStepId, syntheticRepairStepId } from "./path-repair.ts";
 import { runFlow } from "./runner.ts";
@@ -174,7 +175,11 @@ function appSnapshot() {
  * resolves at L1.) The struct component is bogus; the runner's live struct default differs → mismatch.
  */
 async function writeDivergingLock(lockPath: string): Promise<void> {
-  const lock = emptyLock("repair.two", "sha256:x", "Reach the confirmation page");
+  const lock = emptyLock(
+    "repair.two",
+    computeSourceHash(TWO_STEP_FLOW),
+    "Reach the confirmation page",
+  );
   lock.targets.push({
     step: "next",
     target: "Finish",
@@ -310,7 +315,7 @@ describe("Fix 3 — synthetic repair-step ids are recognised + never persisted",
     // genuine flow steps (`act`/`next`) may earn a recipe; the junk repair recipe must never land.
     const lock = await loadLockFile(
       lockPath,
-      { source: "repair.two", source_hash: "sha256:x", description: "" },
+      { source: "repair.two", source_hash: computeSourceHash(TWO_STEP_FLOW), description: "" },
       () => 0,
     );
     const repairTargets = lock.targets.filter((t) => isSyntheticRepairStepId(t.step));
@@ -478,7 +483,11 @@ target = "Continue"
     const { flowPath, outDir } = await writeFlow(THREE_STEP_FLOW);
     const lockPath = flowPath.replace(/\.toml$/i, ".lock.toml");
     // Two diverging targets (`mid` and `last`) → two separate divergences → two replans.
-    const lock = emptyLock("repair.three", "sha256:x", "Reach the confirmation page");
+    const lock = emptyLock(
+      "repair.three",
+      computeSourceHash(THREE_STEP_FLOW),
+      "Reach the confirmation page",
+    );
     for (const [step, target, sel] of [
       ["mid", "Finish", "role:button:Finish"],
       ["last", "Continue", "role:button:Continue"],

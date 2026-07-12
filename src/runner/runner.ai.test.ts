@@ -32,6 +32,7 @@ import {
   makeSnapshot,
   makeSuccessBatch,
 } from "../driver/index.ts";
+import { computeSourceHash } from "../flow/index.ts";
 import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
 import type { AdvisoryVerdict } from "../types.ts";
 import { runFlow } from "./runner.ts";
@@ -165,7 +166,11 @@ function orderSnapshot() {
 describe("runFlow AI — L1→L2 resolve + lock heal", () => {
   /** Pre-write a stale lock whose recipe drifts and whose signature won't match (forces L0 miss). */
   async function writeStaleLock(lockPath: string): Promise<void> {
-    const lock = emptyLock("ai.l2heal", "sha256:x", "ai l2 heal");
+    const lock = emptyLock(
+      "ai.l2heal",
+      computeSourceHash(clickFlow("ai.l2heal", "Create order")),
+      "ai l2 heal",
+    );
     lock.targets.push({
       step: "act",
       target: "Create order",

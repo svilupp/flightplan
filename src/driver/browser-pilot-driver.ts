@@ -10,17 +10,18 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 // The single allowed `import ... from 'browser-pilot'` in the whole codebase.
 import {
-  type BatchOptions,
-  type BatchResult,
   type Browser,
   captureStateSignature as bpCaptureStateSignature,
   captureStructureSignature as bpCaptureStructureSignature,
   connect as bpConnect,
   type Dialog,
+  type ExpectNewPageOptions,
   getBrowserWebSocketUrl,
+  getBuildProvenance,
   type Page,
   type PageSnapshot,
   type Step,
+  TargetNotFoundError,
 } from "browser-pilot";
 import * as ChromeLauncher from "chrome-launcher";
 import type { ConnectConfig } from "../config/types.ts";
@@ -30,15 +31,23 @@ import {
   normalizeBrowserUrl,
   type ResolvedAttachConnectArgs,
 } from "./connect-resolution.ts";
+import { normalizeBatchResult } from "./dispatch-metadata.ts";
 import { clickStep, pressStep, submitOptions } from "./navigation.ts";
 import { normalizeSelectorArg } from "./normalize-selector.ts";
 import type {
   ActionOpts,
+  BatchOptions,
+  BatchResult,
+  BrowserPilotProvenance,
   Driver,
   ElementState,
   FillOpts,
   GotoOpts,
+  NativeDialogPolicy,
+  NewPageExpectation,
+  NewPageResult,
   PageHandle,
+  PageStateObservation,
   RankedCandidate,
   RecordOpts,
   RefMap,
@@ -51,7 +60,7 @@ import type {
 } from "./types.ts";
 
 /** Native-dialog policy: how the driver answers `alert`/`confirm`/`beforeunload` dialogs. */
-export type DialogPolicy = "dismiss" | "accept";
+export type DialogPolicy = NativeDialogPolicy;
 
 /**
  * Default actionability/click ceiling (ms) applied to every batch + single action when the
@@ -67,6 +76,11 @@ export const DEFAULT_ACTION_TIMEOUT_MS = 5000;
  * `waitForNavigation({ optional:true })` wait (`[timeouts] nav_ms`).
  */
 export const DEFAULT_NAV_TIMEOUT_MS = 2000;
+
+/** Read the browser-pilot package/source/build identity without opening a browser connection. */
+export function getBrowserPilotProvenance(): BrowserPilotProvenance {
+  return getBuildProvenance();
+}
 
 /** Constructor options for `BrowserPilotDriver`. */
 export interface BrowserPilotDriverOptions {
@@ -118,7 +132,8 @@ type Connection = AttachConnection | LaunchConnection;
  * page ops → `teardown()`.
  */
 export class BrowserPilotDriver implements Driver {
-  private readonly dialogPolicy: DialogPolicy;
+  private dialogPolicy: DialogPolicy;
+  private dialogFailure: string | undefined;
   /**
    * Default actionability/click ceiling (ms) for batches + single actions (`[timeouts] action_ms`).
    * Public + readonly so callers/diagnostics can observe the EFFECTIVE ceiling the runner threaded
@@ -220,14 +235,109 @@ export class BrowserPilotDriver implements Driver {
   /** Register the dialog handler so native alert/confirm/beforeunload never hang the flow. */
   private async installDialogHandler(): Promise<void> {
     if (!this.activePage) return;
-    const policy = this.dialogPolicy;
     await this.activePage.onDialog(async (dialog: Dialog) => {
+      const policy = this.dialogPolicy;
       if (policy === "accept") {
         await dialog.accept();
+      } else if (policy === "dismiss") {
+        await dialog.dismiss();
       } else {
+        this.dialogFailure = `native ${dialog.type} dialog requires manual handling: ${dialog.message}`;
+        // The pinned browser-pilot handler must settle the CDP dialog. Dismissing after recording
+        // the failure preserves fail-closed behavior without leaving the browser hung.
         await dialog.dismiss();
       }
     });
+  }
+
+  setDialogPolicy(policy: NativeDialogPolicy): void {
+    this.dialogPolicy = policy;
+    this.dialogFailure = undefined;
+  }
+
+  async expectNewPage(
+    expectation: NewPageExpectation,
+    action: () => Promise<unknown>,
+  ): Promise<NewPageResult> {
+    const browser = this.browser;
+    const active = this.activePage;
+    if (!browser || !active) {
+      return { matched: false, reason: "browser is not connected" };
+    }
+
+    // browser-pilot owns the target-created/info-changed race. It arms listeners before the
+    // trigger, rejects pre-existing targets, keeps delayed about:blank candidates pending, and
+    // returns a separately pinned Page. The callback is the sole dispatch owner: this method never
+    // invokes it again after an observation failure.
+    const openerTargetId = expectation.openerTargetId ?? expectation.opener ?? active.targetId;
+    const options: ExpectNewPageOptions = {
+      ...(openerTargetId !== undefined ? { openerTargetId } : {}),
+      type: expectation.type ?? "page",
+      ...(expectation.url !== undefined ? { url: expectation.url } : {}),
+      ...(expectation.title !== undefined ? { title: expectation.title } : {}),
+      ...(expectation.timeoutMs !== undefined ? { timeout: expectation.timeoutMs } : {}),
+    };
+
+    try {
+      const popup = await browser.expectNewPage(action, options);
+      const targetProvenance = popup.getTargetProvenance();
+      if (expectation.targetId !== undefined && popup.targetId !== expectation.targetId) {
+        return {
+          matched: false,
+          targetId: popup.targetId,
+          ...(targetProvenance.type !== undefined ? { type: targetProvenance.type } : {}),
+          opener: targetProvenance.openerTargetId ?? openerTargetId,
+          openerTargetId: targetProvenance.openerTargetId ?? openerTargetId,
+          ...(targetProvenance.url !== undefined ? { url: targetProvenance.url } : {}),
+          ...(targetProvenance.title !== undefined ? { title: targetProvenance.title } : {}),
+          reason:
+            `new page ${JSON.stringify(popup.targetId)} did not match targetId ` +
+            `${JSON.stringify(expectation.targetId)}`,
+        };
+      }
+
+      // Switch only after the dependency has attached and initialized the pinned popup. All
+      // subsequent Driver operations therefore target the matched popup, while the opener's page
+      // session remains intact inside browser-pilot.
+      this.activePage = popup;
+      await this.installDialogHandler();
+      const matchedOpener = targetProvenance.openerTargetId ?? openerTargetId;
+      return {
+        matched: true,
+        targetId: popup.targetId,
+        ...(targetProvenance.type !== undefined ? { type: targetProvenance.type } : {}),
+        ...(targetProvenance.url !== undefined ? { url: targetProvenance.url } : {}),
+        ...(targetProvenance.title !== undefined ? { title: targetProvenance.title } : {}),
+        ...(matchedOpener !== undefined
+          ? { opener: matchedOpener, openerTargetId: matchedOpener }
+          : {}),
+      };
+    } catch (error) {
+      // A declared popup that was not observed is an observation failure, not a second chance to
+      // dispatch. Preserve genuine trigger/harness errors for the runner's existing error path.
+      if (!(error instanceof TargetNotFoundError)) throw error;
+      return {
+        matched: false,
+        ...(openerTargetId !== undefined ? { opener: openerTargetId, openerTargetId } : {}),
+        reason: error.message,
+      };
+    }
+  }
+
+  provenance(): BrowserPilotProvenance {
+    return this.browser?.provenance ?? getBrowserPilotProvenance();
+  }
+
+  async pageState(): Promise<PageStateObservation> {
+    const browser = this.browser;
+    const active = this.activePage;
+    if (!browser || !active) return {};
+    const targets = await browser.listTargets();
+    return {
+      activeTargetId: active.targetId,
+      popupCount: targets.filter((target) => target.targetId !== active.targetId).length,
+      ...(this.dialogFailure ? { dialogOpen: true } : {}),
+    };
   }
 
   private async listPageNames(): Promise<string[]> {
@@ -480,7 +590,24 @@ export class BrowserPilotDriver implements Driver {
     if (this.recording && effective.record === undefined) {
       effective.record = { outputDir: this.recording.dir };
     }
-    return page.batch(settled, effective);
+    const result = await page.batch(settled, effective);
+    const normalized = normalizeBatchResult(result);
+    if (this.dialogFailure) {
+      const failure = this.dialogFailure;
+      this.dialogFailure = undefined;
+      return {
+        ...normalized,
+        success: false,
+        steps: normalized.steps.map((step) => ({
+          ...step,
+          success: false,
+          outcomeStatus: "failed",
+          retrySafe: false,
+          retryReason: failure,
+        })),
+      };
+    }
+    return normalized;
   }
 
   // --- single actions ---

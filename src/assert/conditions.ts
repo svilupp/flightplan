@@ -50,7 +50,12 @@
 // match is: a `*`-glob if the pattern contains `*`, else a case-sensitive SUBSTRING match
 // (so `/checkout` matches `https://x/checkout?ok=1`). VALUE match is EXACT string equality.
 
-import type { InteractiveElement, PageSnapshot, SnapshotNode } from "../driver/types.ts";
+import type {
+  InteractiveElement,
+  PageSnapshot,
+  PageStateObservation,
+  SnapshotNode,
+} from "../driver/types.ts";
 import type { Assertion } from "../flow/types.ts";
 import type { AssertType } from "../types.ts";
 import type { AssertionResult, ConditionOpts } from "./types.ts";
@@ -244,6 +249,9 @@ interface TargetState {
   count: number;
   text: string;
   value: string | null;
+  checked?: boolean;
+  disabled?: boolean;
+  selected?: boolean;
 }
 
 /**
@@ -268,7 +276,16 @@ async function resolveTargetState(
   if (parsed.kind === "synthetic" && opts.driver.elementState) {
     // Pure synthetic/CSS target with the live-DOM primitive: answered WITHOUT a snapshot fetch.
     const s = await opts.driver.elementState(parsed.raw);
-    return { present: s.exists, visible: s.visible, count: s.count, text: s.text, value: s.value };
+    return {
+      present: s.exists,
+      visible: s.visible,
+      count: s.count,
+      text: s.text,
+      value: s.value,
+      ...(s.checked !== undefined ? { checked: s.checked } : {}),
+      ...(s.disabled !== undefined ? { disabled: s.disabled } : {}),
+      ...(s.selected !== undefined ? { selected: s.selected } : {}),
+    };
   }
   // Snapshot path (semantic targets, or `elementState` unavailable → no behaviour change).
   const snapshot = await source();
@@ -285,7 +302,19 @@ async function resolveTargetState(
       .join(" ");
   }
   // `value` mirrors the current `value` evaluator: the first matching element's value (or null).
-  return { present, visible: present, count: els.length, text, value: els[0]?.value ?? null };
+  const first = els[0];
+  const attrs = first?.attributes;
+  const selected = attrs?.["aria-selected"] === "true";
+  return {
+    present,
+    visible: present,
+    count: els.length,
+    text,
+    value: first?.value ?? null,
+    ...(first?.checked !== undefined ? { checked: first.checked } : {}),
+    ...(first?.disabled !== undefined ? { disabled: first.disabled } : {}),
+    ...(first && attrs?.["aria-selected"] !== undefined ? { selected } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +326,22 @@ async function resolveTargetState(
  * match); otherwise it is a case-sensitive SUBSTRING test. Documented + tested. A query string
  * in the actual URL does NOT break a substring pattern (`/checkout` ⊂ `/checkout?ok=1`).
  */
-export function urlMatchesPattern(actual: string, pattern: string): boolean {
+export function urlMatchesPattern(
+  actual: string,
+  pattern: string,
+  mode: "exact" | "origin_path" | "glob" | "contains" = pattern.includes("*") ? "glob" : "contains",
+): boolean {
+  if (mode === "exact") return actual === pattern;
+  if (mode === "origin_path") {
+    try {
+      const a = new URL(actual);
+      const p = new URL(pattern, actual);
+      return a.origin === p.origin && a.pathname === p.pathname;
+    } catch {
+      return false;
+    }
+  }
+  if (mode === "contains") return actual.includes(pattern);
   if (pattern.includes("*")) {
     const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
     return new RegExp(`^${escaped}$`).test(actual);
@@ -369,6 +413,7 @@ export function text(
   target: string | undefined,
   expected: string,
   opts: ConditionOpts,
+  match: "exact" | "contains" | "regex" = "contains",
 ): Promise<AssertionResult> {
   return poll("text", target ?? expected, opts, async (source) => {
     // Synthetic/CSS target with a live-DOM primitive → read the element's text directly (the AX
@@ -380,7 +425,7 @@ export function text(
       parseTarget(target).kind === "synthetic"
     ) {
       const state = await resolveTargetState(target, source, opts);
-      const ok = containsCI(state.text, expected);
+      const ok = matchText(state.text, expected, match);
       return {
         pass: ok,
         message: ok
@@ -406,7 +451,7 @@ export function text(
       haystack = snap.text;
       scope = "page";
     }
-    const ok = containsCI(haystack, expected);
+    const ok = matchText(haystack, expected, match);
     return {
       pass: ok,
       message: ok ? `${scope} contains "${expected}"` : `${scope} does not contain "${expected}"`,
@@ -415,15 +460,132 @@ export function text(
 }
 
 /** `url` — the current page URL matches the pattern (glob or substring; see `urlMatchesPattern`). */
-export function url(pattern: string, opts: ConditionOpts): Promise<AssertionResult> {
+export function url(
+  pattern: string,
+  opts: ConditionOpts,
+  match: "exact" | "origin_path" | "glob" | "contains" = pattern.includes("*")
+    ? "glob"
+    : "contains",
+): Promise<AssertionResult> {
   return poll("url", pattern, opts, async (source) => {
     const snap = await source();
-    const ok = urlMatchesPattern(snap.url, pattern);
+    const ok = urlMatchesPattern(snap.url, pattern, match);
     return {
       pass: ok,
       message: ok
         ? `url "${snap.url}" matches "${pattern}"`
         : `url "${snap.url}" does not match "${pattern}"`,
+    };
+  });
+}
+
+function matchText(
+  actual: string,
+  expected: string,
+  match: "exact" | "contains" | "regex",
+): boolean {
+  if (match === "exact") return actual === expected;
+  if (match === "regex") {
+    try {
+      return new RegExp(expected).test(actual);
+    } catch {
+      return false;
+    }
+  }
+  return containsCI(actual, expected);
+}
+
+/** Evaluate a deterministic element state without invoking an action. */
+export function state(
+  target: string | undefined,
+  expected: "visible" | "hidden" | "enabled" | "disabled" | "checked" | "unchecked" | "selected",
+  opts: ConditionOpts,
+  expectedValue?: string,
+): Promise<AssertionResult> {
+  return poll("state", target ?? expected, opts, async (source) => {
+    const current = target ? await resolveTargetState(target, source, opts) : undefined;
+    let ok = false;
+    if (!current) ok = false;
+    else if (expected === "visible") ok = current.visible;
+    else if (expected === "hidden") ok = !current.visible;
+    else if (expected === "enabled") ok = current.present && current.disabled !== true;
+    else if (expected === "disabled") ok = current.disabled === true;
+    else if (expected === "checked") ok = current.checked === true;
+    else if (expected === "unchecked") ok = current.checked === false;
+    else if (expected === "selected") ok = current.selected === true;
+    if (ok && expectedValue !== undefined) ok = current?.value === expectedValue;
+    return {
+      pass: ok,
+      message: ok
+        ? `state ${expected} holds for ${target ?? "page"}`
+        : `state ${expected} does not hold for ${target ?? "page"}`,
+    };
+  });
+}
+
+/** Evaluate browser-level state that is not represented by an element snapshot. */
+export function pageState(
+  expected: "dialog" | "menu" | "new_page",
+  opts: ConditionOpts,
+): Promise<AssertionResult> {
+  return poll("state", expected, opts, async () => {
+    let observed: PageStateObservation | undefined;
+    try {
+      observed = opts.driver.pageState ? await opts.driver.pageState() : undefined;
+    } catch {
+      observed = undefined;
+    }
+    const pass =
+      expected === "dialog"
+        ? observed?.dialogOpen === true
+        : expected === "menu"
+          ? observed?.menuOpen === true
+          : (observed?.popupCount ?? 0) > 0;
+    return {
+      pass,
+      message: pass ? `page state ${expected} holds` : `page state ${expected} was not observed`,
+    };
+  });
+}
+
+/** Compare the current page/field value with a before-state or named capture. */
+export function transition(
+  kind: "url_changed" | "text_changed" | "value_changed" | "state_changed",
+  target: string | undefined,
+  opts: ConditionOpts,
+  from?: string,
+): Promise<AssertionResult> {
+  return poll("transition", target ?? kind, opts, async (source) => {
+    const snap = await source();
+    const before = opts.beforeState;
+    let currentValue: string | null = null;
+    let beforeValue: string | null | undefined;
+    if (kind === "url_changed") {
+      currentValue = snap.url;
+      beforeValue = from ? opts.captures?.[from] : before?.url;
+    } else if (kind === "text_changed") {
+      const current = target
+        ? await resolveTargetState(target, () => Promise.resolve(snap), opts)
+        : undefined;
+      currentValue = current?.text ?? snap.text;
+      beforeValue = from ? opts.captures?.[from] : before?.text;
+    } else if (kind === "value_changed") {
+      if (!target) return { pass: false, message: "value_changed requires a selector" };
+      const current = await resolveTargetState(target, () => Promise.resolve(snap), opts);
+      currentValue = current.value;
+      beforeValue = from ? opts.captures?.[from] : before?.values?.[target];
+    } else {
+      if (!target) return { pass: false, message: "state_changed requires a selector" };
+      const current = await resolveTargetState(target, () => Promise.resolve(snap), opts);
+      currentValue = `${current.visible}:${current.value}:${current.checked}:${current.disabled}:${current.selected}`;
+      beforeValue = from ? opts.captures?.[from] : before?.states?.[target];
+    }
+    const ok = beforeValue !== undefined && currentValue !== beforeValue;
+    return {
+      pass: ok,
+      message: ok
+        ? `${kind} observed (${String(beforeValue)} → ${String(currentValue)})`
+        : `${kind} not observed (before=${String(beforeValue)}, current=${String(currentValue)})`,
     };
   });
 }
@@ -539,9 +701,9 @@ export function evaluateDeterministic(
       return hidden(target, opts, expectedText);
     }
     case "text":
-      return text(assertion.selector, assertion.text, opts);
+      return text(assertion.selector ?? assertion.landmark, assertion.text, opts, assertion.match);
     case "url":
-      return url(assertion.url, opts);
+      return url(assertion.url, opts, assertion.match);
     case "value": {
       if (assertion.selector === undefined) {
         throw new Error("`value` assertion requires a `selector`");
@@ -554,6 +716,23 @@ export function evaluateDeterministic(
       }
       return count(assertion.selector, assertion.count, opts);
     }
+    case "state": {
+      if (
+        assertion.state === "dialog" ||
+        assertion.state === "menu" ||
+        assertion.state === "new_page"
+      ) {
+        return pageState(assertion.state, opts);
+      }
+      return state(assertion.selector, assertion.state, opts, assertion.value);
+    }
+    case "transition":
+      return transition(
+        assertion.kind,
+        assertion.selector,
+        opts,
+        assertion.from ?? assertion.capture,
+      );
     case "ai_judge":
       throw new Error(
         "ai_judge is not a deterministic assertion (route via the engine to the Phase-4 stub)",

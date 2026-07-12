@@ -36,6 +36,7 @@ import type { ModelUsage } from "../artifacts/index.ts";
 import {
   type AiCallEvent,
   type Clock as ArtifactClock,
+  type ArtifactProvenance,
   type ArtifactWriters,
   createRun,
   type LadderTier,
@@ -51,14 +52,33 @@ import {
   runAssertions,
 } from "../assert/index.ts";
 import type { CacheConfig, ConnectConfig, ResolvedConfig } from "../config/types.ts";
-import { BrowserPilotDriver, type DialogPolicy } from "../driver/browser-pilot-driver.ts";
-import type { Driver } from "../driver/index.ts";
+import {
+  BrowserPilotDriver,
+  type DialogPolicy,
+  getBrowserPilotProvenance,
+} from "../driver/browser-pilot-driver.ts";
+import type {
+  ActionReceipt,
+  DispatchState,
+  Driver,
+  MatchedCondition,
+  NativeDialogPolicy,
+  NewPageExpectation,
+  NewPageResult,
+} from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { type ImportGraph, resolveImports } from "../flow/imports.ts";
 import { describeTarget, normalizeTarget } from "../flow/normalize-target.ts";
 import { loadFlowFileFlattened } from "../flow/run.ts";
 import { applyTemplatingDeep, resolveInputs, type TemplateContext } from "../flow/template.ts";
-import type { AiJudgeAssertion, Assertion, FlowFile, Step } from "../flow/types.ts";
+import type {
+  AiJudgeAssertion,
+  Assertion,
+  Capture,
+  FlowFile,
+  PopupExpectation,
+  Step,
+} from "../flow/types.ts";
 import {
   createLadder,
   type LadderResult,
@@ -215,6 +235,17 @@ interface RunState {
    */
   replanCount: number;
   repairedSteps: string[];
+  captures: Record<string, string>;
+  pages: Array<{
+    targetId?: string;
+    type?: string;
+    opener?: string;
+    openerTargetId?: string;
+    url?: string;
+    title?: string;
+    role: "active" | "popup";
+  }>;
+  inconclusiveReason: string | null;
 }
 
 /** A fresh, empty {@link RunState}. */
@@ -233,6 +264,9 @@ function freshRunState(): RunState {
     proposedPatchPath: null,
     replanCount: 0,
     repairedSteps: [],
+    captures: {},
+    pages: [],
+    inconclusiveReason: null,
   };
 }
 
@@ -299,6 +333,9 @@ interface RunServices {
     escalateConfidence?: number;
     escalateAttempts?: number;
   };
+  inputs: Record<string, string>;
+  env: Record<string, string | undefined>;
+  dialogPolicy: NativeDialogPolicy;
 }
 
 /**
@@ -455,6 +492,17 @@ async function emitLadderTrace(
   if (exec.coveringElement !== undefined) {
     browserAction.coveringElement = JSON.stringify(exec.coveringElement);
   }
+  if (exec.dispatchState !== undefined) browserAction.dispatchState = exec.dispatchState;
+  if (exec.retrySafe !== undefined) browserAction.retrySafe = exec.retrySafe;
+  if (exec.matchedConditions !== undefined)
+    browserAction.matchedConditions = exec.matchedConditions;
+  if (exec.attempts !== undefined) browserAction.attempts = exec.attempts;
+  if (exec.retryDecisionReason !== undefined)
+    browserAction.retryDecisionReason = exec.retryDecisionReason;
+  if (exec.retryReason !== undefined) browserAction.retryReason = exec.retryReason;
+  if (exec.receipt !== undefined) browserAction.receipt = exec.receipt;
+  if (exec.effect !== undefined) browserAction.effect = exec.effect;
+  if (exec.anchor !== undefined) browserAction.anchor = exec.anchor;
   await writers.trace.emitBrowserAction(browserAction);
   span.event(
     TELEMETRY_EVENTS.browserAction,
@@ -469,6 +517,16 @@ async function emitLadderTrace(
       durationMs: attempt.durationMs ?? 0,
     };
     if (attempt.strategy != null) ev.strategy = attempt.strategy;
+    if (attempt.dispatchState !== undefined) ev.dispatchState = attempt.dispatchState;
+    if (attempt.retrySafe !== undefined) ev.retrySafe = attempt.retrySafe;
+    if (attempt.matchedConditions !== undefined) ev.matchedConditions = attempt.matchedConditions;
+    if (attempt.attempts !== undefined) ev.attempts = attempt.attempts;
+    if (attempt.retryDecisionReason !== undefined)
+      ev.retryDecisionReason = attempt.retryDecisionReason;
+    if (attempt.retryReason !== undefined) ev.retryReason = attempt.retryReason;
+    if (attempt.receipt !== undefined) ev.receipt = attempt.receipt;
+    if (attempt.effect !== undefined) ev.effect = attempt.effect;
+    if (attempt.anchor !== undefined) ev.anchor = attempt.anchor;
     await writers.trace.emitResolutionAttempt(ev);
     span.event(
       TELEMETRY_EVENTS.resolutionAttempt,
@@ -496,12 +554,16 @@ async function runAndRecordAssertions(
   state: RunState,
   span: SpanHandle,
   redactor: Redactor,
-): Promise<{ anyFailed: boolean }> {
-  if (assertions.length === 0) return { anyFailed: false };
+): Promise<{ anyFailed: boolean; deterministicCount: number; deterministicFailed: number }> {
+  if (assertions.length === 0)
+    return { anyFailed: false, deterministicCount: 0, deterministicFailed: 0 };
   // Thread the step id so a routed `ai_judge` labels its `ai_call` purpose `judge:<stepId>`.
   const results = await runAssertions(assertions, { ...assertCtx, stepId }, phase);
   let anyFailed = false;
+  let deterministicCount = 0;
+  let deterministicFailed = 0;
   for (const r of results) {
+    if (r.type !== "ai_judge") deterministicCount += 1;
     // Redact the human-readable assertion message BEFORE it reaches any sink. The deterministic
     // evaluators (assert/conditions.ts) echo the configured `expected` AND the live observed DOM
     // value into `r.message` (value/text/visible/hidden/count), so a `secret:true` fill value would
@@ -523,6 +585,7 @@ async function runAndRecordAssertions(
     );
     if (!r.pass) {
       anyFailed = true;
+      if (r.type !== "ai_judge") deterministicFailed += 1;
       state.failedAssertions.push({ step: stepId, type: r.type, detail: message });
       // A failed assertion fails the run ONLY when fail_on_assertion is true. With it false,
       // failures are reported (above) but treated as non-fatal warnings (the verdict stays
@@ -533,7 +596,105 @@ async function runAndRecordAssertions(
       }
     }
   }
-  return { anyFailed };
+  return { anyFailed, deterministicCount, deterministicFailed };
+}
+
+function normalizeDialogPolicy(policy: NonNullable<Step["dialog"]>): NativeDialogPolicy {
+  return policy === "manual" ? "prompt" : policy;
+}
+
+function capturesForStep(step: Step): Capture[] {
+  if (!("capture" in step) || step.capture === undefined) return [];
+  return Array.isArray(step.capture) ? step.capture : [step.capture];
+}
+
+function popupForStep(step: Step): PopupExpectation | undefined {
+  if (!("expect_page" in step || "popup" in step || "new_page" in step)) return undefined;
+  return (
+    ("expect_page" in step && step.expect_page) ||
+    ("popup" in step && step.popup) ||
+    ("new_page" in step && step.new_page) ||
+    undefined
+  );
+}
+
+function toDriverPopupExpectation(expectation: PopupExpectation): NewPageExpectation {
+  return {
+    ...(expectation.opener !== undefined
+      ? { opener: expectation.opener, openerTargetId: expectation.opener }
+      : {}),
+    ...(expectation.url !== undefined ? { url: expectation.url } : {}),
+    ...(expectation.title !== undefined ? { title: expectation.title } : {}),
+    ...(expectation.type !== undefined ? { type: expectation.type } : {}),
+    ...(expectation.target_id !== undefined ? { targetId: expectation.target_id } : {}),
+    ...(expectation.timeout_ms !== undefined ? { timeoutMs: expectation.timeout_ms } : {}),
+  };
+}
+
+async function captureBeforeState(
+  driver: Driver,
+  step: Step,
+): Promise<NonNullable<ReturnType<typeof buildAssertContext>["beforeState"]>> {
+  const assertions = "assert" in step && step.assert ? step.assert : [];
+  const transitions = assertions.filter((a) => a.type === "transition");
+  if (transitions.length === 0) return {};
+  const out: NonNullable<ReturnType<typeof buildAssertContext>["beforeState"]> = {
+    url: await driver.currentUrl().catch(() => undefined),
+    values: {},
+    states: {},
+  };
+  const needsText = transitions.some((a) => a.type === "transition" && a.kind === "text_changed");
+  const snapshot = needsText ? await driver.snapshot() : undefined;
+  if (snapshot) out.text = snapshot.text;
+  for (const assertion of transitions) {
+    if (assertion.type !== "transition" || !assertion.selector) continue;
+    const state = await driver.elementState?.(assertion.selector);
+    if (!state) continue;
+    out.values![assertion.selector] = state.value;
+    out.states![assertion.selector] =
+      `${state.visible}:${state.value}:${state.checked}:${state.disabled}:${state.selected}`;
+  }
+  return out;
+}
+
+async function captureStepValues(driver: Driver, step: Step): Promise<Record<string, string>> {
+  const specs = capturesForStep(step);
+  if (specs.length === 0) return {};
+  const out: Record<string, string> = {};
+  let snapshot: Awaited<ReturnType<Driver["snapshot"]>> | undefined;
+  for (const spec of specs) {
+    if (spec.type === "url") {
+      out[spec.name] = await driver.currentUrl();
+      continue;
+    }
+    if (spec.selector && driver.elementState) {
+      const state = await driver.elementState(spec.selector);
+      if (spec.type === "value") out[spec.name] = state.value ?? "";
+      else if (spec.type === "text") out[spec.name] = state.text;
+      else if (spec.state === "visible") out[spec.name] = String(state.visible);
+      else if (spec.state === "hidden") out[spec.name] = String(!state.visible);
+      else if (spec.state === "enabled") out[spec.name] = String(state.disabled !== true);
+      else if (spec.state === "disabled") out[spec.name] = String(state.disabled === true);
+      else if (spec.state === "checked") out[spec.name] = String(state.checked === true);
+      else if (spec.state === "unchecked") out[spec.name] = String(state.checked === false);
+      else if (spec.state === "selected") out[spec.name] = String(state.selected === true);
+      else out[spec.name] = state.value ?? state.text;
+      continue;
+    }
+    if (spec.type === "state" && driver.pageState) {
+      const page = await driver.pageState();
+      if (spec.state === "dialog") out[spec.name] = String(page.dialogOpen === true);
+      else if (spec.state === "menu") out[spec.name] = String(page.menuOpen === true);
+      else if (spec.state === "new_page") out[spec.name] = String((page.popupCount ?? 0) > 0);
+      continue;
+    }
+    snapshot ??= await driver.snapshot();
+    if (spec.type === "text") out[spec.name] = snapshot.text;
+    else if (spec.type === "value") out[spec.name] = "";
+    else if (spec.type === "state")
+      out[spec.name] = String(snapshot.interactiveElements.length > 0);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -570,6 +731,18 @@ interface StepActionOutcome {
    * skipped.
    */
   signatureBasis?: { sig: string; url: string };
+  dispatchState?: DispatchState;
+  retrySafe?: boolean;
+  matchedConditions?: MatchedCondition[];
+  attempts?: number;
+  retryDecisionReason?: string;
+  retryReason?: string;
+  receipt?: ActionReceipt;
+  effect?: "observe" | "idempotent" | "at_most_once";
+  anchor?: string;
+  transportAmbiguous?: boolean;
+  popup?: NewPageResult;
+  captures?: Record<string, string>;
 }
 
 /**
@@ -708,7 +881,40 @@ async function performStepAction(
       // downstream handling (trace emit, lock write-back, settle, error/advisory) is IDENTICAL to a
       // single-step resolve — only the resolve+act was hoisted. A group of size 1 or any broken
       // safety condition never sets `preResolved`, so the normal single-step path runs unchanged.
-      const result = preResolved ?? (await ladder.resolveStep(step, ctx));
+      const expectation = popupForStep(step);
+      if (expectation && !driver.expectNewPage) {
+        return {
+          ok: false,
+          error:
+            `step ${step.id} declares a new-page expectation, but the driver cannot arm ` +
+            "popup observation before dispatch",
+          dispatchState: "not_dispatched",
+          retrySafe: true,
+        };
+      }
+      let popup: NewPageResult | undefined;
+      let result: LadderResult;
+      const resolve = async (): Promise<LadderResult> =>
+        preResolved ?? ladder.resolveStep(step, ctx);
+      if (expectation && driver.expectNewPage) {
+        popup = await driver.expectNewPage(toDriverPopupExpectation(expectation), async () => {
+          result = await resolve();
+          return result;
+        });
+        // The callback above is the only dispatch owner. A missing/incorrect popup is an
+        // observation failure and must not trigger another ladder tier or click.
+        if (!result!) {
+          return {
+            ok: false,
+            error: "new-page expectation completed without a resolution result",
+            dispatchState: "uncertain",
+            retrySafe: false,
+            popup,
+          };
+        }
+      } else {
+        result = await resolve();
+      }
       const selectorOrIntent = ladderSelectorOrIntent(step);
       await emitLadderTrace(
         writers,
@@ -747,9 +953,27 @@ async function performStepAction(
         // value is `[timeouts] settle_ms`; `0` skips the sleep entirely.
         if (services.settleMs > 0) await clock.sleep(services.settleMs);
         return {
-          ok: true,
+          ok: popup?.matched !== false,
+          ...(popup?.matched === false
+            ? { error: popup.reason ?? "new-page expectation was not observed" }
+            : {}),
           tier: exec.tier,
           ...(creditResolution ? { creditResolution } : {}),
+          ...(exec.dispatchState !== undefined ? { dispatchState: exec.dispatchState } : {}),
+          ...(exec.retrySafe !== undefined ? { retrySafe: exec.retrySafe } : {}),
+          ...(exec.matchedConditions !== undefined
+            ? { matchedConditions: exec.matchedConditions }
+            : {}),
+          ...(exec.attempts !== undefined ? { attempts: exec.attempts } : {}),
+          ...(exec.retryDecisionReason !== undefined
+            ? { retryDecisionReason: exec.retryDecisionReason }
+            : {}),
+          ...(exec.retryReason !== undefined ? { retryReason: exec.retryReason } : {}),
+          ...(exec.receipt !== undefined ? { receipt: exec.receipt } : {}),
+          ...(exec.effect !== undefined ? { effect: exec.effect } : {}),
+          ...(exec.anchor !== undefined ? { anchor: exec.anchor } : {}),
+          ...(popup ? { popup } : {}),
+          ...(popup?.matched === false ? { transportAmbiguous: true, retrySafe: false } : {}),
         };
       }
       // The step could not resolve+act. With AI wired this may be a TERMINAL L4 advisor verdict
@@ -760,9 +984,24 @@ async function performStepAction(
         (exec.escalate
           ? "step escalated past the deterministic ladder but no AI tier resolved it"
           : "step failed to resolve at L1");
-      const out: StepActionOutcome = { ok: false, tier: exec.tier, error: detail };
+      const out: StepActionOutcome = {
+        ok: false,
+        tier: exec.tier,
+        error: detail,
+        ...(exec.effect !== undefined ? { effect: exec.effect } : {}),
+        ...(exec.anchor !== undefined ? { anchor: exec.anchor } : {}),
+      };
       if (exec.advisory) out.advisory = exec.advisory;
       if (exec.signatureBasis) out.signatureBasis = exec.signatureBasis;
+      if (exec.dispatchState !== undefined) out.dispatchState = exec.dispatchState;
+      if (exec.retrySafe !== undefined) out.retrySafe = exec.retrySafe;
+      if (exec.matchedConditions !== undefined) out.matchedConditions = exec.matchedConditions;
+      if (exec.attempts !== undefined) out.attempts = exec.attempts;
+      if (exec.retryDecisionReason !== undefined)
+        out.retryDecisionReason = exec.retryDecisionReason;
+      if (exec.retryReason !== undefined) out.retryReason = exec.retryReason;
+      if (exec.receipt !== undefined) out.receipt = exec.receipt;
+      if (popup) out.popup = popup;
       return out;
     }
   }
@@ -858,7 +1097,8 @@ function isVisionBatchable(step: Step): step is Step & { tier_hint: "vision" } {
     "tier_hint" in step &&
     step.tier_hint === "vision" &&
     !("assert" in step && step.assert && step.assert.length > 0) &&
-    !("on_fail" in step && step.on_fail)
+    !("on_fail" in step && step.on_fail) &&
+    popupForStep(step) === undefined
   );
 }
 
@@ -926,7 +1166,13 @@ async function executeSteps(
   let cursor = 0;
   while (cursor < steps.length) {
     if (state.aborted) break;
-    const step = steps[cursor]!;
+    const rawStep = steps[cursor]!;
+    // Capture references are resolved at execution time, after earlier steps have observed them.
+    const step = applyTemplatingDeep(rawStep, {
+      inputs: services.inputs,
+      env: services.env,
+      captures: state.captures,
+    });
 
     // (0) max_steps budget (Phase 4). The tracker does NOT enforce this — the runner loop does.
     // The (maxSteps+1)-th step is never started: the run fails fast with the partial evidence
@@ -946,9 +1192,22 @@ async function executeSteps(
 
     // Attempt an `on_fail` jump for THIS step: returns the target index when the jump is taken
     // (failure-bearing state already rolled back), or `null` when we should fail normally.
-    const tryOnFail = (): number | null => {
+    const tryOnFail = (failedAction?: StepActionOutcome): number | null => {
+      // A possible post-dispatch failure is observation-only. Do not let `on_fail = self` or a
+      // recovery jump turn an uncertain transport result into a second side effect.
+      if (
+        failedAction?.dispatchState === "dispatched" ||
+        failedAction?.dispatchState === "uncertain" ||
+        failedAction?.retrySafe === false
+      ) {
+        return null;
+      }
+      if (step.effect === "at_most_once" && failedAction) return null;
       const onFail = "on_fail" in step ? step.on_fail : undefined;
       if (!onFail) return null;
+      if (step.retry?.policy === "never" && (onFail.goto === "self" || onFail.goto === step.id)) {
+        return null;
+      }
       // `goto = "self"` (or the step's own id) means retry this same step.
       const targetId = onFail.goto === "self" ? step.id : onFail.goto;
       const targetIndex = idToIndex.get(targetId);
@@ -965,6 +1224,12 @@ async function executeSteps(
     const startPayload: Parameters<ArtifactWriters["run"]["emitStepStart"]>[0] = {
       stepId: step.id,
       do: step.do,
+      ...(step.effect !== undefined ? { effect: step.effect } : {}),
+      ...(step.anchor !== undefined
+        ? { anchor: step.anchor }
+        : "target" in step && describeTarget(step.target)
+          ? { anchor: describeTarget(step.target) }
+          : {}),
     };
     {
       const targetDesc = "target" in step ? describeTarget(step.target) : undefined;
@@ -996,6 +1261,14 @@ async function executeSteps(
     };
 
     try {
+      if (driver.setDialogPolicy) {
+        await driver.setDialogPolicy(
+          step.dialog ? normalizeDialogPolicy(step.dialog) : services.dialogPolicy,
+        );
+      }
+
+      assertCtx.captures = state.captures;
+      assertCtx.beforeState = await captureBeforeState(driver, step);
       // (1) before-phase assertions (e.g. preconditions).
       const beforeAssertions = "assert" in step && step.assert ? step.assert : [];
       const before = await runAndRecordAssertions(
@@ -1016,6 +1289,12 @@ async function executeSteps(
         await emitStepEnd(writers, step.id, false, clock.now() - stepStart, {
           healed: false,
           error: "precondition (before-assertion) failed",
+          ...(step.effect !== undefined ? { effect: step.effect } : {}),
+          ...(step.anchor !== undefined
+            ? { anchor: step.anchor }
+            : "target" in step && describeTarget(step.target)
+              ? { anchor: describeTarget(step.target) }
+              : {}),
         });
         recordStepSummary(state, step, false, undefined, "precondition (before) failed", false);
         endStep(false, clock.now() - stepStart, false);
@@ -1089,13 +1368,6 @@ async function executeSteps(
         state.aborted = true;
       }
 
-      // A step-ACTION failure (the step couldn't resolve+act) is a deterministic step failure: it
-      // always fails the run (independent of fail_on_assertion, which governs assertions only).
-      if (!action.ok) {
-        state.verdictFailed = true;
-        if (state.failedStep === null) state.failedStep = step.id;
-      }
-
       // L4 advisory verdict (Phase 4). The step still counts as failed (the advisor never acts);
       // we capture the verdict to act on after the loop and to annotate the summary. It NEVER
       // overrides the run verdict.
@@ -1108,10 +1380,15 @@ async function executeSteps(
         });
       }
 
-      // (3) after-phase assertions (validation). Run even if the action failed? No — if the action
-      // failed there is nothing meaningful to validate; record the failure and stop the step.
+      // (3) after-phase assertions (validation). A dispatched/uncertain action is observable even
+      // when transport reported `ok=false`; deterministic postconditions may prove the effect and
+      // rescue the logical step without redispatching it.
       let afterFailed = false;
-      if (action.ok) {
+      let afterDeterministicCount = 0;
+      let afterDeterministicFailed = 0;
+      const mayObserve =
+        action.ok || action.dispatchState === "dispatched" || action.dispatchState === "uncertain";
+      if (mayObserve) {
         const afterAssertions = "assert" in step && step.assert ? step.assert : [];
         const after = await runAndRecordAssertions(
           afterAssertions,
@@ -1124,12 +1401,50 @@ async function executeSteps(
           services.redactor,
         );
         afterFailed = after.anyFailed;
+        afterDeterministicCount = after.deterministicCount;
+        afterDeterministicFailed = after.deterministicFailed;
+      }
+
+      const captured = await captureStepValues(driver, step);
+      Object.assign(state.captures, captured);
+      assertCtx.captures = state.captures;
+      if (action.popup) {
+        state.pages.push({
+          ...(action.popup.targetId !== undefined ? { targetId: action.popup.targetId } : {}),
+          ...(action.popup.type !== undefined ? { type: action.popup.type } : {}),
+          ...(action.popup.opener !== undefined ? { opener: action.popup.opener } : {}),
+          ...(action.popup.openerTargetId !== undefined
+            ? { openerTargetId: action.popup.openerTargetId }
+            : {}),
+          ...(action.popup.url !== undefined ? { url: action.popup.url } : {}),
+          ...(action.popup.title !== undefined ? { title: action.popup.title } : {}),
+          role: "popup",
+        });
+      }
+
+      const rescuePassed =
+        !action.ok &&
+        (action.dispatchState === "dispatched" || action.dispatchState === "uncertain") &&
+        afterDeterministicCount > 0 &&
+        afterDeterministicFailed === 0;
+      const transportAmbiguous = rescuePassed || action.transportAmbiguous === true;
+      const criticalPossibleDispatch = action.dispatchState !== "not_dispatched";
+      if (!action.ok && !rescuePassed) {
+        if (step.effect === "at_most_once" && criticalPossibleDispatch) {
+          state.inconclusiveReason =
+            `step ${step.id} may have dispatched an at-most-once effect but deterministic ` +
+            "postconditions did not confirm it; no redispatch was attempted";
+          state.aborted = true;
+        } else {
+          state.verdictFailed = true;
+          if (state.failedStep === null) state.failedStep = step.id;
+        }
       }
 
       // (3.5) opt-in per-step screenshot frame (video recording on), honoring `redact_media`.
       await maybePersistScreenshot(driver, step, services, stepSpan);
 
-      const stepOk = action.ok && !afterFailed;
+      const stepOk = (action.ok || rescuePassed) && !afterFailed;
       const durationMs = clock.now() - stepStart;
 
       // (3.6) Credit the lock write-back + heal accounting — GATED on the FULL step outcome.
@@ -1166,15 +1481,40 @@ async function executeSteps(
       // `on_fail` recovery: a step that would FAIL THE RUN (a failed action, or a failing
       // after-assertion under fail_on_assertion) can jump instead of failing. A hard infra error
       // (state.runError) is NEVER recoverable — it always aborts with verdict `error`.
-      const wouldFailRun = !action.ok || (afterFailed && assertCtx.failOnAssertion);
-      const jump = wouldFailRun && !state.runError ? tryOnFail() : null;
+      const wouldFailRun = !stepOk || (afterFailed && assertCtx.failOnAssertion);
+      const jump =
+        wouldFailRun && !state.runError && !state.inconclusiveReason ? tryOnFail(action) : null;
 
       await emitStepEnd(writers, step.id, stepOk, durationMs, {
         healed,
         ...(action.tier ? { tier: action.tier } : {}),
         ...(action.error ? { error: action.error } : {}),
+        ...(action.dispatchState !== undefined ? { dispatchState: action.dispatchState } : {}),
+        ...(action.retrySafe !== undefined ? { retrySafe: action.retrySafe } : {}),
+        ...(action.matchedConditions !== undefined
+          ? { matchedConditions: action.matchedConditions }
+          : {}),
+        ...(action.attempts !== undefined ? { attempts: action.attempts } : {}),
+        ...(action.retryDecisionReason !== undefined
+          ? { retryDecisionReason: action.retryDecisionReason }
+          : {}),
+        ...(action.retryReason !== undefined ? { retryReason: action.retryReason } : {}),
+        ...(action.receipt !== undefined ? { receipt: action.receipt } : {}),
+        ...(action.effect !== undefined ? { effect: action.effect } : { effect: step.effect }),
+        ...(action.anchor !== undefined
+          ? { anchor: action.anchor }
+          : {
+              anchor: step.anchor ?? ("target" in step ? describeTarget(step.target) : undefined),
+            }),
+        ...(transportAmbiguous ? { transportAmbiguous: true } : {}),
+        ...(Object.keys(captured).length > 0 ? { captures: captured } : {}),
+        ...(action.popup ? { popup: action.popup } : {}),
       });
-      recordStepSummary(state, step, stepOk, action.tier, action.error, healed);
+      recordStepSummary(state, step, stepOk, action.tier, action.error, healed, {
+        ...action,
+        ...(transportAmbiguous ? { transportAmbiguous: true } : {}),
+        ...(Object.keys(captured).length > 0 ? { captures: captured } : {}),
+      });
       endStep(stepOk, durationMs, healed, action.tier);
 
       if (jump !== null) {
@@ -1191,6 +1531,8 @@ async function executeSteps(
       if (
         wouldFailRun &&
         !state.runError &&
+        !transportAmbiguous &&
+        step.effect !== "at_most_once" &&
         stepsAttempted <= steps.length + 1 && // guard is soft; max_steps is the real backstop
         runtime &&
         services.plan.enabled &&
@@ -1279,6 +1621,12 @@ async function executeSteps(
         await emitStepEnd(writers, step.id, false, clock.now() - stepStart, {
           healed: false,
           error: detail,
+          ...(step.effect !== undefined ? { effect: step.effect } : {}),
+          ...(step.anchor !== undefined
+            ? { anchor: step.anchor }
+            : "target" in step && describeTarget(step.target)
+              ? { anchor: describeTarget(step.target) }
+              : {}),
         });
         recordStepSummary(state, step, false, undefined, detail, false);
         endStep(false, clock.now() - stepStart, false);
@@ -1425,7 +1773,23 @@ function emitStepEnd(
   stepId: string,
   ok: boolean,
   durationMs: number,
-  extra: { healed: boolean; tier?: LadderTier; error?: string },
+  extra: {
+    healed: boolean;
+    tier?: LadderTier;
+    error?: string;
+    dispatchState?: DispatchState;
+    retrySafe?: boolean;
+    matchedConditions?: MatchedCondition[];
+    attempts?: number;
+    retryDecisionReason?: string;
+    retryReason?: string;
+    receipt?: ActionReceipt;
+    transportAmbiguous?: boolean;
+    captures?: Record<string, string>;
+    popup?: NewPageResult;
+    effect?: "observe" | "idempotent" | "at_most_once";
+    anchor?: string;
+  },
 ): Promise<void> {
   const payload: Parameters<ArtifactWriters["run"]["emitStepEnd"]>[0] = {
     stepId,
@@ -1435,6 +1799,19 @@ function emitStepEnd(
   };
   if (extra.tier) payload.tier = extra.tier;
   if (extra.error) payload.error = extra.error;
+  if (extra.dispatchState !== undefined) payload.dispatchState = extra.dispatchState;
+  if (extra.retrySafe !== undefined) payload.retrySafe = extra.retrySafe;
+  if (extra.matchedConditions !== undefined) payload.matchedConditions = extra.matchedConditions;
+  if (extra.attempts !== undefined) payload.attempts = extra.attempts;
+  if (extra.retryDecisionReason !== undefined)
+    payload.retryDecisionReason = extra.retryDecisionReason;
+  if (extra.retryReason !== undefined) payload.retryReason = extra.retryReason;
+  if (extra.receipt !== undefined) payload.receipt = extra.receipt;
+  if (extra.transportAmbiguous !== undefined) payload.transportAmbiguous = extra.transportAmbiguous;
+  if (extra.captures !== undefined) payload.captures = extra.captures;
+  if (extra.popup !== undefined) payload.popup = extra.popup;
+  if (extra.effect !== undefined) payload.effect = extra.effect;
+  if (extra.anchor !== undefined) payload.anchor = extra.anchor;
   return writers.run.emitStepEnd(payload);
 }
 
@@ -1446,10 +1823,27 @@ function recordStepSummary(
   tier: LadderTier | undefined,
   error: string | undefined,
   healed: boolean,
+  metadata?: StepActionOutcome,
 ): void {
   const row: StepSummary = { stepId: step.id, do: step.do, ok, healed, durationMs: 0 };
+  if (metadata?.effect !== undefined) row.effect = metadata.effect;
+  else if (step.effect !== undefined) row.effect = step.effect;
+  if (metadata?.anchor !== undefined) row.anchor = metadata.anchor;
+  else if ("target" in step) row.anchor = describeTarget(step.target);
   if (tier) row.tier = tier;
   if (error) row.error = error;
+  if (metadata?.dispatchState !== undefined) row.dispatchState = metadata.dispatchState;
+  if (metadata?.retrySafe !== undefined) row.retrySafe = metadata.retrySafe;
+  if (metadata?.matchedConditions !== undefined) row.matchedConditions = metadata.matchedConditions;
+  if (metadata?.attempts !== undefined) row.attempts = metadata.attempts;
+  if (metadata?.retryDecisionReason !== undefined)
+    row.retryDecisionReason = metadata.retryDecisionReason;
+  if (metadata?.retryReason !== undefined) row.retryReason = metadata.retryReason;
+  if (metadata?.receipt !== undefined) row.receipt = metadata.receipt;
+  if (metadata?.transportAmbiguous !== undefined)
+    row.transportAmbiguous = metadata.transportAmbiguous;
+  if (metadata?.captures !== undefined) row.captures = metadata.captures;
+  if (metadata?.popup !== undefined) row.popup = metadata.popup;
   state.stepSummaries.push(row);
 }
 
@@ -1468,7 +1862,7 @@ function recordStepSummary(
  *                  do NOT fail the run — they stay non-fatal warnings). */
 export function computeVerdict(state: RunState): RunVerdict {
   if (state.runError) return "error";
-  if (state.budgetExceeded) return "inconclusive";
+  if (state.budgetExceeded || state.inconclusiveReason) return "inconclusive";
   if (state.verdictFailed || state.failedStep !== null) return "failed";
   return "passed";
 }
@@ -1638,6 +2032,9 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
         ? { escalateAttempts: opts.config.plan.escalate_attempts }
         : {}),
     },
+    inputs,
+    env,
+    dialogPolicy: normalizeDialogPolicy(opts.config.browser?.dialog ?? "dismiss"),
   };
 
   // The ai_call telemetry bridge (Risk R5): mirror each emitted `ai_call` onto the ACTIVE step span
@@ -1659,6 +2056,9 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   const runtime = buildAiRuntime(opts, env, writers, clock, redactor, onAiCall);
 
   const state: RunState = freshRunState();
+  const artifactProvenance: ArtifactProvenance = {
+    browserPilot: getBrowserPilotProvenance(),
+  };
 
   // Emit run_start (config + limits summaries are compact, redaction-safe projections). Inputs are
   // masked via the redactor (secret values → REDACTED; PII when mask_text on).
@@ -1668,6 +2068,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     inputs: redactor.redactInputs(inputs),
     configSummary: configSummary(opts.config, connectCfg),
     limits: limitsSummary(opts.config),
+    provenance: artifactProvenance,
   });
 
   const ladder = createLadder(opts.startTier !== undefined ? { startTier: opts.startTier } : {});
@@ -1738,26 +2139,40 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   // production factory additionally receives the resolved `[timeouts]` (so an author's action_ms/
   // nav_ms override reaches BrowserPilotDriver instead of its own 5000/2000 fallback defaults) and
   // the author-declared `[resolve] attributes` (extra selector-hook attribute names like data-cmd).
-  const driver = opts.driverFactory
-    ? opts.driverFactory(connectCfg)
-    : defaultDriverFactory(
-        connectCfg,
-        opts.config.timeouts,
-        opts.config.resolve?.attributes,
-        opts.config.browser?.dialog,
-      );
+  // A frozen source-hash failure is already terminal. Do not even invoke the driver factory in
+  // that case: validation must complete before any browser-facing setup or connection.
+  const driver = state.aborted
+    ? ({} as Driver)
+    : opts.driverFactory
+      ? opts.driverFactory(connectCfg)
+      : defaultDriverFactory(
+          connectCfg,
+          opts.config.timeouts,
+          opts.config.resolve?.attributes,
+          opts.config.browser?.dialog,
+        );
   const assertCtx = buildAssertContext(driver, opts.config, clock, runtime);
 
   // The produced video path (opt-in `[browser] record`), collected in the finally before teardown.
   let videoPath: string | null = null;
 
   try {
-    await driver.connect(connectCfg);
+    if (!state.aborted) await driver.connect(connectCfg);
+    if (!state.aborted && driver.pageState) {
+      try {
+        const initialPage = await driver.pageState();
+        if (initialPage.activeTargetId !== undefined) {
+          state.pages.push({ targetId: initialPage.activeTargetId, role: "active" });
+        }
+      } catch {
+        // Page identity is observability only; an unavailable probe must not fail the run.
+      }
+    }
 
     // --- (3.5) start opt-in recording (video / per-step frames) into the run's screenshots dir ---
     // Gated on `[browser] record` (default off). Feature-detected — a driver without recording (or
     // a record-off run) never calls it and behaves exactly as before. Never throws into the run.
-    if (services.record && driver.startRecording) {
+    if (!state.aborted && services.record && driver.startRecording) {
       try {
         await driver.startRecording({ dir: runDir.screenshotsDir });
       } catch {
@@ -1808,7 +2223,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     // --- (5.5) persist learned/healed recipes (auto mode only; frozen/no-write never write) ---
     // Heals are written even when a later step/assertion failed (the recipe is still valid); a
     // harness error skips the flush (the in-memory state is unreliable).
-    if (!state.runError && session) {
+    if (!state.runError && !state.inconclusiveReason && !state.verdictFailed && session) {
       try {
         const written = await session.flush();
         for (const path of written) {
@@ -1820,7 +2235,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     }
 
     // --- (6) teardown hook (best-effort; runs even after a step failure, before driver teardown) ---
-    if (loaded.flow.teardown) {
+    if (loaded.flow.teardown && !state.aborted) {
       // Teardown runs on its own fresh sub-state so its (best-effort) outcome does not corrupt
       // the main run verdict; failures are not folded into the main state.
       const teardownState: RunState = freshRunState();
@@ -1850,7 +2265,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   } finally {
     // --- (6.5) stop recording BEFORE teardown so the driver can finalize any video artifact ---
     // `null` (no single webm produced) is the graceful-degrade case — frames may still be on disk.
-    if (services.record && driver.stopRecording) {
+    if (!state.aborted && services.record && driver.stopRecording) {
       try {
         videoPath = (await driver.stopRecording()) ?? null;
       } catch {
@@ -1865,7 +2280,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     }
     // The browser ALWAYS tears down — Mode B kills Chrome, Mode A disconnects. No orphan.
     try {
-      await driver.teardown();
+      if (driver.teardown) await driver.teardown();
     } catch {
       // teardown failure is non-fatal; the verdict is already determined.
     }
@@ -1884,6 +2299,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     usage,
     services.screenshotPaths,
     videoPath,
+    artifactProvenance,
   );
 
   await writers.run.emitRunEnd({
@@ -2219,6 +2635,7 @@ function buildSummary(
   usage: { total_cost_usd: number; model_usage: ModelUsage[] },
   screenshotPaths: string[],
   videoPath: string | null,
+  provenance: ArtifactProvenance,
 ): RunSummary {
   return {
     verdict,
@@ -2238,6 +2655,9 @@ function buildSummary(
     proposed_patch_path: state.proposedPatchPath,
     replan_count: state.replanCount,
     repaired_steps: [...state.repairedSteps],
+    provenance,
+    ...(Object.keys(state.captures).length > 0 ? { captures: { ...state.captures } } : {}),
+    ...(state.pages.length > 0 ? { pages: [...state.pages] } : {}),
     steps: state.stepSummaries,
   };
 }

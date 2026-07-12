@@ -37,14 +37,20 @@ bun run flightplan run examples/flows/wizard.toml
 
 ```sh
 bun run flightplan lint examples/flows/wizard.toml      # validate a flow/config file (dir or glob also accepted)
+bun run flightplan run examples/flows/wizard.toml       # execute one flow
 bun run flightplan explain <run-dir>           # human-readable diagnosis of a completed run
 bun run flightplan report .flightplan-runs/    # aggregate runs into campaign metrics
+bun run flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/flightplan-campaign
+bun run flightplan migrate-effects examples/flows/wizard.toml  # review effect-policy suggestions
 ```
 
 Runs are written to `.flightplan-runs/<run-id>/` by default; override with `-o <dir>`.
 `explain` accepts a run directory or a `run.jsonl` path. `report` accepts one or many run
-directories, or a campaign root that holds them (as shown). Run `flightplan --help` for the
-full flag list (`--json`, `--frozen`, `--no-lock-write`, `--lock`, `--from`, `--to`).
+directories, or a campaign root that holds them (as shown). `sweep` runs each flow for the
+requested number of trials and can add an L3 baseline arm. `migrate-effects` is review-only: it
+prints suggestions and never edits a flow or lock. Run `flightplan --help` for the full flag list
+(`--json`, `--frozen`, `--no-lock-write`, `--lock`, `--from`, `--to`, `--start-tier`, `--trials`,
+`--compare-baseline`).
 
 AI tiers (L2 resolver / L3 vision / L4 advisor, plus `ai_judge` / `ai_pick`) require an
 OpenRouter key — see [`.env.example`](.env.example) and [`docs/plans/RUNNING.md`](docs/plans/RUNNING.md)

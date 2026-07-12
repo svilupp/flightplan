@@ -52,6 +52,10 @@ export interface AssertionResult {
   when: AssertPhase;
   /** The selector/url/target the assertion checked (for the run summary + `explain`). */
   selectorOrTarget?: string;
+  /** The stable purpose used by the runner for reporting/rescue selection. */
+  purpose?: "precondition" | "postcondition";
+  /** A redaction-safe observed value when the evaluator has one. */
+  observed?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +101,15 @@ export interface AssertContext {
    * existing tests omit it.
    */
   stepId?: string;
+  /** Runtime captures available to transition assertions and dynamic templates. */
+  captures?: Record<string, string>;
+  /** Before-state captured immediately before the step action. */
+  beforeState?: {
+    url?: string;
+    text?: string;
+    values?: Record<string, string | null>;
+    states?: Record<string, string>;
+  };
 }
 
 /**
@@ -128,4 +141,8 @@ export interface ConditionOpts {
   pollIntervalMs: number;
   /** Injected clock (defaults to the real system clock at the call site). */
   clock: AssertClock;
+  /** Runtime captures available to transition assertions. */
+  captures?: Record<string, string>;
+  /** State observed immediately before the step action. */
+  beforeState?: AssertContext["beforeState"];
 }

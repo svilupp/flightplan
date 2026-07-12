@@ -1,6 +1,6 @@
 version = 2
 source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/drift.toml"
-source_hash = "sha256:bdd1351a1f6064dec0ab0d3e84da4531b7a7b811c552a0f101c985bc7f4d5fac"
+source_hash = "sha256:1a9b0cf22708d9aec3ae95f879b2b44dd4b50e9be8cee7e07a32d448a3a1054c"
 description = "Create an order on the drift fixture and assert the deterministic result"
 
 [[targets]]

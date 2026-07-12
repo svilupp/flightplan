@@ -6,6 +6,11 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Added
 
+- **Effect-aware flow execution.** Steps can declare `effect = "observe" | "idempotent" |
+  "at_most_once"`; run artifacts carry dispatch metadata and postconditions prevent an ambiguous
+  browser action from being blindly repeated. `flightplan migrate-effects` provides review-only
+  suggestions and never edits flows or locks.
+
 - **Unified targeting — `target` is a locator list (clean break).** A step's `target` is now
   `string | string[]`: selector entries (prefixed `ref:`/`role:`/`text:`/`css:`, or starting with
   `[`) feed the L1 selector array in author order, and the first natural-language entry feeds the

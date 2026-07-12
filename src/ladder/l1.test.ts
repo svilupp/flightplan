@@ -17,7 +17,7 @@ import {
   makeSuccessBatch,
 } from "../driver/index.ts";
 import type { ClickStep, Step } from "../flow/types.ts";
-import { actionVerbForStep, resolveL1 } from "./l1.ts";
+import { actionVerbForStep, buildBatchStep, resolveL1 } from "./l1.ts";
 import type { ResolveContext } from "./types.ts";
 
 function ctxFor(driver: MockDriver): ResolveContext {
@@ -39,6 +39,18 @@ describe("actionVerbForStep", () => {
     expect(actionVerbForStep({ id: "a", do: "ai_pick" })).toBe("click");
     expect(actionVerbForStep({ id: "a", do: "goto", url: "/" })).toBeUndefined();
     expect(actionVerbForStep({ id: "a", do: "wait", ms: 1 })).toBeUndefined();
+  });
+});
+
+test("L1 carries effect and natural-language anchor metadata into the driver batch", () => {
+  const step = clickStep({
+    effect: "at_most_once",
+    target: ["[data-testid='approve']", "the seeded approval action"],
+  });
+  expect(buildBatchStep(step, "click", ["[data-testid='approve']"])).toMatchObject({
+    action: "click",
+    effect: "at_most_once",
+    anchor: "the seeded approval action",
   });
 });
 
@@ -286,6 +298,7 @@ describe("L1 — escalation + L2 handoff", () => {
     expect(r.escalate).toBe(true);
     expect(r.ok).toBe(false);
     expect(r.handoff?.topMatches.length).toBeGreaterThanOrEqual(2);
+    expect(d.callsTo("batch")).toHaveLength(0);
   });
 
   test("no interactive match at all → escalate with a ranked (possibly empty) handoff", async () => {
@@ -302,11 +315,11 @@ describe("L1 — escalation + L2 handoff", () => {
 });
 
 describe("L1 — ambiguity veto is gated on the WINNING element", () => {
-  // The Shopify Polaris "More actions" trap: the true target is AX-`ignored` so it is NEVER in the
-  // fuzzy ranking; an author hint (`role:button:More actions`) resolves and clicks it. Meanwhile two
-  // UNRELATED "View order status page" links rank close (0.55 / 0.51, gap 0.04 < 0.1). The old veto
-  // fired off those unrelated scores and discarded the successful click; the winner-gated veto must
-  // recognise the winner is out-of-cluster (the hint hit an element absent from `ranked`) and stand.
+  // The true target is AX-`ignored` so it is NEVER in the fuzzy ranking; an author hint
+  // (`role:button:More actions`) resolves and clicks it. Meanwhile two unrelated links rank close
+  // (0.55 / 0.51, gap 0.04 < 0.1). The old veto fired off those unrelated scores and discarded the
+  // successful click; the winner-gated veto must recognise the winner is out-of-cluster (the hint
+  // hit an element absent from `ranked`) and stand.
   test("(a) winner absent from ranked (author hint hit an AX-ignored target) → no veto, click stands", async () => {
     const d = new MockDriver();
     d.setSnapshot(
@@ -322,6 +335,16 @@ describe("L1 — ambiguity veto is gated on the WINNING element", () => {
       makeRankedCandidate({ ref: "e1", role: "link", name: "View order status page", score: 0.55 }),
       makeRankedCandidate({ ref: "e2", role: "link", name: "View order status page", score: 0.51 }),
     ]);
+    // The control is AX-ignored, so prove its exact author hint through the optional live-DOM count
+    // probe rather than pretending it is in the accessibility candidate list.
+    d.setElementState({
+      exists: true,
+      visible: true,
+      count: 1,
+      text: "More actions",
+      value: null,
+      boundingBox: { x: 0, y: 0, width: 10, height: 10 },
+    });
     // The author hint won the batch — it resolved an element the ranking never harvested.
     d.setBatchResult(makeSuccessBatch("role:button:More actions"));
 
@@ -332,6 +355,7 @@ describe("L1 — ambiguity veto is gated on the WINNING element", () => {
     expect(r.ok).toBe(true);
     expect(r.escalate).toBe(false);
     expect(r.strategy).toBe("role_name");
+    expect(d.callsTo("batch")).toHaveLength(1);
   });
 
   test("(b) winner IS the fuzzy top inside the close cluster → veto still fires (escalate)", async () => {

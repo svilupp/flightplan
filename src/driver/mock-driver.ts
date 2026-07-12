@@ -67,8 +67,12 @@ import type {
   ElementState,
   FillOpts,
   GotoOpts,
+  NativeDialogPolicy,
+  NewPageExpectation,
+  NewPageResult,
   PageHandle,
   PageSnapshot,
+  PageStateObservation,
   RankedCandidate,
   RecordOpts,
   RefMap,
@@ -87,6 +91,9 @@ export interface DriverCall {
     | "connect"
     | "page"
     | "teardown"
+    | "setDialogPolicy"
+    | "expectNewPage"
+    | "pageState"
     | "clearBrowserState"
     | "goto"
     | "currentUrl"
@@ -222,6 +229,8 @@ export class MockDriver implements Driver {
    * `currentFrame()` to assert the driver was switched into (and back out of) a frame.
    */
   private currentFrameValue: string | null = null;
+  private pageStateValue: PageStateObservation = {};
+  private newPageResultValue: NewPageResult = { matched: true, targetId: "mock-popup" };
   /** What `switchToFrame()` returns (default `true` = frame entered). Override via `setSwitchFrameOutcome`. */
   private switchFrameOutcome = true;
 
@@ -321,6 +330,18 @@ export class MockDriver implements Driver {
   /** Set the URL returned by `currentUrl()` (also what `goto()` sets the page to). */
   setCurrentUrl(url: string): this {
     this.currentUrlValue = url;
+    return this;
+  }
+  setDialogPolicyValue(policy: NativeDialogPolicy): this {
+    void policy;
+    return this;
+  }
+  setPageState(state: PageStateObservation): this {
+    this.pageStateValue = state;
+    return this;
+  }
+  setNewPageResult(result: NewPageResult): this {
+    this.newPageResultValue = result;
     return this;
   }
   /** Set the boolean `switchToFrame()` returns (default `true`; `false` simulates an unfound frame). */
@@ -498,6 +519,24 @@ export class MockDriver implements Driver {
     this.record("teardown", []);
     this.connected = false;
     this.currentFrameValue = null;
+  }
+
+  setDialogPolicy(policy: NativeDialogPolicy): void {
+    this.record("setDialogPolicy", [policy]);
+  }
+
+  async expectNewPage(
+    expectation: NewPageExpectation,
+    action: () => Promise<unknown>,
+  ): Promise<NewPageResult> {
+    this.record("expectNewPage", [expectation]);
+    await action();
+    return this.newPageResultValue;
+  }
+
+  async pageState(): Promise<PageStateObservation> {
+    this.record("pageState", []);
+    return this.pageStateValue;
   }
 
   /** Recorded no-op — there is no real browser state to clear in the mock (isolation seam). */

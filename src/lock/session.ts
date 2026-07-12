@@ -293,7 +293,11 @@ export async function openLockSession(options: OpenLockSessionOptions): Promise<
     onWarn,
     options.now,
   );
-  const root: TrackedLock = { path: options.lockPath, lock: rootLock, dirty: false };
+  const root: TrackedLock = {
+    path: options.lockPath,
+    lock: rootLock.lock,
+    dirty: rootLock.dirty,
+  };
 
   const imported: Array<{ tracked: TrackedLock; namespace: string }> = [];
   for (const imp of options.imported ?? []) {
@@ -305,7 +309,7 @@ export async function openLockSession(options: OpenLockSessionOptions): Promise<
       options.now,
     );
     imported.push({
-      tracked: { path: imp.lockPath, lock, dirty: false },
+      tracked: { path: imp.lockPath, lock: lock.lock, dirty: lock.dirty },
       namespace: imp.namespace,
     });
   }
@@ -332,9 +336,25 @@ async function loadLockSafe(
   mode: LockWriteMode,
   onWarn: (message: string) => void,
   now?: () => number,
-): Promise<LockFile> {
+): Promise<{ lock: LockFile; dirty: boolean }> {
   try {
-    return await loadLockFile(path, fresh, now ?? Date.now);
+    const lock = await loadLockFile(path, fresh, now ?? Date.now);
+    if (lock.source_hash === fresh.source_hash) return { lock, dirty: false };
+    const message =
+      `stale lock source_hash for ${path}: expected ${fresh.source_hash || "<missing>"}, ` +
+      `found ${lock.source_hash || "<missing>"}; ${lock.targets.length} cached target(s) ignored. ` +
+      "Regenerate the lock from the current flow source.";
+    if (mode === "frozen") throw new LockParseError(message, path);
+    onWarn(
+      `flightplan: ${message} ` +
+        (mode === "auto"
+          ? "Quarantining targets and creating a fresh header."
+          : "Resolving fresh in memory."),
+    );
+    return {
+      lock: emptyLock(fresh.source, fresh.source_hash, fresh.description),
+      dirty: mode === "auto",
+    };
   } catch (err) {
     if (err instanceof LockParseError) {
       if (mode === "frozen") {
@@ -344,7 +364,7 @@ async function loadLockSafe(
       onWarn(
         `flightplan: ignoring malformed lock ${path} (${err.message}); resolving fresh and re-learning.`,
       );
-      return emptyLock(fresh.source, fresh.source_hash, fresh.description);
+      return { lock: emptyLock(fresh.source, fresh.source_hash, fresh.description), dirty: false };
     }
     throw err;
   }

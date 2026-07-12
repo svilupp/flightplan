@@ -28,6 +28,7 @@ import type {
   CandidateStrategy as BpCandidateStrategy,
   ElementState as BpElementState,
   InteractiveElement as BpInteractiveElement,
+  MatchedCondition as BpMatchedCondition,
   PageSnapshot as BpPageSnapshot,
   RankedCandidate as BpRankedCandidate,
   SnapshotNode as BpSnapshotNode,
@@ -63,7 +64,12 @@ export type PageSnapshot = BpPageSnapshot;
  *  - `text`        — first match's trimmed innerText (fallback textContent); `""` if none.
  *  - `boundingBox` — first match's box, or `null` when there is no rendered match.
  */
-export type ElementState = BpElementState;
+export type ElementState = BpElementState & {
+  /** Optional form/control state exposed by newer browser-pilot builds. */
+  checked?: boolean;
+  disabled?: boolean;
+  selected?: boolean;
+};
 
 /**
  * A single interactive element from a snapshot. Exposes role + accessible name (+ optional
@@ -86,8 +92,90 @@ export type SnapshotNode = BpSnapshotNode;
  */
 export type BatchStep = BpStep;
 
+/** The point at which a potentially effectful browser input crossed the page boundary. */
+export type DispatchState = "not_dispatched" | "dispatched" | "uncertain";
+
+/** The centralized retry decision emitted by browser-pilot's action executor. */
+export type RetryDecisionReason = NonNullable<BpStepResult["retryDecisionReason"]>;
+
+/** Per-step native dialog behavior. `prompt`/`manual` deliberately do not auto-accept. */
+export type NativeDialogPolicy = "dismiss" | "accept" | "fail" | "prompt" | "manual";
+
+/** A declarative new-page expectation owned by the triggering action. */
+export interface NewPageExpectation {
+  opener?: string;
+  /** browser-pilot's target identity name; `opener` remains a compatibility alias. */
+  openerTargetId?: string;
+  url?: string;
+  title?: string;
+  type?: string | string[];
+  targetId?: string;
+  timeoutMs?: number;
+}
+
+export interface NewPageResult {
+  matched: boolean;
+  targetId?: string;
+  url?: string;
+  title?: string;
+  type?: string;
+  opener?: string;
+  openerTargetId?: string;
+  reason?: string;
+}
+
+/** Runtime identity reported by browser-pilot for the package, source, and generated build. */
+export interface BrowserPilotProvenance {
+  packageVersion: string;
+  gitSourceHash: string;
+  buildHash: string;
+}
+
+export interface PageStateObservation {
+  dialogOpen?: boolean;
+  menuOpen?: boolean;
+  popupCount?: number;
+  activeTargetId?: string;
+}
+
+/**
+ * Receipt attached to a browser-pilot action when available. The fields are optional at the
+ * compatibility boundary because the currently pinned browser-pilot release predates the
+ * dispatch receipt, while newer releases may provide richer event-level evidence.
+ */
+export interface ActionReceipt {
+  dispatchState: DispatchState;
+  retrySafe?: boolean;
+  inputEventsSent?: string[];
+  navigationObserved?: boolean;
+  attempts?: number;
+  /** Compatibility alias for callers that describe the retry decision in the receipt. */
+  retryDecisionReason?: RetryDecisionReason;
+  retryReason?: string;
+}
+
+/** Metadata surfaced by browser-pilot's outcome-aware executor. */
+export interface DispatchMetadata {
+  dispatchState?: DispatchState;
+  retrySafe?: boolean;
+  matchedConditions?: BpMatchedCondition[];
+  attempts?: number;
+  retryDecisionReason?: RetryDecisionReason;
+  /** Compatibility alias for early Flightplan metadata consumers. */
+  retryReason?: string;
+  receipt?: ActionReceipt;
+  effect?: "observe" | "idempotent" | "at_most_once";
+  anchor?: string;
+}
+
+/** The result of one batch step, including optional dispatch-safety metadata. */
+export type StepResult = BpStepResult & DispatchMetadata;
+
+/** Browser-pilot outcome-condition evidence, re-exported at the driver boundary. */
+export type MatchedCondition = BpMatchedCondition;
+
 /** The result of `batch()` — `{ steps: StepResult[], success, totalDurationMs, ... }`. */
-export type BatchResult = BpBatchResult;
+export type BatchResult = Omit<BpBatchResult, "steps"> & { steps: StepResult[] };
 
 /** Options for `batch()` (`onFail`, `record`, `timeout`). */
 export type BatchOptions = BpBatchOptions;
@@ -104,8 +192,6 @@ export type BatchOptions = BpBatchOptions;
  *  - `screenshotPath?` — ONLY populated when `batch(steps, { record })` is configured;
  *    `page.screenshot()` otherwise returns base64 in-memory (FINDINGS §7).
  */
-export type StepResult = BpStepResult;
-
 /**
  * The structured failure category on `StepResult.failureReason`. browser-pilot does NOT
  * export the `FailureReason` symbol from its package root (it is an `ae-forgotten-export`,
@@ -391,6 +477,24 @@ export interface Driver {
 
   /** Release the connection. Mode A: detach only (Chrome survives). Mode B: detach + kill. */
   teardown(): Promise<void>;
+
+  /** Change the native-dialog policy for the next logical step, when supported. */
+  setDialogPolicy?(policy: NativeDialogPolicy): void | Promise<void>;
+
+  /** Runtime browser-pilot package/source/build identity for run artifacts. */
+  provenance?(): BrowserPilotProvenance | undefined;
+
+  /**
+   * Observe a new page around one action. Implementations must arm observation before dispatch;
+   * a missing capability is a hard observation failure for a declared expectation.
+   */
+  expectNewPage?(
+    expectation: NewPageExpectation,
+    action: () => Promise<unknown>,
+  ): Promise<NewPageResult>;
+
+  /** Optional read-only page identity/state surface used by state assertions and run artifacts. */
+  pageState?(): Promise<PageStateObservation>;
 
   /**
    * Clear the current origin's client-side state — `localStorage`, `sessionStorage`, and cookies —

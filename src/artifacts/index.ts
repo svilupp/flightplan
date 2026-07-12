@@ -14,6 +14,7 @@ export type {
   AiCallRole,
   // ai.jsonl
   AiEvent,
+  ArtifactProvenance,
   AssertionResultEvent,
   BrowserActionEvent,
   // shared

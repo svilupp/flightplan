@@ -13,6 +13,7 @@ import type { InteractiveElement } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { normalizeTarget } from "../flow/normalize-target.ts";
 import type { Step } from "../flow/types.ts";
+import { dispatchResolved, mayHaveDispatched } from "../ladder/dispatch.ts";
 import type {
   BatchActionVerb,
   RankedCandidate,
@@ -294,18 +295,36 @@ export async function actOnPick(
   // ref at all we emit just the selector (never `ref:undefined`).
   const selectors = chosen.ref ? [`ref:${chosen.ref}`, chosen.selector] : [chosen.selector];
   const batchStep = buildBatchStep(step, action, selectors);
-  const result = await ctx.driver.batch([batchStep], { onFail: "stop" });
-  const sr = result.steps[0];
+  const dispatched = await dispatchResolved(ctx.driver, [batchStep], { onFail: "stop" });
+  const sr = dispatched.stepResult;
 
-  const succeeded = !!sr && sr.success && sr.outcomeStatus !== "ambiguous";
+  const succeeded =
+    !!sr &&
+    sr.success &&
+    sr.outcomeStatus !== "ambiguous" &&
+    dispatched.dispatchState !== "not_dispatched";
   if (!succeeded) {
     const exec: StepExecution = {
       ok: false,
       tier,
       candidates: ranked,
-      escalate: true,
+      escalate: !mayHaveDispatched(dispatched.dispatchState),
+      dispatchState: dispatched.dispatchState,
+      retrySafe: dispatched.retrySafe,
+      attempts: dispatched.attempts,
+      ...(dispatched.retryDecisionReason !== undefined
+        ? { retryDecisionReason: dispatched.retryDecisionReason }
+        : {}),
+      ...(dispatched.retryReason !== undefined ? { retryReason: dispatched.retryReason } : {}),
+      receipt: dispatched.receipt,
+      ...(sr?.matchedConditions !== undefined ? { matchedConditions: sr.matchedConditions } : {}),
+      ...(sr?.outcomeStatus !== undefined ? { outcomeStatus: sr.outcomeStatus } : {}),
       handoff: buildHandoff({ intent: intentText, action, ranked }),
-      error: sr?.error ?? `${tier}: chosen candidate did not resolve/act`,
+      error:
+        sr?.error ??
+        (mayHaveDispatched(dispatched.dispatchState)
+          ? `${tier}: chosen candidate result was post-dispatch/uncertain; stopping without replay`
+          : `${tier}: chosen candidate did not resolve/act`),
     };
     if (sr?.failureReason !== undefined) exec.failureReason = sr.failureReason;
     if (sr?.coveringElement !== undefined) exec.coveringElement = sr.coveringElement;
@@ -337,6 +356,16 @@ export async function actOnPick(
     durableSelector,
     candidates: ranked,
     escalate: false,
+    dispatchState: dispatched.dispatchState,
+    retrySafe: dispatched.retrySafe,
+    attempts: dispatched.attempts,
+    ...(dispatched.retryDecisionReason !== undefined
+      ? { retryDecisionReason: dispatched.retryDecisionReason }
+      : {}),
+    receipt: dispatched.receipt,
+    ...(dispatched.retryReason !== undefined ? { retryReason: dispatched.retryReason } : {}),
+    ...(sr.matchedConditions !== undefined ? { matchedConditions: sr.matchedConditions } : {}),
+    ...(sr.outcomeStatus !== undefined ? { outcomeStatus: sr.outcomeStatus } : {}),
     signatureBasis,
   };
   if (selectorUsed !== undefined) exec.selectorUsed = selectorUsed;

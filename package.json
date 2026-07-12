@@ -10,6 +10,9 @@
   "scripts": {
     "flightplan": "bun run src/cli/index.ts",
     "fixtures": "bun run examples/fixtures/server.ts",
+    "dev:link-browser-pilot": "bun run scripts/browser-pilot-dependency.ts link",
+    "verify:browser-pilot": "bun run scripts/browser-pilot-dependency.ts verify",
+    "verify:browser-pilot:packed": "bun run scripts/browser-pilot-dependency.ts packed",
     "check": "bun run scripts/check.ts",
     "lint": "bun run scripts/check.ts lint",
     "lint:fix": "biome check --write . && oxlint --type-aware --fix",

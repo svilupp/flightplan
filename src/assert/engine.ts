@@ -71,12 +71,21 @@ function resolveConditionOpts(assertion: Assertion, ctx: AssertContext): Conditi
     timeoutMs,
     pollIntervalMs: ctx.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     clock: ctx.clock ?? systemClock,
+    ...(ctx.captures ? { captures: ctx.captures } : {}),
+    ...(ctx.beforeState ? { beforeState: ctx.beforeState } : {}),
   };
 }
 
 /** The resolved phase of an assertion (`when` defaults to 'after'). */
 export function assertionPhase(assertion: Assertion): AssertPhase {
-  return assertion.when ?? "after";
+  return assertion.when ?? (assertion.purpose === "precondition" ? "before" : "after");
+}
+
+/** Resolve an assertion's purpose without making authors repeat the common phase mapping. */
+export function assertionPurpose(assertion: Assertion): "precondition" | "postcondition" {
+  return (
+    assertion.purpose ?? (assertionPhase(assertion) === "before" ? "precondition" : "postcondition")
+  );
 }
 
 /**
@@ -102,6 +111,7 @@ export async function runAssertion(
         ...(ctx.stepId !== undefined ? { stepId: ctx.stepId } : {}),
       });
       result.when = phase;
+      result.purpose = assertionPurpose(assertion);
       return result;
     }
     throw new Phase4NotImplementedError();
@@ -110,6 +120,7 @@ export async function runAssertion(
   const result = await evaluateDeterministic(assertion, opts);
   // Stamp the resolved phase (the evaluator defaults it to 'after').
   result.when = assertionPhase(assertion);
+  result.purpose = assertionPurpose(assertion);
   return result;
 }
 

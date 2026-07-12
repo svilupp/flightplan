@@ -13,6 +13,7 @@ export {
   BrowserPilotDriver,
   type BrowserPilotDriverOptions,
   type DialogPolicy,
+  getBrowserPilotProvenance,
   withNavigationDefault,
 } from "./browser-pilot-driver.ts";
 // --- connect-resolution helpers (pure, unit-testable) ---
@@ -26,6 +27,7 @@ export {
   type ResolvedAttachConnectArgs,
   type ResolvedLaunchPlan,
 } from "./connect-resolution.ts";
+export { normalizeBatchResult } from "./dispatch-metadata.ts";
 // --- the mock testing seam ---
 export {
   type DriverCall,
@@ -56,24 +58,34 @@ export { selectorUsedToStrategy, strategyFromStepResult } from "./selector-strat
 // --- the interface + supporting types ---
 export type {
   ActionOpts,
+  ActionReceipt,
   BatchOptions,
   BatchResult,
   BatchStep,
+  BrowserPilotProvenance,
   ConnectAttachConfig,
   ConnectConfig,
   ConnectLaunchConfig,
   CoveringElement,
+  DispatchMetadata,
+  DispatchState,
   Driver,
   ElementState,
   FailureReason,
   FillOpts,
   GotoOpts,
   InteractiveElement,
+  MatchedCondition,
+  NativeDialogPolicy,
+  NewPageExpectation,
+  NewPageResult,
   PageHandle,
   PageSnapshot,
+  PageStateObservation,
   PressOpts,
   RefMap,
   ResolveAllOpts,
+  RetryDecisionReason,
   ScreenshotOpts,
   SignatureOpts,
   SnapshotNode,

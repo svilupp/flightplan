@@ -1520,6 +1520,233 @@ const securityUnmarkedSecret: Rule = {
   },
 };
 
+function rawEffect(step: Record<string, unknown>): string | undefined {
+  return typeof step.effect === "string" ? step.effect : undefined;
+}
+
+function rawRetry(step: Record<string, unknown>): Record<string, unknown> | undefined {
+  return isRecord(step.retry) ? step.retry : undefined;
+}
+
+function hasDeterministicPostcondition(step: Record<string, unknown>): boolean {
+  return rawAsserts(step).some((assertion) => {
+    const when = assertion.when;
+    const purpose = assertion.purpose;
+    if (when === "before" || purpose === "precondition") return false;
+    return assertion.type !== "ai_judge";
+  });
+}
+
+const effectAtMostOnceSelfRetry: Rule = {
+  id: "effect/at-most-once-self-retry",
+  severity: "error",
+  description: "An at-most-once action may not retry itself through on_fail or retry metadata.",
+  run(ctx) {
+    const out: Diagnostic[] = [];
+    rawSteps(ctx.doc).forEach((step, i) => {
+      if (rawEffect(step) !== "at_most_once") return;
+      const onFail = isRecord(step.on_fail) ? step.on_fail : undefined;
+      const self = onFail?.goto === "self" || onFail?.goto === step.id;
+      const retry = rawRetry(step);
+      if (!self && !(retry && Number(retry.max ?? 0) > 0)) return;
+      out.push(
+        diag(
+          ctx,
+          "effect/at-most-once-self-retry",
+          "error",
+          `Step \`${stepId(step, i)}\` is \`effect = "at_most_once"\` but can retry itself. ` +
+            "Remove the self-retry; use deterministic postcondition rescue instead.",
+          { stepId: stepId(step, i), location: `steps[${i}]` },
+        ),
+      );
+    });
+    return out;
+  },
+};
+
+const effectAtMostOncePostcondition: Rule = {
+  id: "effect/at-most-once-postcondition",
+  severity: "error",
+  description: "At-most-once actions require a deterministic after/postcondition.",
+  run(ctx) {
+    const out: Diagnostic[] = [];
+    rawSteps(ctx.doc).forEach((step, i) => {
+      if (rawEffect(step) !== "at_most_once" || hasDeterministicPostcondition(step)) return;
+      out.push(
+        diag(
+          ctx,
+          "effect/at-most-once-postcondition",
+          "error",
+          `Step \`${stepId(step, i)}\` is at-most-once but has no deterministic postcondition. ` +
+            'Add an after assertion with purpose = "postcondition" to prove the final state.',
+          { stepId: stepId(step, i), location: `steps[${i}].assert` },
+        ),
+      );
+    });
+    return out;
+  },
+};
+
+const effectPathRepairAtMostOnce: Rule = {
+  id: "effect/path-repair-at-most-once",
+  severity: "error",
+  description: "An enabled path-repair planner may not redispatch at-most-once actions.",
+  run(ctx) {
+    const config =
+      isRecord(ctx.doc?.config) && isRecord(ctx.doc.config.plan) ? ctx.doc.config.plan : undefined;
+    if (config?.enabled !== true) return [];
+    return rawSteps(ctx.doc).flatMap((step, i) =>
+      rawEffect(step) === "at_most_once"
+        ? [
+            diag(
+              ctx,
+              "effect/path-repair-at-most-once",
+              "error",
+              `Step \`${stepId(step, i)}\` is at-most-once while [config.plan] is enabled. ` +
+                "Disable path repair for this flow or split the mutation into a separately guarded flow.",
+              { stepId: stepId(step, i), location: "config.plan.enabled" },
+            ),
+          ]
+        : [],
+    );
+  },
+};
+
+const retryNeverWithOnFail: Rule = {
+  id: "retry/never-with-on-fail",
+  severity: "error",
+  description: 'retry.policy = "never" may not be paired with self-retrying failure control flow.',
+  run(ctx) {
+    return rawSteps(ctx.doc).flatMap((step, i) => {
+      const retry = rawRetry(step);
+      const onFail = isRecord(step.on_fail) ? step.on_fail : undefined;
+      if (
+        retry?.policy !== "never" ||
+        !onFail ||
+        (onFail.goto !== "self" && onFail.goto !== step.id)
+      )
+        return [];
+      return [
+        diag(
+          ctx,
+          "retry/never-with-on-fail",
+          "error",
+          `Step \`${stepId(step, i)}\` sets retry.policy = "never" but on_fail retries itself. ` +
+            "Remove on_fail or choose a retry policy that allows an explicitly safe pre-dispatch retry.",
+          { stepId: stepId(step, i), location: `steps[${i}].on_fail` },
+        ),
+      ];
+    });
+  },
+};
+
+const effectUnspecified: Rule = {
+  id: "effect/unspecified",
+  severity: "warning",
+  description: "Effectful action steps should declare observe, idempotent, or at_most_once.",
+  run(ctx) {
+    return rawSteps(ctx.doc).flatMap((step, i) =>
+      ["click", "fill", "select", "press", "ai_pick"].includes(String(step.do)) &&
+      step.effect === undefined
+        ? [
+            diag(
+              ctx,
+              "effect/unspecified",
+              "warning",
+              `Step \`${stepId(step, i)}\` has no effect declaration. Add effect = "observe", ` +
+                '"idempotent", or "at_most_once" so retry safety is reviewable.',
+              { stepId: stepId(step, i), location: "effect" },
+            ),
+          ]
+        : [],
+    );
+  },
+};
+
+const effectDangerousVerb: Rule = {
+  id: "effect/dangerous-verb",
+  severity: "warning",
+  description: "Mutation-like verbs should be explicitly marked at_most_once.",
+  run(ctx) {
+    return rawSteps(ctx.doc).flatMap((step, i) =>
+      ["click", "fill", "select", "press", "ai_pick"].includes(String(step.do)) &&
+      step.effect !== undefined &&
+      step.effect !== "at_most_once"
+        ? [
+            diag(
+              ctx,
+              "effect/dangerous-verb",
+              "warning",
+              `Step \`${stepId(step, i)}\` uses a mutation-capable verb without ` +
+                'effect = "at_most_once". Review the effect annotation before running it.',
+              { stepId: stepId(step, i), location: "effect" },
+            ),
+          ]
+        : [],
+    );
+  },
+};
+
+const effectAiOnlyPostcondition: Rule = {
+  id: "effect/ai-only-postcondition",
+  severity: "warning",
+  description: "At-most-once rescue evidence must include a deterministic assertion.",
+  run(ctx) {
+    return rawSteps(ctx.doc).flatMap((step, i) => {
+      if (rawEffect(step) !== "at_most_once") return [];
+      const assertions = rawAsserts(step).filter(
+        (a) => a.when !== "before" && a.purpose !== "precondition",
+      );
+      if (assertions.length === 0 || assertions.some((a) => a.type !== "ai_judge")) return [];
+      return [
+        diag(
+          ctx,
+          "effect/ai-only-postcondition",
+          "warning",
+          "Step " +
+            stepId(step, i) +
+            " has only AI postcondition evidence. Add a deterministic URL/text/value/state/transition assertion for at-most-once rescue.",
+          { stepId: stepId(step, i), location: `steps[${i}].assert` },
+        ),
+      ];
+    });
+  },
+};
+
+const assertionCriticalBroadMatch: Rule = {
+  id: "assert/critical-broad-match",
+  severity: "warning",
+  description: "Critical URL/text assertions should opt into exact, scoped matching.",
+  run(ctx) {
+    const out: Diagnostic[] = [];
+    rawSteps(ctx.doc).forEach((step, i) => {
+      if (rawEffect(step) !== "at_most_once") return;
+      for (const assertion of rawAsserts(step)) {
+        const broad =
+          (assertion.type === "url" &&
+            (assertion.match === undefined || assertion.match === "contains")) ||
+          (assertion.type === "text" &&
+            (assertion.match === undefined || assertion.match === "contains"));
+        if (!broad) continue;
+        out.push(
+          diag(
+            ctx,
+            "assert/critical-broad-match",
+            "warning",
+            "Step " +
+              stepId(step, i) +
+              " uses a broad " +
+              assertion.type +
+              " substring assertion on an at-most-once action. Prefer exact/regex plus a selector or landmark scope.",
+            { stepId: stepId(step, i), location: `steps[${i}].assert` },
+          ),
+        );
+      }
+    });
+    return out;
+  },
+};
+
 // ---------------------------------------------------------------------------
 // The registry — ordered; append to extend.
 // ---------------------------------------------------------------------------
@@ -1561,6 +1788,14 @@ export const RULES: readonly Rule[] = [
   templatingUnusedInput,
   lockOrphanedTarget,
   securityUnmarkedSecret,
+  effectAtMostOnceSelfRetry,
+  effectAtMostOncePostcondition,
+  effectPathRepairAtMostOnce,
+  retryNeverWithOnFail,
+  effectUnspecified,
+  effectDangerousVerb,
+  effectAiOnlyPostcondition,
+  assertionCriticalBroadMatch,
 ];
 
 /** Rule ids only — for tooling/tests. */

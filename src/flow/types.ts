@@ -10,6 +10,7 @@ import type {
   AiPickStepSchema,
   AssertionSchema,
   AssertStepSchema,
+  CaptureSchema,
   ClickStepSchema,
   CountAssertionSchema,
   DeterministicAssertionSchema,
@@ -19,13 +20,16 @@ import type {
   HiddenAssertionSchema,
   ImportsSchema,
   OnFailSchema,
+  PopupExpectationSchema,
   PressStepSchema,
   RunStepSchema,
   SelectStepSchema,
+  StateAssertionSchema,
   StepSchema,
   SwitchFrameStepSchema,
   SwitchToMainStepSchema,
   TextAssertionSchema,
+  TransitionAssertionSchema,
   UrlAssertionSchema,
   ValueAssertionSchema,
   VisibleAssertionSchema,
@@ -39,9 +43,13 @@ export type TextAssertion = z.infer<typeof TextAssertionSchema>;
 export type UrlAssertion = z.infer<typeof UrlAssertionSchema>;
 export type ValueAssertion = z.infer<typeof ValueAssertionSchema>;
 export type CountAssertion = z.infer<typeof CountAssertionSchema>;
+export type StateAssertion = z.infer<typeof StateAssertionSchema>;
+export type TransitionAssertion = z.infer<typeof TransitionAssertionSchema>;
 export type AiJudgeAssertion = z.infer<typeof AiJudgeAssertionSchema>;
 export type DeterministicAssertion = z.infer<typeof DeterministicAssertionSchema>;
 export type Assertion = z.infer<typeof AssertionSchema>;
+export type Capture = z.infer<typeof CaptureSchema>;
+export type PopupExpectation = z.infer<typeof PopupExpectationSchema>;
 
 // ---- Control flow ----
 export type OnFail = z.infer<typeof OnFailSchema>;

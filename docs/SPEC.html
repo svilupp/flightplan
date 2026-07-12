@@ -143,7 +143,7 @@
 <table>
 <thead><tr><th>Subsystem</th><th>Responsibility</th></tr></thead>
 <tbody>
-<tr><td><code>cli/</code></td><td>Commands: <code>run</code>, <code>lint</code>, <code>explain</code>, <code>report</code>, <code>sweep</code>. Arg parsing and dispatch.</td></tr>
+<tr><td><code>cli/</code></td><td>Commands: <code>run</code>, <code>lint</code>, <code>explain</code>, <code>report</code>, <code>sweep</code>, <code>migrate-effects</code>. Arg parsing and dispatch.</td></tr>
 <tr><td><code>config/</code></td><td>zod schemas, TOML parse (smol-toml), defaults, layer merge.</td></tr>
 <tr><td><code>flow/</code></td><td>Flow loading, schemas, imports/composition, <code>run</code>-step flattening, <code>for_each</code> expansion, <code>${...}</code> templating.</td></tr>
 <tr><td><code>driver/</code></td><td><code>Driver</code> interface, <code>BrowserPilotDriver</code>, <code>MockDriver</code>, connect resolution, navigation, selector-strategy mapping.</td></tr>
@@ -252,7 +252,7 @@
 <h3>L5 path-repair planner</h3>
 <div class="callout warn">
 <span class="label">Documentation discrepancy</span>
-The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authoritative: <span class="fileref">src/config/resolve.ts:66</span> sets <code>DEFAULT_PLAN = {enabled: false}</code>, <span class="fileref">src/config/schema.ts</span> defaults <code>[plan] enabled</code> to <code>false</code>, and <span class="fileref">docs/KNOWN_ISSUES.md</span> confirms it. However <span class="fileref">README.md:180</span> and <span class="fileref">docs/PERFORMANCE.md:107</span> incorrectly state it is enabled by default. Treat those two as errors — the planner ships off and must be turned on with <code>[plan] enabled = true</code> (which additionally requires an AI runtime, i.e. <code>OPENROUTER_API_KEY</code>).
+The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authoritative: <span class="fileref">src/config/resolve.ts</span> sets the default to disabled, <span class="fileref">src/config/schema.ts</span> defaults <code>[plan] enabled</code> to <code>false</code>, and <span class="fileref">README.md</span>, <span class="fileref">docs/KNOWN_ISSUES.md</span>, and <span class="fileref">docs/PERFORMANCE.md</span> agree. The planner must be turned on with <code>[plan] enabled = true</code> (which additionally requires an AI runtime, i.e. <code>OPENROUTER_API_KEY</code>).
 </div>
 <p>When enabled, the planner (<span class="fileref">src/ai/planner-l5.ts</span>, glued through <span class="fileref">src/runner/path-repair.ts</span>) proposes synthetic repair steps. Triggers: path divergence (<code>maybeRepairPath</code> <span class="fileref">runner.ts:1206</span>) and an L4 <code>intent_changed</code> verdict <span class="fileref">:1148</span>. <code>runPathRepair</code> <span class="fileref">:181</span> allows ≤3 attempts, escalating from a cheap <code>planRepair</code> to <code>planRepairEscalated</code> when confidence ≤0.5 or attempt ≥2. Proposed steps are validated against <code>StepSchema</code>, given ids <code>&lt;id&gt;:repair:&lt;a&gt;.&lt;i&gt;</code>, spliced in after the cursor, counted against <code>max_steps</code>, and <strong>refused</strong> for lock write-back. Prompt caching is mandatory (uncached ~3.85× cost): a stable prefix (goal + vocabulary) plus a volatile suffix (page + recent actions, bounded to 8). Any failure degrades to "no repair".</p>
 </section>
@@ -382,7 +382,7 @@ count    = 5</code></pre>
 </ul>
 
 <h3>CLI commands &amp; flags</h3>
-<p>Commands (<span class="fileref">src/cli/index.ts:22</span>): <code>lint</code>, <code>run</code>, <code>explain</code>, <code>report</code>, <code>sweep</code>. Flags (<code>parseArgs</code> <span class="fileref">:82</span>): <code>--json</code>, <code>--frozen</code>, <code>--no-lock-write</code>, <code>--lock &lt;path&gt;</code>, <code>-o/--out &lt;dir&gt;</code> (default <code>.flightplan-runs/&lt;run-id&gt;/</code>), <code>--from &lt;step&gt;</code>, <code>--to &lt;step&gt;</code>, <code>--start-tier &lt;l0|l3&gt;</code>, <code>--trials &lt;n&gt;</code> (sweep, default 1), <code>--compare-baseline</code>, <code>-h/--help</code>, <code>--version</code>.</p>
+<p>Commands (<span class="fileref">src/cli/index.ts</span>): <code>lint</code>, <code>run</code>, <code>explain</code>, <code>report</code>, <code>sweep</code>, <code>migrate-effects</code>. Flags (<code>parseArgs</code>): <code>--json</code>, <code>--frozen</code>, <code>--no-lock-write</code>, <code>--lock &lt;path&gt;</code>, <code>-o/--out &lt;dir&gt;</code> (default <code>.flightplan-runs/&lt;run-id&gt;/</code>), <code>--from &lt;step&gt;</code>, <code>--to &lt;step&gt;</code>, <code>--start-tier &lt;l0|l3&gt;</code>, <code>--trials &lt;n&gt;</code> (sweep, default 1), <code>--compare-baseline</code>, <code>-h/--help</code>, <code>--version</code>.</p>
 </section>
 
 <!-- 7 -->

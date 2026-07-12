@@ -77,7 +77,7 @@ export const BrowserConfigSchema = z
      * hangs (PLAN §8 risk #2). `"dismiss"` (default) cancels confirms / rejects beforeunload — the
      * safe automation choice; `"accept"` confirms/OKs them. Threaded into `BrowserPilotDriver`.
      */
-    dialog: z.enum(["dismiss", "accept"]).optional(),
+    dialog: z.enum(["dismiss", "accept", "fail", "prompt", "manual"]).optional(),
   })
   .strict();
 

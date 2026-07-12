@@ -30,6 +30,7 @@ import {
   makeSnapshot,
   makeSuccessBatch,
 } from "../driver/index.ts";
+import { computeSourceHash } from "../flow/index.ts";
 import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
 import { REDACTED } from "../redaction/index.ts";
 import { FakeSink } from "../telemetry/index.ts";
@@ -879,7 +880,7 @@ target = ["text:Primary", "click primary"]
 
   /** A stale module lock for `do_login` that L0-misses on signature (forces an L1 heal). */
   async function writeStaleLoginLock(lockPath: string): Promise<void> {
-    const lock = emptyLock("auth.login", "sha256:x", "login setup");
+    const lock = emptyLock("auth.login", computeSourceHash(LOGIN_MODULE), "login setup");
     lock.targets.push({
       step: "do_login",
       target: "the login button",
