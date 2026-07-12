@@ -26,7 +26,3 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 - **Lock safety.** Frozen replay is read-only and fails closed for invalid locks or changed flows, and lock updates are credited only after the full step passes its assertions.
 - **Action and assertion correctness.** `visible` and `hidden` checks honor text, secret navigation and selection values stay redacted, and imported step-id collisions are reported instead of silently selecting one.
-
-### Historical / Previous notes
-
-- **2026-06-30:** Initial release
