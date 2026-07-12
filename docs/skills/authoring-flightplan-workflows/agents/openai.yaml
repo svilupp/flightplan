@@ -1,0 +1,4 @@
+interface:
+  display_name: "Authoring Flightplan Workflows"
+  short_description: "Write safe Flightplan flows"
+  default_prompt: "Use $authoring-flightplan-workflows to write, lint, run, and prove a safe Flightplan workflow."

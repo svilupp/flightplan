@@ -1,0 +1,5 @@
+# BROKEN: malformed TOML → parse/toml-syntax (file produces a lint error, not a crash)
+version = 1
+kind = "flow"
+id = "broken.bad_toml
+description = "Unterminated string above"

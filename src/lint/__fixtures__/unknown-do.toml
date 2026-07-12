@@ -1,0 +1,10 @@
+# BROKEN: unsupported `do` verb → steps/supported-do
+version = 1
+kind = "flow"
+id = "broken.unknown_do"
+description = "Unsupported step verb"
+
+[[steps]]
+id = "s1"
+do = "teleport"
+target = "somewhere"

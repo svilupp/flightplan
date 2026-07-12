@@ -1,0 +1,16 @@
+# BROKEN: an NL-classified target entry looks like an unprefixed selector →
+# steps/target-unprefixed-selector (warning; suggest the css: prefix).
+version = 1
+kind = "flow"
+id = "broken.raw_selector_target"
+description = "Unprefixed selector-looking string in a step target"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "click_next"
+do = "click"
+target = ["#wizard-next-1 > button.primary", "the Next button"]

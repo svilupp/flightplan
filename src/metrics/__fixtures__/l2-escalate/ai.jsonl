@@ -1,0 +1,1 @@
+{"type":"ai_call","ts":1700000022000,"role":"resolver","model":"deepseek/deepseek-v4-flash","purpose":"resolve","inputTokens":40,"outputTokens":16,"cost_usd":0.00000648,"outcome":"ok"}

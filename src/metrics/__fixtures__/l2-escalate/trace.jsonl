@@ -1,0 +1,3 @@
+{"type":"resolution_attempt","ts":1700000021601,"stepId":"s_pick","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700000021602,"stepId":"s_pick","tier":"L1","outcome":"ambiguous","durationMs":25}
+{"type":"resolution_attempt","ts":1700000021620,"stepId":"s_pick","tier":"L2","outcome":"resolved","durationMs":820}

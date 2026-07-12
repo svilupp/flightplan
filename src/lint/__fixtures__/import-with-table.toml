@@ -1,0 +1,14 @@
+# Broken fixture: the removed [[imports]]+`with` table form → imports/no-with.
+version = 1
+kind = "flow"
+id = "fixtures.import-with-table"
+description = "Uses the pre-v002 [[imports]] table form"
+
+[[imports]]
+module = "./does-not-matter.toml"
+with = { account = "x" }
+
+[[steps]]
+id = "s1"
+do = "wait"
+ms = 1

@@ -1,0 +1,87 @@
+# Flightplan example flow — the /contexts fixture (target tier: L1, scoped context traversal).
+#
+# Targets live across context boundaries: a button inside an <iframe> (srcdoc) and a button inside
+# an OPEN shadow root (web component). Each confirm writes a deterministic result. The CLOSED
+# shadow root on the page is intentionally unreachable and is NOT part of the happy path.
+#
+# Same-origin iframes are reachable via the `switch_frame` / `switch_to_main` verbs (which delegate
+# to browser-pilot's Page.switchToFrame / switchToMain). `switch_frame` ENTERS the <iframe> element
+# so the subsequent step's target resolves INSIDE the frame; `switch_to_main` returns to the top
+# document for the shadow-root step (the a11y snapshot pierces OPEN shadow roots in the main frame).
+# See docs/research/KNOWN_ISSUES.md "Iframes" and src/driver/browser-pilot-driver.ts (switchToFrame).
+#
+# Fixture contract: ../fixtures/README.md §05.
+
+version = 1
+kind = "flow"
+id = "examples.contexts"
+description = "Confirm in the iframe and in the open shadow root on the contexts fixture"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[run]
+max_steps = 20
+assertions = "eager"
+assert_timeout_ms = 5000
+
+# Path-repair planner is OFF by default in resolved config (src/config/schema.ts PlanConfigSchema:
+# `enabled` defaults false). Pinned here explicitly to hedge any doc/config contradiction, so this
+# flow never injects AI replans even when an AI runtime (OPENROUTER_API_KEY) is present.
+[config.plan]
+enabled = false
+
+[[steps]]
+id = "open_contexts"
+do = "goto"
+url = "${inputs.base_url}/contexts"
+
+# Enter the embedded <iframe> so `confirm_in_frame` resolves inside the frame's document. The target
+# identifies the <iframe> ELEMENT in the top document (frame context is stateful until switch_to_main).
+[[steps]]
+id = "enter_frame"
+do = "switch_frame"
+effect = "observe"
+target = ["[data-testid='context-frame']", "the embedded iframe"]
+
+[[steps]]
+id = "confirm_in_frame"
+do = "click"
+effect = "at_most_once"
+target = ["[data-testid='iframe-btn']", "the Confirm in frame button inside the embedded iframe"]
+
+# confirmFrame() renders data-testid="iframe-result" with text "Frame confirmed" inside the frame.
+# Scoped to the in-frame element so the check resolves via the live-DOM primitive (elementState),
+# which honours the current frame context (the a11y snapshot itself never descends into the frame).
+[[steps.assert]]
+type = "text"
+selector = "[data-testid='iframe-result']"
+text = "Frame confirmed"
+match = "exact"
+timeout_ms = 4000
+
+# Leave the iframe and return to the top document for the shadow-root step below.
+[[steps]]
+id = "leave_frame"
+do = "switch_to_main"
+effect = "observe"
+
+[[steps]]
+id = "confirm_in_shadow"
+do = "click"
+effect = "at_most_once"
+target = ["[data-testid='shadow-open-btn']", "the Confirm in shadow button inside the open shadow-root widget"]
+
+# The shadow click bubbles a CustomEvent the host surfaces as data-testid="result" = "Shadow confirmed".
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='result']"
+text = "Shadow confirmed"
+timeout_ms = 4000
+
+[[steps.assert]]
+type = "text"
+selector = "[data-testid='result']"
+text = "Shadow confirmed"
+match = "exact"
+timeout_ms = 4000

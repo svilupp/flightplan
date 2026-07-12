@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flightplan — Library Specification</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f7f8fa;
+    --bg-code: #f4f5f7;
+    --border: #e2e5ea;
+    --border-strong: #cbd0d8;
+    --text: #1c2330;
+    --text-soft: #4a5468;
+    --text-mut: #6b7486;
+    --accent: #1f5fd6;
+    --accent-soft: #e8f0fd;
+    --warn-bg: #fff8e6;
+    --warn-border: #e6c65c;
+    --ok: #1a7f45;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  .layout { display: flex; max-width: 1280px; margin: 0 auto; align-items: flex-start; }
+  nav.toc {
+    position: sticky; top: 0; align-self: flex-start;
+    width: 290px; min-width: 290px; height: 100vh; overflow-y: auto;
+    padding: 24px 18px 60px; border-right: 1px solid var(--border);
+    background: var(--bg-soft); font-size: 13.5px;
+  }
+  nav.toc h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-mut); margin: 0 0 12px; }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; counter-reset: sec; }
+  nav.toc > ol > li { counter-increment: sec; margin: 2px 0; }
+  nav.toc > ol > li > a::before { content: counter(sec) ". "; color: var(--text-mut); }
+  nav.toc a { color: var(--text-soft); text-decoration: none; display: block; padding: 3px 8px; border-radius: 5px; }
+  nav.toc a:hover { background: var(--accent-soft); color: var(--accent); }
+  nav.toc ul { list-style: none; margin: 2px 0 6px; padding-left: 16px; }
+  nav.toc ul a { font-size: 12.5px; color: var(--text-mut); }
+  main { flex: 1; min-width: 0; padding: 40px 48px 120px; }
+  header.doc { border-bottom: 2px solid var(--border); padding-bottom: 24px; margin-bottom: 36px; }
+  header.doc h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -.02em; }
+  header.doc .sub { color: var(--text-mut); font-size: 16px; }
+  header.doc .tags { margin-top: 14px; }
+  .tag { display: inline-block; font-size: 12px; background: var(--accent-soft); color: var(--accent); padding: 3px 9px; border-radius: 20px; margin-right: 6px; font-family: var(--mono); }
+  section { margin-bottom: 52px; scroll-margin-top: 16px; }
+  h2 { font-size: 25px; margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); letter-spacing: -.01em; }
+  h3 { font-size: 19px; margin: 30px 0 10px; }
+  h4 { font-size: 15.5px; margin: 22px 0 8px; color: var(--text-soft); text-transform: uppercase; letter-spacing: .04em; }
+  p { margin: 10px 0; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  code { font-family: var(--mono); font-size: 13.5px; background: var(--bg-code); padding: 1.5px 5px; border-radius: 4px; border: 1px solid var(--border); color: #2a3446; }
+  pre { background: var(--bg-code); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin: 14px 0; line-height: 1.5; }
+  pre code { background: none; border: none; padding: 0; font-size: 13px; color: #263042; }
+  .fileref { font-family: var(--mono); font-size: 13px; color: var(--accent); background: var(--accent-soft); border: 1px solid #cdddf7; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; }
+  .tablewrap { overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: 8px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--bg-soft); font-weight: 600; font-size: 13px; }
+  tbody tr:nth-child(even) { background: #fbfcfd; }
+  td code { font-size: 12.5px; }
+  .callout { border-left: 4px solid var(--accent); background: var(--accent-soft); padding: 12px 18px; border-radius: 0 8px 8px 0; margin: 18px 0; }
+  .callout.warn { border-left-color: var(--warn-border); background: var(--warn-bg); }
+  .callout .label { font-weight: 700; font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 4px; }
+  .callout.warn .label { color: #8a6d0f; }
+  .lead { font-size: 17px; color: var(--text-soft); }
+  .kbd-list { list-style: none; padding: 0; }
+  .kbd-list li { margin: 4px 0; }
+  .pill { font-family: var(--mono); font-size: 12px; padding: 1px 7px; border-radius: 12px; background: #eef0f4; border: 1px solid var(--border-strong); }
+  .ok { color: var(--ok); font-weight: 600; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 30px 0; }
+  .small { font-size: 13.5px; color: var(--text-mut); }
+  a.inline { color: var(--accent); }
+  @media (max-width: 900px) {
+    nav.toc { display: none; }
+    main { padding: 28px 20px 80px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#overview">Overview &amp; mental model</a></li>
+    <li><a href="#structure">Repository &amp; code structure</a></li>
+    <li><a href="#runtime">Runtime architecture &amp; data flow</a></li>
+    <li><a href="#ladder">Resolution ladder L0–L5</a></li>
+    <li><a href="#flowspec">Flow TOML specification</a></li>
+    <li><a href="#config">Config specification</a></li>
+    <li><a href="#lock">Lock file specification</a></li>
+    <li><a href="#ai">AI integration</a></li>
+    <li><a href="#drift">Drift detection &amp; signatures</a></li>
+    <li><a href="#artifacts">Run artifacts</a></li>
+    <li><a href="#driver">Driver layer</a></li>
+    <li><a href="#errors">Errors, retries, budgets, timeouts</a></li>
+    <li><a href="#perf">Performance &amp; known issues</a></li>
+  </ol>
+</nav>
+<main>
+<header class="doc">
+  <h1>flightplan</h1>
+  <div class="sub">Library Specification — a TOML-defined browser-automation flow runner with a self-healing resolution ladder.</div>
+  <div class="tags">
+    <span class="tag">Bun</span><span class="tag">TypeScript</span><span class="tag">AI SDK v6</span><span class="tag">browser-pilot</span><span class="tag">43,714 LOC</span>
+  </div>
+</header>
+
+<!-- 1 -->
+<section id="overview">
+<h2>1. Overview &amp; mental model</h2>
+<p class="lead">A flightplan <em>flow</em> is a TOML file describing a browser task as an ordered list of <strong>steps</strong>, each carrying <strong>assertions</strong>. The runner executes each step through a layered cost ladder, self-heals selector drift by consulting a committed lock file, and validates outcomes with deterministic and AI assertions.</p>
+
+<h3>What it is</h3>
+<p>You author intent (<code>click "the delete icon"</code>, <code>assert text "Welcome, Ada!"</code>) rather than brittle selectors. flightplan resolves that intent to a concrete DOM element using the cheapest technique that works, remembers the winning technique in a lock file, and replays it for free on the next run. When the page drifts, it climbs a ladder of increasingly expensive strategies — deterministic first, AI only as a last resort.</p>
+
+<h3>Key invariants</h3>
+<ul>
+  <li><strong>Dependency inversion at the runtime seams.</strong> The runner talks to a <code>Driver</code> interface, not to browser-pilot. The ladder talks to <code>ctx.ai?</code> hooks, not to the AI SDK. Assertions call an injected <code>aiJudge</code> seam. The browser-pilot runtime adapter is <span class="fileref">src/driver/browser-pilot-driver.ts</span>; type and compatibility imports also live in the driver boundary/support files and <span class="fileref">src/ai/resolve-common.ts</span>. The AI SDK runtime imports remain in <span class="fileref">src/ai/provider.ts</span>. This makes the whole system testable against <code>MockDriver</code> and a fake <code>GenerateFn</code> — no Chrome, no network.</li>
+  <li><strong>"Steps self-heal; assertions validate."</strong> The ladder is allowed to adapt, re-resolve, and rewrite the lock file to keep a step working. The assertion engine only <em>reports</em> — it never heals, never re-resolves, and never touches the lock. Correctness and adaptivity are kept in separate lanes.</li>
+  <li><strong>AI-less runs have no AI runtime.</strong> Deterministic-only flows can run at L0/L1 without <code>OPENROUTER_API_KEY</code>; AI calls are unavailable without a key, so flows that require L2/L3/L4 or <code>ai_judge</code> cannot complete.</li>
+  <li><strong>Types derive from zod.</strong> Schemas are the source of truth; TypeScript types are <code>z.infer</code> of them.</li>
+</ul>
+</section>
+
+<!-- 2 -->
+<section id="structure">
+<h2>2. Repository &amp; code structure</h2>
+<p>43,714 TypeScript LOC under <code>src/</code>, organized into 14 subsystems. <span class="fileref">src/index.ts</span> is the library barrel; <span class="fileref">src/types.ts</span> (237 LOC) holds cross-cutting primitive unions (zod-free const arrays) and the <code>AdvisoryVerdict</code> union.</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Subsystem</th><th>Responsibility</th></tr></thead>
+<tbody>
+<tr><td><code>cli/</code></td><td>Commands: <code>run</code>, <code>lint</code>, <code>explain</code>, <code>report</code>, <code>sweep</code>, <code>migrate-effects</code>. Arg parsing and dispatch.</td></tr>
+<tr><td><code>config/</code></td><td>zod schemas, TOML parse (smol-toml), defaults, layer merge.</td></tr>
+<tr><td><code>flow/</code></td><td>Flow loading, schemas, imports/composition, <code>run</code>-step flattening, <code>for_each</code> expansion, <code>${...}</code> templating.</td></tr>
+<tr><td><code>driver/</code></td><td><code>Driver</code> interface, <code>BrowserPilotDriver</code>, <code>MockDriver</code>, connect resolution, navigation, selector-strategy mapping.</td></tr>
+<tr><td><code>ladder/</code></td><td>L0–L4 tiers + orchestrator + auto-repair + portfolio race + vision batching.</td></tr>
+<tr><td><code>assert/</code></td><td>Deterministic poll-until-deadline engine + <code>ai_judge</code> seam.</td></tr>
+<tr><td><code>lock/</code></td><td>Lock types, parse, recipes, page signatures, compose, write policy, session.</td></tr>
+<tr><td><code>ai/</code></td><td>Model registry, OpenRouter transport (<span class="fileref">provider.ts</span>, the only SDK-importing file), Output schemas, budgets, cost, L2/L3/L4/L5, judge, runtime factory.</td></tr>
+<tr><td><code>artifacts/</code></td><td>Run dir + JSONL writers (<code>run.jsonl</code>, <code>trace.jsonl</code>, <code>ai.jsonl</code>) + <code>summary.json</code> + event schemas.</td></tr>
+<tr><td><code>runner/</code></td><td><code>runFlow</code> + L5 path-repair splicing.</td></tr>
+<tr><td><code>redaction/</code></td><td>Secrets + PII masking; identity function when disabled.</td></tr>
+<tr><td><code>telemetry/</code></td><td>Optional Logfire/OTLP; NOOP when disabled.</td></tr>
+<tr><td><code>metrics/</code></td><td>Offline campaign aggregation for <code>report</code>.</td></tr>
+<tr><td><code>lint/</code></td><td>42 lint rules for flow/config files.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Dev harness</h3>
+<p>One runner drives every check: <span class="fileref">scripts/check.ts</span>. Success is silence — each leg prints a single <code>&lt;Label&gt;: OK</code>; on failure it prints <code>&lt;Label&gt;: FAIL</code>, dumps the tool's full output, and exits non-zero. Legs: <strong>lint</strong> (biome check + oxlint <code>--type-aware</code>), <strong>typecheck</strong> (<code>tsc --noEmit</code>), <strong>test</strong> (<code>bun test</code>, all against <code>MockDriver</code>). It runs every requested leg even if an earlier one fails, so one command surfaces all failures at once.</p>
+
+<h3>docs/ and examples/</h3>
+<ul>
+  <li><strong>docs/</strong>: <code>BENCHMARK.md</code>, <code>BROWSER_PILOT_INTEGRATION.md</code>, this specification, and the checked-in authoring/building skills.</li>
+  <li><strong>examples/fixtures/server.ts</strong>: a zero-dependency Bun HTTP server on <code>:3000</code> serving 9 deterministic HTML pages (<code>GET /healthz</code> → 200).</li>
+  <li><strong>examples/flows/</strong>: 9 flows mapped 1:1 to the fixture pages — <code>wizard</code>, <code>async</code>, <code>rerender</code>, <code>overlays</code>, <code>contexts</code> (L0/L1), <code>gauntlet</code> (L2), <code>drift</code> (L0/L1-heal/L3 by variant), <code>signature</code> (L0 sig-mismatch → L1), <code>vision</code> (L3, icon-only). Each flow ships with a committed lock sidecar.</li>
+  <li><strong>spikes/</strong> is a gitignored throwaway sub-package excluded from the harness.</li>
+</ul>
+</section>
+
+<!-- 3 -->
+<section id="runtime">
+<h2>3. Runtime architecture &amp; data flow</h2>
+
+<h3>CLI entry</h3>
+<p><code>main(argv)</code> at <span class="fileref">src/cli/index.ts:451</span> → <code>parseArgs</code> <span class="fileref">:82</span> → dispatch <span class="fileref">:429</span>. <code>ParsedArgs</code> <span class="fileref">:26</span> carries the flags: <code>--json</code>, <code>--frozen</code>, <code>--no-lock-write</code>, <code>--lock &lt;path&gt;</code>, <code>--out/-o &lt;dir&gt;</code>, <code>--from</code>, <code>--to</code>, <code>--start-tier &lt;l0|l3&gt;</code>, <code>--trials &lt;n&gt;</code>, <code>--compare-baseline</code>.</p>
+<p><code>runRun</code> <span class="fileref">:351</span>: <code>loadFlowFile</code> → merge config layers (built-in → flow <code>[config]</code> → flow <code>[run]</code>) via <code>resolveConfigWithDefaults</code> → build <code>RunOptions</code> → <code>runFlow</code>. Only the <em>entry</em> flow contributes config; imported flows supply steps only.</p>
+
+<h3>Flow loading</h3>
+<p><code>loadFlowFile</code> <span class="fileref">src/flow/load.ts:90</span>: read → <code>parseFlowFile</code> → <code>expandForEachInDoc</code> (on the raw doc, <em>before</em> zod) → <code>FlowFileSchema.safeParse</code> → <code>LoadedFlow {flow, path, sourceText, sourceHash}</code> where <code>sourceHash = sha256:&lt;hex&gt;</code> of the raw bytes <span class="fileref">load.ts:41</span>. <code>FlowFileSchema</code> <span class="fileref">src/flow/schema.ts:374</span> is <code>.strict()</code>.</p>
+<p><code>loadFlowFileFlattened</code> <span class="fileref">src/flow/run.ts:121</span> flattens <code>run</code> steps into namespaced children <code>&lt;call-site-id&gt;:&lt;child-step-id&gt;</code>; <code>resolveImports</code> throws <code>ImportCycleError</code> on cycles; child <code>with</code> inputs are pre-templated against the parent scope.</p>
+
+<h3>The runner</h3>
+<p><code>runFlow</code> <span class="fileref">src/runner/runner.ts:1954</span> (2690-LOC file). Never imports browser-pilot; always tears down in a <code>finally</code>. Sequence:</p>
+<ol>
+  <li>load + template + <code>trimStepRange</code> (<code>--from</code>/<code>--to</code>);</li>
+  <li>resolve connect config (default: attach CDP <code>localhost:9222</code>, <code>DEFAULT_CONNECT_CONFIG</code> <span class="fileref">:145</span>) + <code>createRun</code> + <code>openArtifactWriters</code>;</li>
+  <li>redaction: <code>gatherSecretValues</code> + <code>createRedactor</code>;</li>
+  <li>telemetry span; <code>RunServices</code> <span class="fileref">:283</span> (all no-op when off);</li>
+  <li>AI runtime <code>buildAiRuntime</code> <span class="fileref">:2332</span> (injected factory wins; real OpenRouter only when the API key env is present; no key → deterministic);</li>
+  <li>lock session <code>openLockSession</code> (reads + composes locks, installs the L0 hook, resolves write mode);</li>
+  <li>driver <code>defaultDriverFactory</code> <span class="fileref">:2532</span> + connect;</li>
+  <li><code>setup</code> → <code>executeSteps</code> → advisory verdicts → lock flush → teardown;</li>
+  <li><code>computeVerdict</code> <span class="fileref">:1863</span> (error &gt; inconclusive &gt; failed &gt; passed), <code>buildSummary</code> <span class="fileref">:2629</span>, emit <code>run_end</code> + write <code>summary.json</code>.</li>
+</ol>
+
+<h3>The step loop</h3>
+<p><code>executeSteps</code> <span class="fileref">:1129</span> is index-driven with a jump table for <code>on_fail</code> (a re-entry counter bounds loops). Per step: before-asserts → action → after-asserts → <code>step_end</code>. <code>performStepAction</code> <span class="fileref">:754</span> dispatches; targeting verbs route to <code>ladder.resolveStep</code>. A deferred <code>creditResolution</code> thunk is invoked <em>only when the FULL step passes</em> <span class="fileref">:1469</span>, so a wrong-but-clickable selector never climbs the portfolio. A <code>settleMs</code> (150ms default) pause follows DOM-mutating actions. <code>max_steps</code> is enforced in the loop; <code>BudgetExceededError</code> → inconclusive. Vision batching groups ≥2 consecutive same-page <code>tier_hint="vision"</code> steps. L5 path repair splices synthetic repair steps.</p>
+
+<h4>Exit codes</h4>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Code</th><th>Verdict</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><span class="pill">0</span></td><td>passed</td><td>All steps and assertions passed.</td></tr>
+<tr><td><span class="pill">1</span></td><td>failed</td><td>A step or assertion failed.</td></tr>
+<tr><td><span class="pill">2</span></td><td>—</td><td>Usage / IO / connect error (e.g. CDP drop).</td></tr>
+<tr><td><span class="pill">3</span></td><td>inconclusive</td><td>Budget exceeded or otherwise undetermined.</td></tr>
+</tbody>
+</table>
+</div>
+<p class="small"><code>VERDICT_EXIT_CODES</code> at <span class="fileref">runner.ts:165</span>.</p>
+</section>
+
+<!-- 4 -->
+<section id="ladder">
+<h2>4. Resolution ladder L0–L5</h2>
+<p>The orchestrator <code>resolveStep</code> <span class="fileref">src/ladder/orchestrator.ts:106</span> walks the ladder for each post-templated targeting step, returning a <code>LadderResult {execution, attempts}</code>. It imports <strong>nothing</strong> from <code>ai/</code> — it reaches AI only through <code>ctx.ai?.{resolveL2, resolveL3, classifyL4}</code> hooks (<code>AiHooks</code>, <span class="fileref">ladder/types.ts:311</span>). One shared <code>snapshot({attributes:true})</code> is taken up front <span class="fileref">:155</span>.</p>
+
+<h3>The tiers</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Tier</th><th>Technique</th><th>Cost</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td><strong>L0</strong></td><td>Locked-recipe cache replay. Two-gate trust: <code>urlGlobMatches</code> + <code>signatureMatches</code>.</td><td>0 AI, near-instant</td><td><span class="fileref">src/ladder/l0.ts:107</span></td></tr>
+<tr><td><strong>L1</strong></td><td>Deterministic DOM strategy race via driver-native <code>resolveAll</code>; resolution + action coupled through <code>driver.batch</code>.</td><td>Free (no AI)</td><td><span class="fileref">src/ladder/l1.ts:310</span></td></tr>
+<tr><td><strong>Auto-repair</strong></td><td>Model-free recovery on failure reason (covered → dismiss overlay; disabled → wait; missing → re-resolve), then re-run L1.</td><td>Free</td><td><code>attemptRepair</code> <span class="fileref">repair.ts:194</span></td></tr>
+<tr><td><strong>L2</strong></td><td>Text-AI resolver. Fresh snapshot, native rank, index-numbered packet (role + name + score + ancestor context, <em>no raw selectors</em>).</td><td>resolver model</td><td><span class="fileref">src/ai/resolver-l2.ts:76</span></td></tr>
+<tr><td><strong>L3</strong></td><td>Vision AI. Consumes a <code>max_screenshots</code> unit; JPEG quality 60 data URL; multimodal.</td><td>vision model + screenshot</td><td><span class="fileref">src/ai/vision-l3.ts:127</span></td></tr>
+<tr><td><strong>L4</strong></td><td>Advisor classifier. Text-only classify → <code>AdvisoryVerdict</code> (<code>heal|bug|flake|intent_changed</code>). <code>ok:false, escalate:false</code>.</td><td>advisor model</td><td><span class="fileref">src/ai/advisor-l4.ts:77</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Routing</h3>
+<p>Normal path: L1 → L2 → L3 → L4. The AI climb is bounded to 3 hops <span class="fileref">:198</span>. <code>tier_hint="vision"</code> skips L2 (<code>nextAiHook</code> <span class="fileref">:84</span>); <code>--start-tier l3</code> skips L0 and L1 <span class="fileref">:118</span>. On a clean L0 miss, L1 reuses the shared snapshot; after an L0 replay-then-fail, L1 takes a <em>fresh</em> snapshot <span class="fileref">:169</span>.</p>
+
+<h4>L0 detail</h4>
+<p>Trust requires both <code>urlGlobMatches</code> and <code>signatureMatches(cached.sig, current, mode)</code> where mode = <code>ctx.cache?.signature ?? "full"</code>. <code>buildReplayPlan</code> <span class="fileref">l0.ts:334</span> produces one of: <strong>ANCHORED</strong> (primary uniquely resolves → lead + same-element fallbacks), <strong>COMPOUND</strong> (precise CSS primary alone), or <strong>DRIFT-HEAL</strong> (race the portfolio). On a signature MISS, if the primary selector still resolves, L0 replays anyway and marks <code>revalidated=true</code> (<code>l0_revalidated</code> note) — so even <code>--frozen</code> can pass a stale signature when the selector still resolves. An actionability gate (<code>classifyReplaySelector</code> <span class="fileref">:501</span>) demotes selectors that match &gt;1 element or resolve to a disabled control, and a safety net <span class="fileref">:226</span> rejects replay acting on a known-different element.</p>
+
+<h4>L1 detail</h4>
+<p>One snapshot, a pre-action signature basis, ranking via <code>driver.resolveAll(intent, {snapshot, action, minConfidence:0})</code>. The ordered strategy array is author hints + the ladder (<code>buildStrategyArray</code>), acted on via <code>driver.batch</code>; the winner and a durable (non-<code>ref:eN</code>) selector are learned from <code>selectorUsed</code>. Iframe guard <span class="fileref">:393</span>: a plain-CSS hint matching 0 elements is probed via <code>locateSelectorFrame</code>; if iframe-bound it fails hard with <code>escalate:false</code>. Escalation requires <code>succeeded &amp;&amp; !ambiguous</code>; ambiguity uses <code>isAmbiguous(ranked,{gap:0.1})</code> unless the winner is a testid. Minimum score 0.4.</p>
+
+<h4>Strategy ladder</h4>
+<p>After <code>switch_frame</code> enters a same-origin iframe, the current frame is allowed and subsequent in-frame targets resolve successfully. A direct target inside an unentered same-origin iframe still fails fast through the L1 iframe guard instead of acting on a look-alike parent.</p>
+<p><code>strategy-array.ts:243</code>: <code>ref:eN</code> (this-cycle only) → <code>testid</code> → <code>role_name</code> (<code>role:Role:Name</code> / <code>role:Role[N]</code>) → <code>label</code> → <code>scoped_text</code> (interactive-role only). <code>structural_fingerprint</code> is a durable last resort and is never a live batch entry. Explicit author hints may also be classified as <code>css</code>. The <code>[resolve] attributes</code> hook rides the testid tier.</p>
+
+<h3>L5 path-repair planner</h3>
+<div class="callout warn">
+<span class="label">Default</span>
+The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authoritative: <span class="fileref">src/config/resolve.ts</span> sets the default to disabled, <span class="fileref">src/config/schema.ts</span> defaults the internal <code>plan.enabled</code> to <code>false</code>, and <span class="fileref">README.md</span> agrees. In a flow file, turn it on with <code>[config.plan] enabled = true</code> (which additionally requires an AI runtime, i.e. <code>OPENROUTER_API_KEY</code>).
+</div>
+<p>When enabled, the planner (<span class="fileref">src/ai/planner-l5.ts</span>, glued through <span class="fileref">src/runner/path-repair.ts</span>) proposes synthetic repair steps. Triggers: path divergence (<code>maybeRepairPath</code>) and an L4 <code>intent_changed</code> verdict. <code>runPathRepair</code> <span class="fileref">:181</span> allows ≤3 attempts, escalating from a cheap <code>planRepair</code> to <code>planRepairEscalated</code> when confidence ≤0.5 or attempt ≥2. Proposed steps are validated against <code>StepSchema</code>, given ids <code>&lt;id&gt;:repair:&lt;a&gt;.&lt;i&gt;</code>, spliced in after the cursor, counted against <code>max_steps</code>, and <strong>refused</strong> for lock write-back. Prompt caching is mandatory (uncached ~3.85× cost): a stable prefix (goal + vocabulary) plus a volatile suffix (page + recent actions, bounded to 8). The uncached incremental-planning probe measured 2.51× full-plan cost and 4.35× full-plan tokens. Any failure degrades to "no repair".</p>
+</section>
+
+<!-- 5 -->
+<section id="flowspec">
+<h2>5. Flow TOML specification</h2>
+<p>Flow files are parsed by smol-toml via <code>parseToml</code> (<span class="fileref">src/config/parse.ts:39</span>) and validated by <code>FlowFileSchema</code> (<code>.strict()</code>).</p>
+
+<h3>Top-level keys</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Key</th><th>Type</th><th>Req</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>version</code></td><td>positive int</td><td>yes</td><td>Flow format version.</td></tr>
+<tr><td><code>kind</code></td><td><code>"flow"</code></td><td>yes</td><td></td></tr>
+<tr><td><code>id</code></td><td>string</td><td>yes</td><td>Flow identifier (used for import composition).</td></tr>
+<tr><td><code>description</code></td><td>string</td><td>yes</td><td></td></tr>
+<tr><td><code>goal</code></td><td>string</td><td>no</td><td>Durable "what" for the L5 planner; defaults to <code>description</code>.</td></tr>
+<tr><td><code>imports</code></td><td>string | string[]</td><td>no</td><td>Registers flow ids for composition.</td></tr>
+<tr><td><code>setup</code> / <code>teardown</code></td><td>flow path string</td><td>no</td><td>Reference a flow to run before / after the main steps.</td></tr>
+<tr><td><code>config</code></td><td>ConfigSchema</td><td>no</td><td>Entry-flow config layer.</td></tr>
+<tr><td><code>inputs</code></td><td>Record&lt;string,string&gt;</td><td>no</td><td>Templatable inputs.</td></tr>
+<tr><td><code>run</code></td><td>RunLimitsSchema</td><td>no</td><td>Budgets / limits.</td></tr>
+<tr><td><code>steps</code></td><td>Step[] (min 1)</td><td>yes</td><td>Ordered steps.</td></tr>
+</tbody>
+</table>
+</div>
+<p class="small">Schema at <span class="fileref">src/flow/schema.ts:374</span>. <code>for_each</code> is expanded on the raw doc before zod. Only the entry flow contributes config layers; imported flows supply steps only (<span class="fileref">src/cli/index.ts:359</span>).</p>
+
+<h3>Step verbs</h3>
+<p>The step union (<code>StepSchema</code> <span class="fileref">schema.ts:348</span>) discriminates on <code>do</code>. Common to all steps (<code>stepCommon</code> <span class="fileref">:197</span>): <code>id</code> (req), <code>assert</code> (Assertion[]), <code>timeout_ms</code> (wins over <code>[timeouts] action_ms</code>), <code>on_fail</code> (<code>{goto, max}</code>), <code>effect</code> (<code>observe|idempotent|at_most_once</code>), <code>anchor</code>, <code>retry</code> (<code>{policy, max}</code>), per-step <code>dialog</code>, runtime <code>capture</code>, and popup aliases <code>expect_page</code>/<code>popup</code>/<code>new_page</code>. Targeting verbs (<code>click</code>, <code>fill</code>, <code>select</code>, <code>ai_pick</code>) additionally carry <code>targetingCommon</code> <span class="fileref">:228</span>: <code>target</code> (string | string[]), <code>cache</code> (<code>"full"|"struct-only"</code>), <code>tier_hint</code> (<code>"vision"</code>).</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Verb</th><th>Fields</th><th>Schema</th></tr></thead>
+<tbody>
+<tr><td><code>goto</code></td><td><code>url</code> (req), <code>secret</code> (bool)</td><td><span class="fileref">:246</span></td></tr>
+<tr><td><code>click</code></td><td>targeting</td><td><span class="fileref">:255</span></td></tr>
+<tr><td><code>fill</code></td><td>targeting + <code>value</code> (req), <code>secret</code></td><td><span class="fileref">:259</span></td></tr>
+<tr><td><code>select</code></td><td>targeting + <code>value</code> (req), <code>secret</code></td><td><span class="fileref">:269</span></td></tr>
+<tr><td><code>press</code></td><td><code>key</code> (req)</td><td><span class="fileref">:279</span></td></tr>
+<tr><td><code>wait</code></td><td><code>ms</code> (req, nonneg)</td><td><span class="fileref">:283</span></td></tr>
+<tr><td><code>assert</code></td><td><code>assert</code> (min 1, req)</td><td><span class="fileref">:288</span></td></tr>
+<tr><td><code>ai_pick</code></td><td>targeting</td><td><span class="fileref">:296</span></td></tr>
+<tr><td><code>run</code></td><td><code>flow</code> (req), <code>with</code> (Record)</td><td><span class="fileref">:339</span></td></tr>
+<tr><td><code>switch_frame</code></td><td><code>target</code> (selector string or array, req)</td><td><span class="fileref">:315</span></td></tr>
+<tr><td><code>switch_to_main</code></td><td>no additional fields</td><td><span class="fileref">:329</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h4>Target syntax</h4>
+<p>A <code>target</code> is either a bare natural-language query (prose → resolved by the ladder) or a prefixed selector. The whitelist of prefixes is <code>ref:</code>, <code>role:</code>, <code>text:</code>, <code>css:</code>, or a leading <code>[</code> (<span class="fileref">src/flow/normalize-target.ts:20–73</span>). A <code>target</code> may be an array: earlier entries are author hints, later entries fallbacks. Example (<code>wizard.toml</code>):</p>
+<pre><code>[[steps]]
+id = "name"
+do = "fill"
+target = ["[data-testid='wizard-name']", "the full name field"]
+value = "${inputs.full_name}"</code></pre>
+<p><code>css:</code> is a Flightplan authoring prefix and is stripped at the driver boundary. Browser-pilot 0.1.0 accepts both <code>role:button:Next</code> and <code>role:button[name="Next"]</code>. <code>fingerprint:</code>/<code>fp:</code>/<code>structure:</code> are internal lock identity tokens, not executable target selectors; <code>label:</code> is not part of the target contract.</p>
+<p>Pure prose targets route straight to vision when hinted, e.g. <code>vision.toml</code>:</p>
+<pre><code>target = "the trash-can / delete icon in the toolbar to delete the item"
+tier_hint = "vision"</code></pre>
+
+<h3>Assertions</h3>
+<p><code>AssertionSchema</code> <span class="fileref">src/flow/schema.ts:145</span>; 9 types: 8 deterministic types plus <code>ai_judge</code>. Common fields (<span class="fileref">:30</span>) are <code>when</code> (<code>"before"|"after"</code>, default <code>after</code>), <code>purpose</code> (<code>"precondition"|"postcondition"</code>), and <code>timeout_ms</code>. Deterministic types poll until pass or timeout.</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Type</th><th>Fields</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>visible</code></td><td><code>text?</code>, <code>selector?</code></td><td>Element present &amp; visible.</td></tr>
+<tr><td><code>hidden</code></td><td><code>text?</code>, <code>selector?</code></td><td>Element absent / not visible.</td></tr>
+<tr><td><code>text</code></td><td><code>text</code> (req), <code>selector?</code>, <code>match?</code>, <code>landmark?</code></td><td>Text content match.</td></tr>
+<tr><td><code>url</code></td><td><code>url</code> (req), <code>match?</code></td><td>Exact, origin/path, glob, or contains match.</td></tr>
+<tr><td><code>value</code></td><td><code>value</code> (req), <code>selector?</code></td><td>Input value match.</td></tr>
+<tr><td><code>count</code></td><td><code>count</code> (req, nonneg), <code>selector?</code></td><td>Element count.</td></tr>
+<tr><td><code>state</code></td><td><code>state</code> (req), <code>selector</code> (req for element states), <code>value?</code></td><td>Element states support <code>enabled</code>, <code>disabled</code>, <code>checked</code>, <code>unchecked</code>, and <code>selected</code>; page states (<code>dialog</code>, <code>menu</code>, <code>new_page</code>) omit the selector. The schema's <code>count</code> field is not used by the runtime.</td></tr>
+<tr><td><code>transition</code></td><td><code>kind</code> (req), <code>selector?</code>, <code>from?</code>, <code>capture?</code></td><td>Before/after URL, text, value, or state transition.</td></tr>
+<tr><td><code>ai_judge</code></td><td><code>prompt</code> (req), <code>inputs?</code> (min 1 of source/text/screenshot)</td><td>No threshold; a screenshot input routes to the vision model. Fail-safe closed.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Selector targets starting with <code>[</code>, <code>.</code>, <code>#</code> or carrying <code>css:</code> match the live DOM via the driver's <code>elementState</code>, so non-interactive nodes are assertable:</p>
+<pre><code>[[steps.assert]]
+type     = "count"
+selector = "css:tr"
+count    = 5</code></pre>
+
+<h3>Runtime captures and popup expectations</h3>
+<p>A step may capture a URL, text, value, or state into a named runtime value. Later step fields use <code>${capture.name}</code>; the value is resolved when that step runs and is redacted in artifacts. A step may also declare <code>expect_page</code>, <code>popup</code>, or <code>new_page</code> with optional <code>url</code>, <code>title</code>, <code>type</code>, <code>target_id</code>, <code>opener</code>, and <code>timeout_ms</code>. The runner arms popup observation before dispatch and records a mismatch as an ambiguous transport result.</p>
+
+<h3>Effects and retry safety</h3>
+<p><code>effect</code> declares the side-effect contract: <code>observe</code>, <code>idempotent</code>, or <code>at_most_once</code>. Browser actions carry dispatch evidence (<code>not_dispatched</code>, <code>dispatched</code>, or <code>uncertain</code>) and retry metadata into the trace and summary. <code>on_fail</code> may jump only when the action is safe to re-enter; dispatched or uncertain actions, <code>at_most_once</code> steps, and <code>retry.policy = "never"</code> block redispatch. A possible at-most-once effect without a passing postcondition yields <code>inconclusive</code> rather than a second attempt.</p>
+
+<h3>on_fail</h3>
+<p><code>OnFailSchema</code> <span class="fileref">:190</span>: <code>{goto: string, max?: int}</code> - jump to a step id or <code>"self"</code> (retry); <code>max</code> defaults to 1. A permitted jump rolls back the failure state (heals are <em>not</em> rolled back) and cannot cross a run boundary.</p>
+
+<h3>for_each macro</h3>
+<p>A load-time macro (<span class="fileref">src/flow/normalize.ts</span>), <em>not</em> in the schema. A step with <code>for_each = [...]</code> (strings or string-valued tables) expands to N steps with ids <code>&lt;base-id&gt;#&lt;1-based-idx&gt;</code>. Loop tokens: <code>${item}</code>, <code>${item.key}</code>, <code>${loop.index}</code> (0-based), <code>${loop.index1}</code>. A loop token on a non-<code>for_each</code> step is a hard error.</p>
+
+<h3>Templating</h3>
+<p><span class="fileref">src/flow/template.ts</span>: <code>${inputs.&lt;name&gt;}</code>, <code>${env.&lt;NAME&gt;}</code>, and runtime <code>${capture.&lt;name&gt;}</code>, using a whitespace-tolerant regex <span class="fileref">:45</span>, applied deep to every string leaf. An undeclared input, unset env var, or unavailable runtime capture throws <code>TemplateError</code>; an unknown source throws. Capture values come from earlier steps and are resolved at execution time. Loop tokens are a separate, load-time concern. For <code>run</code>-step composition, <code>with</code> values are templated against the parent scope and win over child defaults (<code>resolveInputs</code> <span class="fileref">:270</span>).</p>
+</section>
+
+<!-- 6 -->
+<section id="config">
+<h2>6. Config specification</h2>
+<p><code>ConfigSchema</code> <span class="fileref">src/config/schema.ts:324</span> (all sections <code>.strict()</code>); defaults in <span class="fileref">src/config/resolve.ts</span>. In a flow file, these sections are nested under <code>[config]</code> (for example, <code>[config.plan]</code>); a standalone config file uses the section names shown below.</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Section</th><th>Key fields (defaults)</th></tr></thead>
+<tbody>
+<tr><td><code>[browser]</code></td><td><code>provider</code> "browser-pilot", <code>version</code>, <code>reuse_window?</code> (schema-accepted but ignored by runtime), <code>record</code> false, <code>dialog</code> "dismiss"|"accept"|"fail"|"prompt"|"manual" (default dismiss). <code>accept</code>/<code>dismiss</code> auto-answer native dialogs; the other policies record a failure and dismiss the dialog. Tab selection is controlled by <code>[connect] targetUrl</code>, not <code>reuse_window</code>. <span class="fileref">src/config/schema.ts:66</span></td></tr>
+<tr><td><code>[connect]</code></td><td>Union on <code>mode</code>: <strong>attach</strong> (<code>wsUrl?</code>, <code>browserURL?</code>, <code>autodiscover?</code>, <code>targetUrl?</code>, <code>sessionName?</code>) or <strong>launch</strong> (<code>headless?</code>, default <code>true</code>; <code>headless = false</code> is supported, <code>channel?</code>, <code>userDataDir?</code>, <code>chromeFlags?</code>). Replaced wholesale. Default: attach CDP <code>localhost:9222</code>. <span class="fileref">:121</span></td></tr>
+<tr><td><code>[ai]</code></td><td><code>provider</code> "openrouter", <code>api_key_env</code> "OPENROUTER_API_KEY", <code>max_model_calls</code>, <code>max_screenshots</code>, <code>models</code>. <span class="fileref">:51</span></td></tr>
+<tr><td><code>[ai.models.*]</code></td><td>For <code>resolver</code>, <code>advisor</code>, <code>vision</code>, <code>planner</code>, <code>planner_capable</code>: <code>{model, fallbacks?[], pricing?{in,out}}</code>. <span class="fileref">:16</span></td></tr>
+<tr><td><code>[run]</code></td><td><code>max_steps</code>, <code>max_model_calls</code>, <code>max_screenshots</code>, <code>max_cost_usd</code>, <code>max_replans</code>, <code>assertions</code> eager|deferred (default eager), <code>fail_on_assertion</code> (default true), <code>assert_timeout_ms</code> (default 5000). Replaced wholesale. <span class="fileref">:130</span></td></tr>
+<tr><td><code>[assertions]</code></td><td>Schema-accepted compatibility shape (<code>mode</code>, <code>fail_on_failure</code>, <code>assert_timeout_ms</code>), but not normalized into <code>[run]</code> by the current resolver. Use <code>[run]</code> for effective assertion policy. <span class="fileref">src/config/schema.ts:153</span></td></tr>
+<tr><td><code>[telemetry.logfire]</code></td><td><code>enabled</code> "auto"|bool, <code>token_env</code>, <code>service_name</code>. <span class="fileref">:165</span></td></tr>
+<tr><td><code>[redaction]</code></td><td><code>mask_text</code> true, <code>redact_media</code> true. <span class="fileref">:184</span></td></tr>
+<tr><td><code>[artifacts]</code></td><td><code>collocate</code> true, <code>out_dir</code>, <code>lock_path</code>. <span class="fileref">:195</span></td></tr>
+<tr><td><code>[cache]</code></td><td><code>ignore_regions</code> (CSS[]), <code>signature</code> "full"|"struct-only". <span class="fileref">:220</span></td></tr>
+<tr><td><code>[resolve]</code></td><td><code>attributes</code> — extra DOM attrs as deterministic hooks beyond <code>data-testid</code>/<code>data-test</code>/<code>data-qa</code>. <span class="fileref">:243</span></td></tr>
+<tr><td><code>[plan]</code></td><td><code>enabled</code> <strong>false</strong>, <code>escalate_confidence</code> 0..1 (default 0.5), <code>escalate_attempts</code>, <code>max_replans</code>. <span class="fileref">:269</span></td></tr>
+<tr><td><code>[timeouts]</code></td><td><code>action_ms</code> 5000, <code>nav_ms</code> 2000, <code>settle_ms</code> 150 (0 disables), <code>ai_call_ms</code> (unset → role-aware defaults). <span class="fileref">:311</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Merge order</h3>
+<p>The current CLI resolves <strong>built-in defaults → entry flow <code>[config]</code> → entry flow <code>[run]</code></strong> (<span class="fileref">src/cli/index.ts:359–370</span>). Imported flow config is ignored, and the CLI does not currently load a global config layer or add config-valued CLI overrides. Within <code>mergeConfigLayer</code> (<span class="fileref">src/config/resolve.ts:165</span>), <code>ai.models</code>, scalars, <code>browser</code>, <code>telemetry</code>, <code>artifacts</code>, and <code>redaction</code> merge key-by-key; <code>run</code>, <code>connect</code>, and arrays are replaced wholesale.</p>
+
+<h3>Environment variables</h3>
+<ul>
+  <li><code>OPENROUTER_API_KEY</code> — required when an AI tier or AI-backed step/assertion is invoked, including an <code>ai_pick</code> escalation or <code>ai_judge</code>. Deterministic L0/L1 runs and warm L0 lock replay can be keyless. Override the env-var name via <code>[ai] api_key_env</code>.</li>
+  <li><code>LOGFIRE_TOKEN</code> — optional; telemetry defaults to on iff the token is present.</li>
+  <li><code>wizard</code>, <code>async</code>, <code>rerender</code>, <code>overlays</code>, and <code>contexts</code> are deterministic-only examples and need no key. <code>gauntlet</code> requires L2; <code>vision</code> requires L3; <code>drift</code> and <code>signature</code> include <code>ai_judge</code> assertions and therefore require an AI runtime even though their default target paths are deterministic.</li>
+</ul>
+
+<h3>CLI commands &amp; flags</h3>
+<p>Commands (<span class="fileref">src/cli/index.ts</span>): <code>lint</code>, <code>run</code>, <code>explain</code>, <code>report</code>, <code>sweep</code>, <code>migrate-effects</code>. Flags (<code>parseArgs</code>): <code>--json</code>, <code>--frozen</code>, <code>--no-lock-write</code>, <code>--lock &lt;path&gt;</code>, <code>-o/--out &lt;dir&gt;</code> (default <code>.flightplan-runs/&lt;run-id&gt;/</code>), <code>--from &lt;step&gt;</code>, <code>--to &lt;step&gt;</code>, <code>--start-tier &lt;l0|l3&gt;</code>, <code>--trials &lt;n&gt;</code> (sweep, default 1), <code>--compare-baseline</code>, <code>-h/--help</code>, <code>--version</code>.</p>
+</section>
+
+<!-- 7 -->
+<section id="lock">
+<h2>7. Lock file specification</h2>
+<p>Per-flow <code>*.lock.toml</code> sidecars are committed source artifacts. <code>LOCK_VERSION = 2</code> (<span class="fileref">src/lock/types.ts:212</span>). Serialization is byte-identical (deterministic), and v1 files auto-migrate on load.</p>
+
+<h3>Structure</h3>
+<p><code>LockFile</code> <span class="fileref">:198</span>: <code>version</code>, <code>source</code>, <code>source_hash</code>, <code>description</code>, <code>targets</code> (sorted by step). Each <code>[[targets]]</code> (<code>LockTarget</code> <span class="fileref">:156</span>):</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>step</code></td><td>Unique key (the step id).</td></tr>
+<tr><td><code>target</code></td><td>The natural-language intent string.</td></tr>
+<tr><td><code>kind?</code></td><td><code>"ai_pick"</code> for picker targets.</td></tr>
+<tr><td><code>match</code></td><td><code>{url_glob, sig}</code>. <code>url_glob</code> is an anchored glob (only <code>*</code>). <code>sig</code> is the composite <code>text:&lt;url&gt;|&lt;texthash&gt;;struct:&lt;urlPath&gt;|&lt;structhash&gt;</code>.</td></tr>
+<tr><td><code>strategies?</code></td><td><code>StrategyEntry[]</code> <span class="fileref">:82</span>: <code>{kind, selector, greens, last_ok?, last_drift?}</code>. Ranked by recency-weighted score; top = winner. Selectors are always re-resolvable — <strong>never</strong> <code>ref:eN</code>.</td></tr>
+<tr><td><code>pinned_choice?</code></td><td>For <code>ai_pick</code>: <code>{strategy, selector, green_runs?, label?}</code>.</td></tr>
+<tr><td><code>memory?</code></td><td><code>{note?, note_updated?}</code> — advisory, fed into L2/L3 prompts, TTL <code>NOTE_TTL_DAYS = 45</code>, <strong>never affects routing</strong>.</td></tr>
+<tr><td><code>last_seen?</code></td><td>ISO-8601.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Scoring &amp; portfolio</h3>
+<p><code>scoreEntry</code> <span class="fileref">src/lock/portfolio.ts:106</span> = <code>greens × 2^(-ageDays/30)</code>; a drift-capped entry (<code>last_drift ≥ last_ok</code>) is multiplied by 0.1. Constants: <code>HALF_LIFE = 30d</code>, <code>STALE = 90d</code>, <code>K_MAX = 6</code>. Kind priority: <code>testid &gt; role_name &gt; label &gt; scoped_text &gt; css &gt; structural_fingerprint</code>. <code>rankPortfolio</code> <span class="fileref">:186</span> is deterministic. Write-back flows through <code>session.recordResolution</code> <span class="fileref">src/lock/session.ts:178</span> → <code>decideLockWrite</code> <span class="fileref">src/lock/write.ts:276</span>; <code>applyOutcome</code> <span class="fileref">:392</span> handles <em>agreed</em> (greens+1, last_ok), <em>drifted</em> (last_drift), and <em>learned</em> (greens:1). A "heal" is defined narrowly as the top winner <em>changing</em>.</p>
+
+<h3>Write modes</h3>
+<p><code>resolveLockWriteMode</code> <span class="fileref">src/lock/write.ts:181</span>:</p>
+<ul>
+  <li><code>--frozen</code> → <strong>frozen</strong>: never write; drift FAILS the run (CI mode). Beats <code>--no-lock-write</code>.</li>
+  <li><code>--no-lock-write</code> → <strong>no-write</strong>.</li>
+  <li>otherwise → <strong>auto</strong>: an L0 hit refreshes track records / signature; a real heal (winner changed) persists only in auto.</li>
+</ul>
+
+<h3>Invariants</h3>
+<ul>
+  <li>Selectors are never <code>ref:eN</code> — <code>assertDurableSelector</code> <span class="fileref">recipe.ts:38</span> throws on ephemeral refs.</li>
+  <li>A revalidated (stale-sig) hit refreshes only <code>match</code> + <code>last_seen</code>.</li>
+  <li>Memory notes are persisted only from a corroborated pick or one with confidence ≥0.8 (<code>NOTE_CONFIDENCE_MIN</code>), redacted and decayed.</li>
+  <li><code>ai_pick</code> round-trips <code>kind</code> + <code>pinned_choice</code>; a nameless icon pins to <code>[data-cmd]</code> or <code>role:Role[N]</code> for zero-AI warm replay.</li>
+</ul>
+</section>
+
+<!-- 8 -->
+<section id="ai">
+<h2>8. AI integration</h2>
+<p><span class="fileref">src/ai/provider.ts</span> is the only file importing the AI SDK (<code>ai@6</code>, <code>@openrouter/ai-sdk-provider</code>). It uses the Output API — <code>generateText({output: Output.object({schema})})</code> → <code>result.output</code> — with fallback iteration in <code>defaultGenerate</code> <span class="fileref">:123</span> (models tried in order, one shared <code>AbortSignal.timeout</code> across the chain).</p>
+
+<h3>Model registry</h3>
+<p><span class="fileref">src/ai/registry.ts</span>, pricing in USD per 1M tokens (in/out). All overridable via <code>[ai.models.*]</code>.</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Role</th><th>Model</th><th>In</th><th>Out</th></tr></thead>
+<tbody>
+<tr><td>resolver</td><td><code>deepseek/deepseek-v4-flash</code></td><td>0.09</td><td>0.18</td></tr>
+<tr><td>vision</td><td><code>google/gemini-3-flash-preview</code></td><td>0.50</td><td>3.00</td></tr>
+<tr><td>advisor</td><td><code>z-ai/glm-5.2</code></td><td>0.94</td><td>3.00</td></tr>
+<tr><td>planner</td><td><code>deepseek/deepseek-v4-flash</code></td><td>0.09</td><td>0.18</td></tr>
+<tr><td>planner_capable</td><td><code>z-ai/glm-5.2</code> (unproven)</td><td>0.94</td><td>3.00</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>aiCall accounting</h3>
+<p><code>aiCall</code> <span class="fileref">src/ai/call.ts:199</span>: one call = one <code>max_model_calls</code> unit = one <code>ai_call</code> event. Sequence: <code>noteModelCall</code> pre-check → generate → compute cost (provider <code>usage.cost</code>, else tokens × pricing) → validate → emit (redacted) → <code>addCost</code> post-check. Per-role timeouts <span class="fileref">:41</span>: resolver 6s, vision 12s, advisor 10s, planner 6s, planner_capable 10s.</p>
+
+<h3>ai_judge</h3>
+<p><span class="fileref">src/ai/judge.ts</span>: a boolean oracle <code>{pass, reason?}</code> with no threshold that never heals. A screenshot input routes to the vision model (and consumes budget); otherwise text. It is <strong>fail-safe closed</strong>: an unparseable response yields <code>pass:false</code> (<code>judgeFailSafe</code>). Unimplemented paths throw <code>Phase4NotImplementedError</code> (<span class="fileref">assert/engine.ts:53</span>).</p>
+
+<h3>ai_pick</h3>
+<p>A step verb (not an assertion). It picks one element from a set given intent, then pins the choice into the lock (<code>pinned_choice</code>) so subsequent warm runs replay at L0 with zero AI.</p>
+
+<h3>Vision batching</h3>
+<p><code>resolveBatchL3</code> <span class="fileref">src/ai/vision-l3.ts:300</span> + orchestrator <code>resolveVisionBatch</code> <span class="fileref">orchestrator.ts:246</span>: ≥2 same-page hinted steps collapse into 1 screenshot + 1 keyed call. The benchmark's 8-icon batch matched 8/8 in 2.77s versus 11.96s for eight single calls, 76.8% faster. The response envelope is lenient (<code>{picks:[unknown]}</code>) with per-pick re-validation (<code>indexByKey</code> <span class="fileref">:385</span>); a malformed pick falls back to its own single L3 call. A step carrying its own <code>assert</code> or <code>on_fail</code> is not batched.</p>
+
+<h3>Prompts-by-index design</h3>
+<p>L2/L3 packets number candidates by index and present role + name + score + ancestor context — <strong>never raw selectors</strong>. The model returns an index (or <code>screenshot_needed</code> / <code>give_up</code>), which the ladder maps back to a concrete element. This keeps the model out of the business of inventing selectors and makes every AI decision re-validatable against the live snapshot.</p>
+</section>
+
+<!-- 9 -->
+<section id="drift">
+<h2>9. Drift detection &amp; page signatures</h2>
+
+<h3>Portfolio race</h3>
+<p><code>racePortfolio</code> (<span class="fileref">src/ladder/revalidate.ts:302</span>) resolves each durable selector and runs an identity check over one snapshot. Outcomes: <strong>Agreement</strong> (≥2 strategies hit the same element), <strong>Single</strong>, <strong>Disagreement</strong> (prefer the track-record winner corroborated by role + name), or <strong>None</strong> → miss → fall to L1. The trace records the strategy and agreement ratio (e.g. <code>"3/4"</code>).</p>
+
+<h3>Page signatures</h3>
+<p><code>capturePageSignature</code> (<span class="fileref">src/ladder/page-signature.ts</span>) builds the composite <code>text:&lt;textSig&gt;;struct:&lt;structSig&gt;</code>. The <em>text</em> signature is a volatile-masked hash (excluding <code>aria-live</code>, <code>data-live</code>, hidden nodes, and <code>[cache] ignore_regions</code>). The <em>struct</em> signature is a role-tree hash. Signature mode (<code>full</code> vs <code>struct-only</code>) is set per-step via <code>cache</code> or globally via <code>[cache] signature</code>.</p>
+
+<h3>Path divergence</h3>
+<p><code>detectDivergence</code> (<span class="fileref">src/runner/path-repair.ts:101</span>): after a mutating step, compare the current signature against the <em>next</em> step's <code>match.sig</code>. No expectation → <code>null</code>. Only the mutating verbs (<code>goto</code>, <code>click</code>, <code>fill</code>, <code>select</code>, <code>ai_pick</code>) participate. A divergence is one of the two triggers for the (opt-in) L5 planner.</p>
+</section>
+
+<!-- 10 -->
+<section id="artifacts">
+<h2>10. Run artifacts</h2>
+<p><code>createRun</code> (<span class="fileref">src/artifacts/run-dir.ts:156</span>) writes to <code>.flightplan-runs/&lt;run-id&gt;/</code> (gitignored; <code>-o</code> overrides). The run id is <code>YYYYMMDDTHHMMSSmmm-&lt;8char base36&gt;</code> <span class="fileref">:115</span>.</p>
+
+<h3>Layout</h3>
+<div class="tablewrap">
+<table>
+<thead><tr><th>File</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><code>run.jsonl</code></td><td><code>run_start</code>, <code>step_start</code>, <code>step_end</code>, <code>assertion_result</code>, <code>run_end</code>.</td></tr>
+<tr><td><code>trace.jsonl</code></td><td><code>browser_action</code>, <code>resolution_attempt</code> (tier / outcome / durationMs).</td></tr>
+<tr><td><code>ai.jsonl</code></td><td><code>role</code>, <code>model</code>, <code>purpose</code>, <code>inputTokens</code>, <code>outputTokens</code>, <code>cost_usd</code>, <code>outcome</code>, <code>redactedPrompt</code>, <code>redactedResponse</code> (redacted upstream, <span class="fileref">events.ts:253</span>).</td></tr>
+<tr><td><code>screenshots/</code>, <code>proposed-patches/</code>, <code>video.webm</code></td><td>Media (video opt-in via <code>[browser] record</code>).</td></tr>
+<tr><td><code>summary.json</code></td><td><code>RunSummary</code>.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>RunSummary</code> (<span class="fileref">events.ts:320</span>) carries <code>verdict</code>, <code>flow_id</code>, <code>run_id</code>, <code>run_dir</code>, <code>failed_step</code>, <code>failed_assertions[]</code>, <code>advisory_verdict</code>, <code>healed_steps</code>, <code>drift_count</code>, <code>screenshot_paths</code>, <code>video_path</code>, <code>trace_path</code>, <code>total_cost_usd</code>, <code>model_usage[]</code>, <code>proposed_patch_path</code>, <code>replan_count</code>, <code>repaired_steps</code>, optional <code>provenance</code>, <code>captures</code>, and <code>pages</code>, and <code>steps: StepSummary[]</code>. Each step summary can include dispatch state, retry evidence, action receipt, effect, anchor, captures, and popup data.</p>
+
+<h3>explain / report / sweep</h3>
+<p><code>explain</code> and <code>report</code> read runs back via <code>loadRun</code> (<span class="fileref">src/cli/explain.ts:137</span>). <code>report</code> aggregates through <code>metrics/aggregateCampaign</code>: tier histograms, L0/L1 hit rates, per-role cost, drift-heal success, p50/p95 latency, cost projection, and a lock-stability cross-check. <code>sweep</code> nests runs as <code>&lt;flowId&gt;/&lt;arm&gt;/&lt;trial&gt;/</code>.</p>
+<div class="callout">
+<span class="label">Cost accounting</span>
+<code>summary.json</code>'s <code>total_cost_usd</code> includes judge calls. Its <code>model_usage</code> folds judge spend into the underlying resolver or vision role, so use <code>report --json</code> or <code>ai.jsonl</code> when a separate per-call judge audit is required.
+</div>
+</section>
+
+<!-- 11 -->
+<section id="driver">
+<h2>11. Driver layer</h2>
+<p>The <code>Driver</code> interface (<span class="fileref">src/driver/types.ts:469</span>) is the seam used by the runner, ladder, assertions, and tests. Lifecycle: <code>connect</code> → <code>page</code> → ops → <code>teardown</code>. In Mode A (attach) teardown only detaches; in Mode B (launch) it detaches and kills.</p>
+
+<h3>Methods</h3>
+<ul>
+  <li><code>goto</code> / <code>currentUrl</code>, <code>snapshot(opts)</code>, <code>batch</code>, <code>resolveAll</code> (native ranking).</li>
+  <li>Single actions returning <code>boolean</code>: <code>click</code>, <code>fill</code>, <code>type</code>, <code>select</code>, <code>check</code>, <code>hover</code>, <code>press</code>, and <code>submit</code>; <code>screenshot()</code> → base64.</li>
+  <li>Optional: <code>provenance</code>, <code>expectNewPage</code>, <code>pageState</code>, <code>elementState</code>, <code>locateSelectorFrame</code>, <code>startRecording</code>, <code>stopRecording</code>, and <code>saveScreenshot</code>.</li>
+  <li><code>switchToFrame</code>, <code>switchToMain</code>, and <code>currentFrame</code> for stateful frame context; <code>clearBrowserState</code> for isolation.</li>
+  <li><code>exportRefMap</code> / <code>importRefMap</code> (refs valid for exactly one cycle).</li>
+  <li><code>captureStateSignature({mode:"text"|"structure"})</code>.</li>
+</ul>
+
+<h3>Implementations</h3>
+<p><code>BrowserPilotDriver</code> (<span class="fileref">src/driver/browser-pilot-driver.ts:134</span>) is the runtime browser-pilot adapter. Browser-pilot type and compatibility imports also appear in the driver boundary/support files and <span class="fileref">src/ai/resolve-common.ts</span>. It bounds browser-pilot's ~30s actionability with its own timeouts: <code>DEFAULT_ACTION_TIMEOUT_MS = 5000</code> <span class="fileref">:73</span>, <code>DEFAULT_NAV_TIMEOUT_MS = 2000</code> <span class="fileref">:78</span>. <code>MockDriver</code> is fully scriptable (<code>setSnapshot</code>, <code>setBatchResult</code>, <code>setSignature</code>, <code>setResolveAll</code>, <code>setActionOutcome</code>, <code>enqueue*</code>, <code>onBatch</code>/<code>onSnapshot</code>, a calls log; fixtures in <code>mock-fixtures.ts</code>). Supporting: <code>selector-strategy.ts</code> (<code>selectorUsedToStrategy</code>), <code>connect-resolution.ts</code> (wsUrl → browserURL → autodiscover), <code>navigation.ts</code>.</p>
+</section>
+
+<!-- 12 -->
+<section id="errors">
+<h2>12. Errors, retries, budgets, timeouts</h2>
+
+<h3>Verdicts &amp; budgets</h3>
+<p><code>computeVerdict</code> <span class="fileref">runner.ts:1863</span> precedence: <strong>error &gt; inconclusive &gt; failed &gt; passed</strong>. Budgets (<span class="fileref">src/ai/budget.ts</span>): <code>max_model_calls</code>, <code>max_screenshots</code>, <code>max_replans</code> are pre-checked; <code>max_cost_usd</code> is post-checked. A <code>BudgetExceededError</code> yields inconclusive. Precedence between sections: <code>[run]</code> beats <code>[ai]</code>; <code>max_replans</code> in <code>[run]</code> beats <code>[plan]</code>.</p>
+
+<h3>Retries</h3>
+<ul>
+  <li>Model-level: the fallback chain in <code>defaultGenerate</code>.</li>
+  <li>Step-level: <code>on_fail</code> <code>goto</code>/<code>max</code> (<code>"self"</code> retries) rolls back the failure state; heals are not rolled back and cannot cross a run boundary.</li>
+  <li>Effect safety: dispatched or uncertain actions are observation-only after the input boundary. Postconditions may rescue a logically failed action without redispatching it; an unconfirmed <code>at_most_once</code> effect becomes inconclusive.</li>
+  <li>Infrastructure: a run-level error is not recoverable. There is <strong>no mid-run reconnect</strong> — a CDP drop is an error, exit 2.</li>
+</ul>
+
+<h3>Timeouts</h3>
+<p><code>[timeouts]</code> (<span class="fileref">schema.ts:311</span>, resolved <span class="fileref">resolve.ts:78</span>): <code>action_ms</code> 5000, <code>nav_ms</code> 2000, <code>settle_ms</code> 150, <code>ai_call_ms</code> role-aware; assertions use <code>assert_timeout_ms</code> 5000. A step's own <code>timeout_ms</code> wins over <code>action_ms</code>.</p>
+</section>
+
+<!-- 13 -->
+<section id="perf">
+<h2>13. Performance &amp; known issues</h2>
+
+<h3>Benchmark headlines</h3>
+<p>Current figures from <span class="fileref">BENCHMARK.md</span>:</p>
+<ul>
+  <li>In the documented 54-run comparison, tiered execution passed <strong>27/27</strong> in 104.177s at $0.007702686; the AI-only baseline passed <strong>24/27</strong> in 200.530s at $0.044031.</li>
+  <li>The tiered arm was <strong>1.93× faster</strong> and <strong>5.72× cheaper</strong> than the baseline.</li>
+  <li>The cold <code>flightplan-benchmarks</code> campaign passed 27/54 runs at $0.124307; the warm tiered sweep passed 21/27 at $0.011193.</li>
+  <li>Warm lock reuse reached L0 on <strong>273/279</strong> resolving steps (97.85%), with a 98.92% deterministic share and $0.000533 cost per pass.</li>
+  <li>Both benchmark reports recorded zero drift, and lock stability passed.</li>
+</ul>
+<p>The separate <code>benchmark-new</code> run passed 5/6 scenarios, kept all 34 resolving steps at L1, made zero AI calls, and cost $0. Its <code>contexts</code> failure was the direct <code>fill_iframe_input</code> target attempted before entering the iframe; the parent-mediated iframe interaction passed. Same-origin iframe targets succeed after <code>switch_frame</code>.</p>
+
+<h3>Known issues</h3>
+<p>Current limitations observed in <span class="fileref">docs/BENCHMARK.md</span> and the implementation:</p>
+<ul>
+  <li><strong>State assertions support <code>enabled</code>, <code>disabled</code>, <code>checked</code>, <code>unchecked</code>, and <code>selected</code>.</strong> Selector/CSS asserts against non-interactive nodes resolve via <code>elementState</code>.</li>
+  <li><strong>Occluded elements need vision.</strong> An element present in the DOM but visually hidden may still report present via <code>elementState</code>; confirming true perceivability needs an <code>ai_judge</code> vision check.</li>
+  <li><strong>The L5 planner is opt-in</strong> (see the callout in §4).</li>
+  <li><strong>Same-origin iframe targets succeed after <code>switch_frame</code>.</strong> A direct target inside an unentered iframe is not reachable through the top-document snapshot; L1 fails fast instead of acting on a look-alike parent.</li>
+  <li><strong>A mid-run crash is exit 2</strong> with no reconnect.</li>
+</ul>
+</section>
+
+<hr>
+<p class="small">Maintained manually from repository source and <code>docs/BENCHMARK.md</code>; no generator or template for this file is present in this checkout. File:line references point into <code>src/</code> and reflect the current working tree. The L5 planner is disabled by default.</p>
+</main>
+</div>
+</body>
+</html>

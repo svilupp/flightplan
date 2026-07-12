@@ -1,0 +1,6 @@
+{"type":"run_start","ts":1700000040000,"runId":"budget-inconclusive","flowId":"examples.budget-inconclusive","inputs":{},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20,"max_cost_usd":0.000005}}
+{"type":"step_start","ts":1700000040100,"stepId":"s_open","do":"goto"}
+{"type":"step_end","ts":1700000041600,"stepId":"s_open","ok":true,"healed":false,"durationMs":1500}
+{"type":"step_start","ts":1700000041600,"stepId":"s_hard","do":"click","intent":"resolve the hard ambiguous target"}
+{"type":"step_end","ts":1700000042500,"stepId":"s_hard","ok":true,"healed":false,"durationMs":900,"tier":"L2"}
+{"type":"run_end","ts":1700000042540,"verdict":"inconclusive","totals":{"steps_run":2,"drift_count":0,"total_cost_usd":0.000009,"model_usage":[{"role":"resolver","model":"deepseek/deepseek-v4-flash","calls":1,"cost_usd":0.000009}]},"error":"max_cost_usd budget exceeded (fail-fast)"}

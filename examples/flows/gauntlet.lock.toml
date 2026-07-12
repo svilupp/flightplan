@@ -1,0 +1,38 @@
+version = 2
+source = "examples/flows/gauntlet.toml"
+source_hash = "sha256:a876a3559c0417fc3727dfdad745b5c55080bdf13e1f9d7eadc963b6d1c08961"
+description = "Resolve and save the billing address among identical Save buttons"
+
+[[targets]]
+step = "save_billing_address"
+target = "the Save button inside the Billing address panel, not the search filters or the draft message"
+last_seen = "2026-07-03T16:26:00.348Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/gauntlet*"
+sig = "text:http://localhost:3000/gauntlet|stx1nz;struct:/gauntlet|1xajt84"
+
+[targets.memory]
+note = "Only candidate with matching 'Billing address' panel context"
+note_updated = "2026-07-03T16:26:00.348Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:Save"
+greens = 1
+last_ok = "2026-07-03T16:26:00.348Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Save\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Save\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Save\""
+greens = 0

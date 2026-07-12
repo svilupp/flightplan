@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "import", "promise"],
+  "env": {
+    "es2024": true,
+    "node": true
+  },
+  "globals": {
+    "Bun": "readonly"
+  },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "ignorePatterns": ["node_modules/**", ".flightplan-runs/**", "docs/**", "**/*.tsbuildinfo"],
+  "overrides": [
+    {
+      "files": ["**/*.test.ts"],
+      "rules": {
+        "typescript/await-thenable": "off"
+      }
+    }
+  ]
+}

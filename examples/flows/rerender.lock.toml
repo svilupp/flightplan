@@ -1,0 +1,84 @@
+version = 2
+source = "examples/flows/rerender.toml"
+source_hash = "sha256:f50d20a6cc6eea8fe9c955a46958c77a0b96dd6b20f3c19d7311b914880cdc51"
+description = "Refresh the widget, then confirm on the re-rendered (fresh-ref) node"
+
+[[targets]]
+step = "confirm_action"
+target = "the Confirm button in the refreshed widget"
+last_seen = "2026-07-03T16:25:56.475Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/rerender*"
+sig = "text:http://localhost:3000/rerender|13rm9qf;struct:/rerender|1rq9wy5"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='rerender-action']"
+greens = 1
+last_ok = "2026-07-03T16:25:56.475Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"rerender-action\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"rerender-trigger\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Confirm\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Refresh widget\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Confirm\"]"
+greens = 0
+
+[[targets]]
+step = "refresh_widget"
+target = "the Refresh widget button"
+last_seen = "2026-07-03T16:25:55.338Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/rerender*"
+sig = "text:http://localhost:3000/rerender|ttybfd;struct:/rerender|t1ps1c"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='rerender-trigger']"
+greens = 1
+last_ok = "2026-07-03T16:25:55.338Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"rerender-trigger\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Refresh widget\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Refresh widget\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Refresh widget\""
+greens = 0
+
+[[targets.strategies]]
+kind = "structural_fingerprint"
+selector = "fingerprint:role=button;name=Refresh widget"
+greens = 0

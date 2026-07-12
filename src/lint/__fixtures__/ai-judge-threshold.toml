@@ -1,0 +1,21 @@
+# BROKEN: ai_judge carries a forbidden `threshold` → assert/ai-judge-shape
+version = 1
+kind = "flow"
+id = "broken.ai_judge_threshold"
+description = "ai_judge with a threshold field"
+
+[[steps]]
+id = "judge"
+do = "click"
+target = "the confirm button"
+intent = "confirm the action"
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='result']"
+
+[[steps.assert]]
+type = "ai_judge"
+prompt = "The confirmation succeeded."
+inputs = ["screenshot"]
+threshold = 0.8

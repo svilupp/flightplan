@@ -1,0 +1,2 @@
+{"type":"ai_call","ts":1700000032000,"role":"resolver","model":"deepseek/deepseek-v4-flash","purpose":"resolve","inputTokens":50,"outputTokens":8,"cost_usd":0.00000594,"outcome":"no_output"}
+{"type":"ai_call","ts":1700000032800,"role":"vision","model":"google/gemini-3-flash-preview","purpose":"resolve","inputTokens":120,"outputTokens":180,"cost_usd":0.0006,"outcome":"ok"}

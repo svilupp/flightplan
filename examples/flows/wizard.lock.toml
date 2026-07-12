@@ -1,0 +1,204 @@
+version = 2
+source = "examples/flows/wizard.toml"
+source_hash = "sha256:c9e5bb77812c181d5c798331552d154d5b5339408deb5a5b1f9cad353c5889a8"
+description = "Complete the multi-step wizard and assert the welcome result"
+
+[[targets]]
+step = "advance_to_plan"
+target = "the Next button"
+last_seen = "2026-07-03T16:26:17.430Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/wizard*"
+sig = "text:http://localhost:3000/wizard|n2yxu6;struct:/wizard|hau3ct"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-next-1']"
+greens = 1
+last_ok = "2026-07-03T16:26:17.430Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-name\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-next-1\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Next\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:textbox:\"Full name\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Full name\"]"
+greens = 0
+
+[[targets]]
+step = "advance_to_review"
+target = "the Next button"
+last_seen = "2026-07-03T16:26:17.946Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/wizard*"
+sig = "text:http://localhost:3000/wizard|1sarpzj;struct:/wizard|1sw02tu"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-next-2']"
+greens = 1
+last_ok = "2026-07-03T16:26:17.946Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-back-2\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-next-2\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-plan\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Back\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Next\""
+greens = 0
+
+[[targets]]
+step = "choose_plan"
+target = "the plan dropdown"
+last_seen = "2026-07-03T16:26:17.688Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/wizard*"
+sig = "text:http://localhost:3000/wizard|k7f4xw;struct:/wizard|1sw02tu"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-plan']"
+greens = 1
+last_ok = "2026-07-03T16:26:17.688Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-back-2\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-next-2\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-plan\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Back\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Next\""
+greens = 0
+
+[[targets]]
+step = "enter_name"
+target = "the full name field"
+last_seen = "2026-07-03T16:26:17.209Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/wizard*"
+sig = "text:http://localhost:3000/wizard|1pgxlra;struct:/wizard|1apytbi"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-name']"
+greens = 1
+last_ok = "2026-07-03T16:26:17.209Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-name\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-next-1\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Next\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:textbox:\"Full name\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Full name\"]"
+greens = 0
+
+[[targets]]
+step = "submit_wizard"
+target = "the Submit button"
+last_seen = "2026-07-03T16:26:18.192Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/wizard*"
+sig = "text:http://localhost:3000/wizard|1lm9fu9;struct:/wizard|1koh0wf"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='wizard-submit']"
+greens = 1
+last_ok = "2026-07-03T16:26:18.192Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-back-3\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"wizard-submit\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Back\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Submit\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Back\"]"
+greens = 0

@@ -1,0 +1,84 @@
+version = 2
+source = "examples/flows/contexts.toml"
+source_hash = "sha256:b3d7d8f82a6cb5e5c556f3fdaf1c172b32a2c097b51707dcfa5778aba1848971"
+description = "Confirm in the iframe and in the open shadow root on the contexts fixture"
+
+[[targets]]
+step = "confirm_in_frame"
+target = "the Confirm in frame button inside the embedded iframe"
+last_seen = "2026-07-12T12:07:28.803Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/contexts*"
+sig = "text:http://localhost:3000/contexts|1muy2d6;struct:/contexts|jk7opc"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='iframe-btn']"
+greens = 1
+last_ok = "2026-07-12T12:07:28.803Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"shadow-closed-btn\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"shadow-open-btn\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Confirm in shadow\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Unreachable\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Confirm in shadow\"]"
+greens = 0
+
+[[targets]]
+step = "confirm_in_shadow"
+target = "the Confirm in shadow button inside the open shadow-root widget"
+last_seen = "2026-07-12T12:07:28.993Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/contexts*"
+sig = "text:http://localhost:3000/contexts|1muy2d6;struct:/contexts|jk7opc"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='shadow-open-btn']"
+greens = 1
+last_ok = "2026-07-12T12:07:28.993Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"shadow-closed-btn\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"shadow-open-btn\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Confirm in shadow\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Unreachable\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Confirm in shadow\"]"
+greens = 0

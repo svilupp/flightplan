@@ -1,0 +1,16 @@
+# BROKEN (warning): a targeting step whose target list has selectors but no NL entry →
+# steps/target-needs-nl
+version = 1
+kind = "flow"
+id = "broken.target_selectors_only"
+description = "Selectors-only target, no NL anchor"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "click_next"
+do = "click"
+target = ["[data-testid='wizard-next-1']", "css:button.primary"]

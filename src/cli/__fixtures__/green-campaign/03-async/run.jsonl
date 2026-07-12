@@ -1,0 +1,8 @@
+{"type":"run_start","ts":1700300000000,"runId":"03-async","flowId":"examples.async","inputs":{},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700300000100,"stepId":"open_async","do":"goto"}
+{"type":"assertion_result","ts":1700300000900,"stepId":"open_async","assertType":"text","pass":true,"message":"page contains \"Loaded asynchronously\"","durationMs":705}
+{"type":"step_end","ts":1700300000900,"stepId":"open_async","ok":true,"healed":false,"durationMs":800}
+{"type":"step_start","ts":1700300000900,"stepId":"trigger_load","do":"click","intent":"the Load data button"}
+{"type":"assertion_result","ts":1700300001850,"stepId":"trigger_load","assertType":"text","pass":true,"message":"page contains \"Async action complete\"","durationMs":905}
+{"type":"step_end","ts":1700300001860,"stepId":"trigger_load","ok":true,"healed":false,"durationMs":40,"tier":"L1"}
+{"type":"run_end","ts":1700300001900,"verdict":"passed","totals":{"steps_run":2,"drift_count":0,"total_cost_usd":0,"model_usage":[]}}

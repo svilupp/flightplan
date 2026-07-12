@@ -1,0 +1,16 @@
+# BROKEN: pre-v002 `intent` field → steps/removed-targeting-fields
+version = 1
+kind = "flow"
+id = "broken.removed_intent_field"
+description = "Uses the removed intent field"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "click_next"
+do = "click"
+target = "the Next button"
+intent = "click the Next button"

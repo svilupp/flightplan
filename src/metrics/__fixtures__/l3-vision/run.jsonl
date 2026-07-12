@@ -1,0 +1,7 @@
+{"type":"run_start","ts":1700000030000,"runId":"l3-vision","flowId":"examples.l3-vision","inputs":{},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700000030100,"stepId":"s_open","do":"goto"}
+{"type":"step_end","ts":1700000031600,"stepId":"s_open","ok":true,"healed":false,"durationMs":1500}
+{"type":"step_start","ts":1700000031600,"stepId":"s_icon","do":"click","intent":"click the unlabeled settings icon"}
+{"type":"assertion_result","ts":1700000033398,"stepId":"s_icon","assertType":"visible","pass":true,"message":"\"text:Settings\" is visible","durationMs":2}
+{"type":"step_end","ts":1700000033400,"stepId":"s_icon","ok":true,"healed":false,"durationMs":1800,"tier":"L3"}
+{"type":"run_end","ts":1700000033440,"verdict":"passed","totals":{"steps_run":2,"drift_count":0,"total_cost_usd":0.00060594,"model_usage":[{"role":"resolver","model":"deepseek/deepseek-v4-flash","calls":1,"cost_usd":0.00000594},{"role":"vision","model":"google/gemini-3-flash-preview","calls":1,"cost_usd":0.0006}]}}

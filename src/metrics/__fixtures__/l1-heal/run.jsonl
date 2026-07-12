@@ -1,0 +1,7 @@
+{"type":"run_start","ts":1700000010000,"runId":"l1-heal","flowId":"examples.l1-heal","inputs":{},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700000010100,"stepId":"s_open","do":"goto"}
+{"type":"step_end","ts":1700000011600,"stepId":"s_open","ok":true,"healed":false,"durationMs":1500}
+{"type":"step_start","ts":1700000011600,"stepId":"s_save","do":"click","intent":"click the Save button"}
+{"type":"assertion_result","ts":1700000011718,"stepId":"s_save","assertType":"text","pass":true,"message":"page contains \"Saved\"","durationMs":2}
+{"type":"step_end","ts":1700000011720,"stepId":"s_save","ok":true,"healed":true,"durationMs":120,"tier":"L1"}
+{"type":"run_end","ts":1700000011760,"verdict":"passed","totals":{"steps_run":2,"drift_count":1,"total_cost_usd":0,"model_usage":[]}}

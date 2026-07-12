@@ -1,0 +1,41 @@
+{
+  "verdict": "inconclusive",
+  "flow_id": "examples.budget-inconclusive",
+  "run_id": "budget-inconclusive",
+  "run_dir": "__fixtures__/budget-inconclusive",
+  "failed_step": null,
+  "failed_assertions": [],
+  "advisory_verdict": null,
+  "healed_steps": [],
+  "drift_count": 0,
+  "screenshot_paths": [],
+  "video_path": null,
+  "trace_path": "__fixtures__/budget-inconclusive/trace.jsonl",
+  "total_cost_usd": 0.000009,
+  "model_usage": [
+    {
+      "role": "resolver",
+      "model": "deepseek/deepseek-v4-flash",
+      "calls": 1,
+      "cost_usd": 0.000009
+    }
+  ],
+  "proposed_patch_path": null,
+  "steps": [
+    {
+      "stepId": "s_open",
+      "do": "goto",
+      "ok": true,
+      "healed": false,
+      "durationMs": 1500
+    },
+    {
+      "stepId": "s_hard",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 900,
+      "tier": "L2"
+    }
+  ]
+}

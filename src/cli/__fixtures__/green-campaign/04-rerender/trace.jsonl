@@ -1,0 +1,4 @@
+{"type":"resolution_attempt","ts":1700400001501,"stepId":"refresh_widget","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700400001502,"stepId":"refresh_widget","tier":"L1","outcome":"resolved","strategy":"testid","durationMs":15}
+{"type":"resolution_attempt","ts":1700400002451,"stepId":"confirm_action","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700400002452,"stepId":"confirm_action","tier":"L1","outcome":"resolved","strategy":"testid","durationMs":21}

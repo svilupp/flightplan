@@ -1,0 +1,40 @@
+{
+  "verdict": "failed",
+  "flow_id": "examples.false-positive",
+  "run_id": "false-positive",
+  "run_dir": "__fixtures__/false-positive",
+  "failed_step": "s_click",
+  "failed_assertions": [
+    {
+      "step": "s_click",
+      "type": "visible",
+      "detail": "expected confirmation dialog \"Are you sure?\" but none appeared (wrong element clicked)"
+    }
+  ],
+  "advisory_verdict": null,
+  "healed_steps": [],
+  "drift_count": 0,
+  "screenshot_paths": [],
+  "video_path": null,
+  "trace_path": "__fixtures__/false-positive/trace.jsonl",
+  "total_cost_usd": 0,
+  "model_usage": [],
+  "proposed_patch_path": null,
+  "steps": [
+    {
+      "stepId": "s_open",
+      "do": "goto",
+      "ok": true,
+      "healed": false,
+      "durationMs": 1500
+    },
+    {
+      "stepId": "s_click",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 60,
+      "tier": "L1"
+    }
+  ]
+}

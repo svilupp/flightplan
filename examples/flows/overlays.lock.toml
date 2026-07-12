@@ -1,0 +1,84 @@
+version = 2
+source = "examples/flows/overlays.toml"
+source_hash = "sha256:6f383bea96c3ff6d54fd321d9147ee6af326b4f9d64f60111ac47a43b4eca461"
+description = "Dismiss the cookie overlay and place an order on the overlays fixture"
+
+[[targets]]
+step = "dismiss_cookie_banner"
+target = "the Accept cookies button in the cookie consent banner"
+last_seen = "2026-07-03T16:26:00.648Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/overlays*"
+sig = "text:http://localhost:3000/overlays|mk2qs2;struct:/overlays|1ut9wd2"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='cookie-accept']"
+greens = 1
+last_ok = "2026-07-03T16:26:00.648Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"cookie-accept\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"overlays-cta\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Accept cookies\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Place order\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Accept cookies\"]"
+greens = 0
+
+[[targets]]
+step = "place_order"
+target = "the Place order call to action"
+last_seen = "2026-07-03T16:26:00.875Z"
+
+[targets.match]
+url_glob = "http://localhost:3000/overlays*"
+sig = "text:http://localhost:3000/overlays|15lohjp;struct:/overlays|p52kx4"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='overlays-cta']"
+greens = 1
+last_ok = "2026-07-03T16:26:00.875Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"overlays-cta\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Place order\""
+greens = 0
+
+[[targets.strategies]]
+kind = "label"
+selector = "[aria-label=\"Place order\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "scoped_text"
+selector = "text:\"Place order\""
+greens = 0
+
+[[targets.strategies]]
+kind = "structural_fingerprint"
+selector = "fingerprint:role=button;name=Place order"
+greens = 0

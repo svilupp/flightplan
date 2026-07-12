@@ -1,0 +1,16 @@
+{"type":"run_start","ts":1700200000000,"runId":"02-wizard","flowId":"examples.wizard","inputs":{"full_name":"Sam Rao","plan":"team"},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700200000100,"stepId":"open_wizard","do":"goto"}
+{"type":"assertion_result","ts":1700200001500,"stepId":"open_wizard","assertType":"visible","pass":true,"message":"\"text:Full name\" is visible","durationMs":3}
+{"type":"step_end","ts":1700200001500,"stepId":"open_wizard","ok":true,"healed":false,"durationMs":1400}
+{"type":"step_start","ts":1700200001500,"stepId":"enter_name","do":"fill","intent":"the full name field"}
+{"type":"step_end","ts":1700200001545,"stepId":"enter_name","ok":true,"healed":false,"durationMs":45,"tier":"L1"}
+{"type":"step_start","ts":1700200001545,"stepId":"advance_to_plan","do":"click","intent":"the Next button"}
+{"type":"step_end","ts":1700200001588,"stepId":"advance_to_plan","ok":true,"healed":false,"durationMs":43,"tier":"L1"}
+{"type":"step_start","ts":1700200001588,"stepId":"choose_plan","do":"select","intent":"the plan dropdown"}
+{"type":"step_end","ts":1700200001621,"stepId":"choose_plan","ok":true,"healed":false,"durationMs":33,"tier":"L1"}
+{"type":"step_start","ts":1700200001621,"stepId":"advance_to_review","do":"click","intent":"the Next button"}
+{"type":"step_end","ts":1700200001665,"stepId":"advance_to_review","ok":true,"healed":false,"durationMs":44,"tier":"L1"}
+{"type":"step_start","ts":1700200001665,"stepId":"submit_wizard","do":"click","intent":"the Submit button"}
+{"type":"assertion_result","ts":1700200001820,"stepId":"submit_wizard","assertType":"text","pass":true,"message":"page contains \"Welcome, Sam Rao! Plan: team.\"","durationMs":2}
+{"type":"step_end","ts":1700200001835,"stepId":"submit_wizard","ok":true,"healed":false,"durationMs":170,"tier":"L1"}
+{"type":"run_end","ts":1700200001880,"verdict":"passed","totals":{"steps_run":6,"drift_count":0,"total_cost_usd":0,"model_usage":[]}}

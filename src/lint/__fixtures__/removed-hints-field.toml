@@ -1,0 +1,16 @@
+# BROKEN: pre-v002 `hints` field → steps/removed-targeting-fields
+version = 1
+kind = "flow"
+id = "broken.removed_hints_field"
+description = "Uses the removed hints field"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "click_next"
+do = "click"
+target = "the Next button"
+hints = ["[data-testid='wizard-next-1']"]

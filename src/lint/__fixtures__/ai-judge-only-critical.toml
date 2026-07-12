@@ -1,0 +1,15 @@
+# BROKEN (warning): step guarded ONLY by ai_judge → assert/critical-not-ai-only
+version = 1
+kind = "flow"
+id = "broken.ai_judge_only_critical"
+description = "Step whose only assertion is ai_judge"
+
+[[steps]]
+id = "submit"
+do = "click"
+target = "the submit button to submit the order"
+
+[[steps.assert]]
+type = "ai_judge"
+inputs = ["screenshot"]
+prompt = "The order was submitted and a confirmation is visible."

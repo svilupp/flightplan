@@ -1,0 +1,315 @@
+# flightplan
+
+TOML-defined browser workflows with deterministic assertions, effect-aware retry policy, selector
+locks, and a layered resolver backed by browser-pilot.
+
+## Quick start
+
+```sh
+bun install
+bun run check
+bun run flightplan --help
+```
+
+Run a deterministic fixture flow:
+
+```sh
+bun run fixtures
+bun run flightplan run examples/flows/wizard.toml --frozen --no-lock-write --json
+```
+
+The fixture server listens on `http://localhost:3000`. The example flows use the default CDP attach
+at `localhost:9222`, so start Chrome/Chromium with remote debugging enabled first, or add a
+`[config.connect]` block with `mode = "launch"`. Deterministic L0/L1 flows need no API key.
+AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY`.
+
+## Install
+
+Install the public package with Bun or npm:
+
+```sh
+bun add @svilupp/flightplan
+# or
+npm install @svilupp/flightplan
+```
+
+The executable remains `flightplan`.
+
+## Why the tiered resolver
+
+Flightplan uses deterministic lock replay and DOM resolution first, then pays for AI only when a
+flow needs it. In the current 54-run comparison, the tiered path passed 27/27 runs in 104.2s for
+$0.0077; the AI-only baseline passed 24/27 in 200.5s for $0.0440. That is 1.93x faster and 5.72x
+cheaper, with zero drift and stable locks. Warm lock replay made 98.92% of resolutions deterministic.
+See [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the methodology, limits, and full results.
+
+The savings compound on repeat runs. After locks are learned, the warm benchmark reached L0 on
+97.85% of resolving steps, and reported cost per pass fell from $0.004604 cold to $0.000533 warm:
+8.6x lower, or roughly 10x cheaper. The exploration cost is paid while learning a workflow, not on
+every test rerun.
+
+## HOW TO: write a Flightplan flow
+
+Start with a small flow that states its target, connection mode, inputs, budget, and safety policy:
+
+```toml
+version = 1
+kind = "flow"
+id = "orders.pay-seeded"
+description = "Pay the seeded draft once"
+goal = "Leave the seeded draft in the exact Paid state"
+
+[config.connect]
+mode = "launch"
+headless = true
+
+[config.plan]
+enabled = false
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[run]
+max_steps = 12
+assertions = "eager"
+assert_timeout_ms = 6000
+
+[[steps]]
+id = "open_draft"
+do = "goto"
+url = "${inputs.base_url}/shopify/draft_orders/D1236?cookie=hide"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-testid='draft-id']"
+text = "D1236"
+match = "exact"
+purpose = "precondition"
+
+[[steps]]
+id = "pay_once"
+do = "click"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["[data-testid='mark-as-paid']", "the Mark as paid action for draft D1236"]
+
+[[steps.assert]]
+type = "text"
+selector = "[data-testid='payment-badge']"
+text = "Paid"
+match = "exact"
+purpose = "postcondition"
+```
+
+### 1. Classify the effect
+
+| `effect` | Use |
+|---|---|
+| `observe` | `goto`, waits, assertions, read-only review |
+| `idempotent` | Safe repeated setup or navigation |
+| `at_most_once` | Create, approve, pay, save, submit, confirm |
+
+Mark action steps explicitly. The linter treats clicks, fills, and selects as mutation-capable, even
+when they only filter a table or change tabs. Do not add `on_fail = { goto = "self" }` to a step that
+may have dispatched. Use `retry = { policy = "never" }` for dangerous steps and let an exact
+postcondition rescue an uncertain result.
+
+### 2. Resolve before acting
+
+Targets are ordered locator lists. Put durable selectors first and one natural-language anchor last:
+
+```toml
+target = [
+  "[data-row-id='D1235'] [data-testid='duplicate-order']",
+  "the Duplicate order action for draft D1235",
+]
+```
+
+The resolver must reject ambiguity before dispatch. Scope repeated controls to a row, panel, landmark,
+or seeded resource. Do not rely on the first `More actions`, `Save`, or matching status label.
+
+Author-facing selector prefixes are `ref:`, `role:`, `text:`, `css:`, and leading `[` CSS selectors.
+Keep the natural-language entry concise. Internal `fingerprint:` lock tokens are not author-facing
+selectors.
+
+### 3. Treat readiness as a semantic condition
+
+A changed URL or committed navigation is not application readiness. Add a wait or a semantic
+precondition for delayed hydration, empty first snapshots, loading overlays, and same-document navigation.
+
+```toml
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='page-title']"
+text = "Orders"
+purpose = "precondition"
+timeout_ms = 6000
+```
+
+### 4. Make assertions exact and scoped
+
+Available URL matches: `exact`, `origin_path`, `glob`, `contains`.
+
+Available text matches: `exact`, `contains`, `regex`.
+
+Use `state` for `enabled`, `disabled`, `checked`, `unchecked`, `selected`, `dialog`, `menu`, and
+`new_page`. Use `transition` for `url_changed`, `text_changed`, `value_changed`, and `state_changed`.
+Use `capture` when a reversible flow must restore an observed value.
+
+Do not let `Paid` match `Unpaid`, a timeline message satisfy a status badge, or a broad URL match a
+different tenant. Use a selector or landmark for every business-state assertion.
+
+### 5. Arm popups on the trigger action
+
+Declare the popup on the step that opens it. Flightplan arms observation before dispatch and preserves
+the opener page:
+
+```toml
+[[steps]]
+id = "sign_in_store"
+do = "click"
+effect = "at_most_once"
+target = ["[data-store-id='store-001'] [data-testid='store-sign-in']", "the sign-in action in store-001"]
+
+[steps.popup]
+type = "page"
+url = "/swap-admin/signed-in?popup=1&storeId=store-001"
+title = "uat.swap-os.com · Store session"
+timeout_ms = 5000
+```
+
+Filter by opener, URL, type, title, and creation time. Handle `about:blank` followed by delayed
+navigation. Never select a popup by tab index.
+
+### 6. Compose flows with imports
+
+`imports` registers a library; it does not execute it. A `do = "run"` step executes the imported flow.
+The entry flow owns `[connect]`, run budgets, and safety policy. Expanded child steps count toward the
+parent budget; `on_fail` targets cannot cross a `run` boundary.
+
+## Run, lock, and dependency workflows
+
+Run the repository checks:
+
+```sh
+bun run check
+bun run lint
+bun run typecheck
+bun run test
+```
+
+Lint and preview effect policy before execution:
+
+```sh
+bun run flightplan lint path/to/flow.toml
+bun run flightplan migrate-effects path/to/flow.toml
+```
+
+Use frozen, no-lock-write runs for proof and CI:
+
+```sh
+bun run flightplan run path/to/flow.toml \
+  --frozen --no-lock-write --json -o /tmp/flightplan-run
+```
+
+Locks contain learned target strategies and a `source_hash`. A stale lock must not replay against a
+changed flow. Refresh a lock only after reviewing the flow diff and the new target strategies.
+
+## Development-only: proving Shopify and Swap fixtures
+
+The deterministic admin fixtures live in the sibling `browser-pilot-testing` checkout. This is a
+development-only local-fixture workflow, not a consumer setup. Start the server, reset between
+lanes, and run the TOMLs through Flightplan:
+
+```sh
+export BROWSER_PILOT_TESTING_ROOT=/path/to/browser-pilot-testing
+export FLIGHTPLAN_ROOT=/path/to/flightplan
+
+cd "$BROWSER_PILOT_TESTING_ROOT"
+PORT=3000 bun run start
+
+cd "$FLIGHTPLAN_ROOT"
+bun run flightplan run \
+  "$BROWSER_PILOT_TESTING_ROOT/automations/flightplan/shopify-duplicate.toml" \
+  --frozen --no-lock-write --json -o /tmp/flightplan-proof
+```
+
+For seeded local mutations only:
+
+```sh
+ALLOW_MUTATIONS=1 bun run flightplan run \
+  "$BROWSER_PILOT_TESTING_ROOT/automations/flightplan/swap-return-approve.toml" \
+  --frozen --no-lock-write --json -o /tmp/flightplan-proof
+```
+
+Proof requires all of the following:
+
+- Shopify duplicate, pay, create, and fulfillment ledger entries each equal `1`.
+- Swap review leaves the ledger at `0`.
+- Swap approval, settings save, and settings restore each equal `1`.
+- Popup artifacts identify the matched target and opener.
+- Every run contains valid `summary.json`, `run.jsonl`, and `trace.jsonl`.
+- Reversible settings flows end at the original persisted value.
+- An uncertain transport result is observed, never replayed.
+
+`ALLOW_MUTATIONS=1` is a local fixture gate. Live mutations also require an allowlisted tenant/store,
+a seeded disposable resource, a mutation budget, and cleanup or restoration.
+
+## Inspect failures
+
+```sh
+bun run flightplan explain /tmp/flightplan-proof/<run-id>
+bun run flightplan report /tmp/flightplan-proof
+bun run flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/flightplan-campaign
+```
+
+Read the result as a state machine:
+
+| Result | Meaning | Next action |
+|---|---|---|
+| `not_dispatched` | No effect reached the page | Fix readiness, ambiguity, or actionability; retry only if policy allows |
+| `dispatched` | Input may have reached the page | Observe the postcondition; never dispatch again |
+| `uncertain` | Transport result cannot prove effect state | Poll state/ledger; never dispatch again |
+| Assertion timeout after a commit | Action happened; oracle is wrong or late | Fix assertion scope/timing, not mutation retry |
+| Stale lock | Flow and learned recipe differ | Review diff, refresh lock intentionally, or run frozen to fail closed |
+
+Artifacts are the source of truth. Exit code alone cannot prove that an action committed once.
+
+## AI tiers and planner
+
+L0 lock replay and L1 deterministic DOM resolution are the default path. L2 resolver, L3 vision, L4
+advisor, AI assertions, and the L5 path-repair planner need an AI runtime when invoked.
+
+Keep the planner off for deterministic safety proofs:
+
+```toml
+[config.plan]
+enabled = false
+```
+
+For an AI experiment, enable it only with a bounded `max_replans`, a clear flow `goal`, and a separate
+run directory. `tier_hint = "vision"` is for icon-only or unlabeled controls after deterministic
+resolution has failed. Consecutive vision targets can batch into one request.
+
+## Development reference
+
+- [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
+- [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.
+- [`docs/research/PERFORMANCE.md`](docs/research/PERFORMANCE.md) - cost and resolution guidance.
+- [`docs/research/KNOWN_ISSUES.md`](docs/research/KNOWN_ISSUES.md) - current limits and workarounds.
+- [`docs/plans/`](docs/plans) - design and phased plans.
+
+## Skills
+
+The release includes two Codex skills under [`docs/skills/`](docs/skills):
+
+- [`authoring-flightplan-workflows`](docs/skills/authoring-flightplan-workflows) - write, lint, run,
+  debug, and prove Flightplan TOML flows.
+- [`building-flightplan-automations`](docs/skills/building-flightplan-automations) - build complete
+  browser automations with Flightplan as the workflow and proof layer.
+
+The second skill makes the boundary explicit: use browser-pilot for reconnaissance or narrow driver
+diagnosis, then run the final automation through Flightplan.
+
+Flightplan is under active development. Treat the flow, lock, and artifact checks as part of the
+workflow, not as optional polish.

@@ -1,0 +1,7 @@
+{"type":"run_start","ts":1700000020000,"runId":"l2-escalate","flowId":"examples.l2-escalate","inputs":{},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700000020100,"stepId":"s_open","do":"goto"}
+{"type":"step_end","ts":1700000021600,"stepId":"s_open","ok":true,"healed":false,"durationMs":1500}
+{"type":"step_start","ts":1700000021600,"stepId":"s_pick","do":"click","intent":"click the ambiguous Continue control"}
+{"type":"assertion_result","ts":1700000022448,"stepId":"s_pick","assertType":"text","pass":true,"message":"page contains \"Step 2\"","durationMs":2}
+{"type":"step_end","ts":1700000022450,"stepId":"s_pick","ok":true,"healed":false,"durationMs":850,"tier":"L2"}
+{"type":"run_end","ts":1700000022490,"verdict":"passed","totals":{"steps_run":2,"drift_count":0,"total_cost_usd":0.00000648,"model_usage":[{"role":"resolver","model":"deepseek/deepseek-v4-flash","calls":1,"cost_usd":0.00000648}]}}

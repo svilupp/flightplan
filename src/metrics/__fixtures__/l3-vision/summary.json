@@ -1,0 +1,47 @@
+{
+  "verdict": "passed",
+  "flow_id": "examples.l3-vision",
+  "run_id": "l3-vision",
+  "run_dir": "__fixtures__/l3-vision",
+  "failed_step": null,
+  "failed_assertions": [],
+  "advisory_verdict": null,
+  "healed_steps": [],
+  "drift_count": 0,
+  "screenshot_paths": [],
+  "video_path": null,
+  "trace_path": "__fixtures__/l3-vision/trace.jsonl",
+  "total_cost_usd": 0.00060594,
+  "model_usage": [
+    {
+      "role": "resolver",
+      "model": "deepseek/deepseek-v4-flash",
+      "calls": 1,
+      "cost_usd": 0.00000594
+    },
+    {
+      "role": "vision",
+      "model": "google/gemini-3-flash-preview",
+      "calls": 1,
+      "cost_usd": 0.0006
+    }
+  ],
+  "proposed_patch_path": null,
+  "steps": [
+    {
+      "stepId": "s_open",
+      "do": "goto",
+      "ok": true,
+      "healed": false,
+      "durationMs": 1500
+    },
+    {
+      "stepId": "s_icon",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 1800,
+      "tier": "L3"
+    }
+  ]
+}

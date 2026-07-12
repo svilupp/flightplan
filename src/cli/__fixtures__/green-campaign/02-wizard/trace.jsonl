@@ -1,0 +1,10 @@
+{"type":"resolution_attempt","ts":1700200001501,"stepId":"enter_name","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700200001502,"stepId":"enter_name","tier":"L1","outcome":"resolved","strategy":"testid","durationMs":20}
+{"type":"resolution_attempt","ts":1700200001546,"stepId":"advance_to_plan","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700200001547,"stepId":"advance_to_plan","tier":"L1","outcome":"resolved","strategy":"testid","durationMs":17}
+{"type":"resolution_attempt","ts":1700200001589,"stepId":"choose_plan","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700200001590,"stepId":"choose_plan","tier":"L1","outcome":"resolved","strategy":"testid","durationMs":15}
+{"type":"resolution_attempt","ts":1700200001622,"stepId":"advance_to_review","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700200001623,"stepId":"advance_to_review","tier":"L1","outcome":"resolved","strategy":"testid","durationMs":16}
+{"type":"resolution_attempt","ts":1700200001666,"stepId":"submit_wizard","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700200001667,"stepId":"submit_wizard","tier":"L1","outcome":"resolved","strategy":"testid","durationMs":19}

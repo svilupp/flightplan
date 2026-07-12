@@ -1,0 +1,2 @@
+{"type":"resolution_attempt","ts":1700000001601,"stepId":"s_click","tier":"L0","outcome":"resolved","durationMs":1}
+{"type":"resolution_attempt","ts":1700000001641,"stepId":"s_fill","tier":"L0","outcome":"resolved","durationMs":1}

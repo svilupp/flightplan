@@ -1,0 +1,12 @@
+# Part of the cycle fixture — imports cycle-a.toml back, closing the loop.
+version = 1
+kind = "flow"
+id = "broken.cycle_b"
+description = "Cycle B imports A"
+
+imports = "./cycle-a.toml"
+
+[[steps]]
+id = "b1"
+do = "wait"
+ms = 100

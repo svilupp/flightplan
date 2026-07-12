@@ -1,0 +1,51 @@
+{
+  "name": "@svilupp/flightplan",
+  "version": "0.0.1",
+  "description": "TOML-defined browser workflows with deterministic assertions, effect-aware retry policy, selector locks, and a layered resolver backed by browser-pilot.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/svilupp/flightplan.git"
+  },
+  "bugs": {
+    "url": "https://github.com/svilupp/flightplan/issues"
+  },
+  "homepage": "https://github.com/svilupp/flightplan#readme",
+  "module": "src/index.ts",
+  "type": "module",
+  "files": [
+    "src",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "flightplan": "src/cli/index.ts"
+  },
+  "scripts": {
+    "flightplan": "bun run src/cli/index.ts",
+    "fixtures": "bun run examples/fixtures/server.ts",
+    "check": "bun run scripts/check.ts",
+    "lint": "bun run scripts/check.ts lint",
+    "lint:fix": "biome check --write . && oxlint --type-aware --fix",
+    "format": "biome format --write .",
+    "typecheck": "bun run scripts/check.ts typecheck",
+    "test": "bun run scripts/check.ts test"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.86",
+    "@openrouter/ai-sdk-provider": "^2.10.0",
+    "ai": "^6.0.0",
+    "browser-pilot": "0.1.0",
+    "smol-toml": "^1.4.2",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
+    "@types/bun": "latest",
+    "chrome-launcher": "1.2.1",
+    "oxlint": "^1.72.0",
+    "oxlint-tsgolint": "^0.24.0",
+    "typescript": "^5"
+  }
+}

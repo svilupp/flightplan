@@ -1,0 +1,16 @@
+{"type":"run_start","ts":1700100000000,"runId":"01-wizard","flowId":"examples.wizard","inputs":{"full_name":"Jane Doe","plan":"pro"},"configSummary":{"connect_mode":"launch","headless":true},"limits":{"max_steps":20}}
+{"type":"step_start","ts":1700100000100,"stepId":"open_wizard","do":"goto"}
+{"type":"assertion_result","ts":1700100001600,"stepId":"open_wizard","assertType":"visible","pass":true,"message":"\"text:Full name\" is visible","durationMs":3}
+{"type":"step_end","ts":1700100001600,"stepId":"open_wizard","ok":true,"healed":false,"durationMs":1500}
+{"type":"step_start","ts":1700100001600,"stepId":"enter_name","do":"fill","intent":"the full name field"}
+{"type":"step_end","ts":1700100001640,"stepId":"enter_name","ok":true,"healed":false,"durationMs":40,"tier":"L1"}
+{"type":"step_start","ts":1700100001640,"stepId":"advance_to_plan","do":"click","intent":"the Next button"}
+{"type":"step_end","ts":1700100001680,"stepId":"advance_to_plan","ok":true,"healed":false,"durationMs":40,"tier":"L1"}
+{"type":"step_start","ts":1700100001680,"stepId":"choose_plan","do":"select","intent":"the plan dropdown"}
+{"type":"step_end","ts":1700100001710,"stepId":"choose_plan","ok":true,"healed":false,"durationMs":30,"tier":"L1"}
+{"type":"step_start","ts":1700100001710,"stepId":"advance_to_review","do":"click","intent":"the Next button"}
+{"type":"step_end","ts":1700100001750,"stepId":"advance_to_review","ok":true,"healed":false,"durationMs":40,"tier":"L1"}
+{"type":"step_start","ts":1700100001750,"stepId":"submit_wizard","do":"click","intent":"the Submit button"}
+{"type":"assertion_result","ts":1700100001900,"stepId":"submit_wizard","assertType":"text","pass":true,"message":"page contains \"Welcome, Jane Doe! Plan: pro.\"","durationMs":2}
+{"type":"step_end","ts":1700100001910,"stepId":"submit_wizard","ok":true,"healed":false,"durationMs":160,"tier":"L1"}
+{"type":"run_end","ts":1700100001950,"verdict":"passed","totals":{"steps_run":6,"drift_count":0,"total_cost_usd":0,"model_usage":[]}}

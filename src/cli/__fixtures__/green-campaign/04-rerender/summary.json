@@ -1,0 +1,49 @@
+{
+  "verdict": "passed",
+  "flow_id": "examples.rerender",
+  "run_id": "04-rerender",
+  "run_dir": "__fixtures__/green-campaign/04-rerender",
+  "failed_step": null,
+  "failed_assertions": [],
+  "advisory_verdict": null,
+  "healed_steps": [],
+  "drift_count": 0,
+  "screenshot_paths": [],
+  "video_path": null,
+  "trace_path": "__fixtures__/green-campaign/04-rerender/trace.jsonl",
+  "total_cost_usd": 0,
+  "model_usage": [],
+  "proposed_patch_path": null,
+  "steps": [
+    {
+      "stepId": "open_rerender",
+      "do": "goto",
+      "ok": true,
+      "healed": false,
+      "durationMs": 1400
+    },
+    {
+      "stepId": "refresh_widget",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 40,
+      "tier": "L1"
+    },
+    {
+      "stepId": "await_rerender",
+      "do": "wait",
+      "ok": true,
+      "healed": false,
+      "durationMs": 900
+    },
+    {
+      "stepId": "confirm_action",
+      "do": "click",
+      "ok": true,
+      "healed": false,
+      "durationMs": 150,
+      "tier": "L1"
+    }
+  ]
+}

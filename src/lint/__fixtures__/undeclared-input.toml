@@ -1,0 +1,20 @@
+# BROKEN: ${inputs.missing} is referenced but never declared → templating/undeclared-input
+version = 1
+kind = "flow"
+id = "broken.undeclared_input"
+description = "References an input that is not declared"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "${inputs.base_url}/wizard"
+
+[[steps]]
+id = "fill_name"
+do = "fill"
+target = "the name field"
+intent = "type the user's name"
+value = "${inputs.full_name}"

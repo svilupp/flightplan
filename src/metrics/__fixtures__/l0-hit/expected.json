@@ -1,0 +1,40 @@
+{
+  "runId": "l0-hit",
+  "flowId": "examples.l0-hit",
+  "verdict": "passed",
+  "totalSteps": 3,
+  "tieredSteps": 2,
+  "histogram": {
+    "L0": 2,
+    "L1": 0,
+    "L2": 0,
+    "L3": 0,
+    "L4": 0,
+    "total": 2
+  },
+  "l0HitRate": 1,
+  "l1HitRate": 0,
+  "deterministicShare": 1,
+  "escalationRate": 0,
+  "l2Rate": 0,
+  "l3Rate": 0,
+  "l4Rate": 0,
+  "costUsd": 0,
+  "perRoleCost": {},
+  "driftCount": 0,
+  "healedSteps": [],
+  "driftHealSuccess": false,
+  "stepLatency": {
+    "p50": 40,
+    "p95": 1500,
+    "count": 3
+  },
+  "perTierLatency": {
+    "L0": {
+      "p50": 1,
+      "p95": 1,
+      "count": 2
+    }
+  },
+  "falsePositiveSteps": []
+}

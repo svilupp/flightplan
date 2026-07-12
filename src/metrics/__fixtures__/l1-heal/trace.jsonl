@@ -1,0 +1,2 @@
+{"type":"resolution_attempt","ts":1700000011601,"stepId":"s_save","tier":"L0","outcome":"escalated","durationMs":0}
+{"type":"resolution_attempt","ts":1700000011602,"stepId":"s_save","tier":"L1","outcome":"resolved","strategy":"role_name","durationMs":18}

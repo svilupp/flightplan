@@ -1,0 +1,15 @@
+# BROKEN: two steps share an id → steps/unique-ids
+version = 1
+kind = "flow"
+id = "broken.duplicate_step_id"
+description = "Duplicate step ids"
+
+[[steps]]
+id = "dup"
+do = "goto"
+url = "http://localhost:3000/wizard"
+
+[[steps]]
+id = "dup"
+do = "wait"
+ms = 100
