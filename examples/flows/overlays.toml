@@ -40,6 +40,7 @@ text = "We use cookies"
 [[steps]]
 id = "dismiss_cookie_banner"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='cookie-accept']", "the Accept cookies button in the cookie consent banner"]
 
 # dismissOverlay() removes the whole overlay subtree, so its heading is no longer present —
@@ -52,6 +53,7 @@ timeout_ms = 4000
 [[steps]]
 id = "place_order"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='overlays-cta']", "the Place order call to action"]
 
 # placeOrder() appends data-testid="result" with text "Order placed". A page-text assertion is
@@ -59,10 +61,13 @@ target = ["[data-testid='overlays-cta']", "the Place order call to action"]
 # hit non-interactive nodes via the driver's elementState).
 [[steps.assert]]
 type = "visible"
+selector = "[data-testid='result']"
 text = "Order placed"
 timeout_ms = 4000
 
 [[steps.assert]]
 type = "text"
+selector = "[data-testid='result']"
 text = "Order placed"
+match = "exact"
 timeout_ms = 4000

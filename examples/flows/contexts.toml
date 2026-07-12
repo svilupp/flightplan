@@ -8,7 +8,7 @@
 # to browser-pilot's Page.switchToFrame / switchToMain). `switch_frame` ENTERS the <iframe> element
 # so the subsequent step's target resolves INSIDE the frame; `switch_to_main` returns to the top
 # document for the shadow-root step (the a11y snapshot pierces OPEN shadow roots in the main frame).
-# See docs/KNOWN_ISSUES.md "Iframes" and src/driver/browser-pilot-driver.ts (switchToFrame).
+# See docs/research/KNOWN_ISSUES.md "Iframes" and src/driver/browser-pilot-driver.ts (switchToFrame).
 #
 # Fixture contract: ../fixtures/README.md §05.
 
@@ -41,11 +41,13 @@ url = "${inputs.base_url}/contexts"
 [[steps]]
 id = "enter_frame"
 do = "switch_frame"
+effect = "observe"
 target = ["[data-testid='context-frame']", "the embedded iframe"]
 
 [[steps]]
 id = "confirm_in_frame"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='iframe-btn']", "the Confirm in frame button inside the embedded iframe"]
 
 # confirmFrame() renders data-testid="iframe-result" with text "Frame confirmed" inside the frame.
@@ -55,16 +57,19 @@ target = ["[data-testid='iframe-btn']", "the Confirm in frame button inside the 
 type = "text"
 selector = "[data-testid='iframe-result']"
 text = "Frame confirmed"
+match = "exact"
 timeout_ms = 4000
 
 # Leave the iframe and return to the top document for the shadow-root step below.
 [[steps]]
 id = "leave_frame"
 do = "switch_to_main"
+effect = "observe"
 
 [[steps]]
 id = "confirm_in_shadow"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='shadow-open-btn']", "the Confirm in shadow button inside the open shadow-root widget"]
 
 # The shadow click bubbles a CustomEvent the host surfaces as data-testid="result" = "Shadow confirmed".

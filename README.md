@@ -18,7 +18,9 @@ bun run fixtures
 bun run flightplan run examples/flows/wizard.toml --frozen --no-lock-write --json
 ```
 
-The fixture server listens on `http://localhost:3000`. Deterministic L0/L1 flows need no API key.
+The fixture server listens on `http://localhost:3000`. The example flows use the default CDP attach
+at `localhost:9222`, so start Chrome/Chromium with remote debugging enabled first, or add a
+`[config.connect]` block with `mode = "launch"`. Deterministic L0/L1 flows need no API key.
 AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY`.
 
 ## Why the tiered resolver
@@ -27,7 +29,7 @@ Flightplan uses deterministic lock replay and DOM resolution first, then pays fo
 flow needs it. In the current 54-run comparison, the tiered path passed 27/27 runs in 104.2s for
 $0.0077; the AI-only baseline passed 24/27 in 200.5s for $0.0440. That is 1.93x faster and 5.72x
 cheaper, with zero drift and stable locks. Warm lock replay made 98.92% of resolutions deterministic.
-See [`BENCHMARK.md`](BENCHMARK.md) for the methodology, limits, and full results.
+See [`docs/BENCHMARK.md`](docs/BENCHMARK.md) for the methodology, limits, and full results.
 
 The savings compound on repeat runs. After locks are learned, the warm benchmark reached L0 on
 97.85% of resolving steps, and reported cost per pass fell from $0.004604 cold to $0.000533 warm:
@@ -181,7 +183,7 @@ Run the repository checks:
 bun run check
 bun run lint
 bun run typecheck
-bun test
+bun run test
 ```
 
 ### Flightplan development only: local browser-pilot checkout
@@ -292,8 +294,8 @@ resolution has failed. Consecutive vision targets can batch into one request.
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.
-- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) - cost and resolution guidance.
-- [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) - current limits and workarounds.
+- [`docs/research/PERFORMANCE.md`](docs/research/PERFORMANCE.md) - cost and resolution guidance.
+- [`docs/research/KNOWN_ISSUES.md`](docs/research/KNOWN_ISSUES.md) - current limits and workarounds.
 - [`docs/plans/`](docs/plans) - design and phased plans.
 
 ## Skills

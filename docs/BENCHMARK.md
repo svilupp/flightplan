@@ -8,7 +8,7 @@ contains current-run comparisons only; it does not preserve older benchmark clai
 | Area | Result |
 | --- | --- |
 | In-harness checks | `verify:browser-pilot` OK in 0.69s; `check` OK in 3.40s; lint 1.18s; typecheck 7.76s; test 3.15s |
-| Example-flow lint | 0 errors, 9 warnings |
+| Example-flow lint | 0 errors, 0 warnings |
 | `benchmark-new` | 5/6 scenarios passed; 34/34 resolving steps at L1; 0 AI calls; $0 |
 | Documented 54-run comparison | 51/54 passed: tiered 27/27, AI-only baseline 24/27 |
 | `flightplan-benchmarks` cold campaign | 27/54 passed across tiered and baseline arms; $0.124307 |
@@ -55,7 +55,7 @@ Results:
 - `lint`: OK, 1.18s
 - `typecheck`: OK, 7.76s
 - `test`: OK, 3.15s
-- Example-flow lint: 0 errors, 9 warnings
+- Example-flow lint: 0 errors, 0 warnings
 
 ## Documented 54-run comparison
 

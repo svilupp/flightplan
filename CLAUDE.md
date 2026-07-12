@@ -80,6 +80,6 @@ zero. Deliberately relaxed rules (don't "fix" them without reason):
   that escalate to L2-L5, or `ai_pick`/AI assertion steps that invoke a model, need
   `OPENROUTER_API_KEY`. **AI-tier examples** (`gauntlet`, `vision`, `drift`, `signature`) invoke
   AI on their escalation or assertion paths: `gauntlet` uses L2, `vision` uses L3, and
-  `drift`/`signature` include `ai_judge` assertions. The `drift` fixture's `variant=c` also
-  reaches L3. See `.env.example` and `docs/`.
+  `drift`/`signature` include `ai_judge` assertions. The `drift` fixture's `variant=c` reaches
+  L2. See `.env.example` and `docs/`.
 - **`spikes/`** is a gitignored throwaway sub-package excluded from the harness; don't rely on it.

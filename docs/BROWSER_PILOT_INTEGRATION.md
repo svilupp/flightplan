@@ -73,12 +73,14 @@ url = "${inputs.base_url}/orders"
 [[steps]]
 id = "customer_name"
 do = "fill"
+effect = "at_most_once"
 target = ["css:input[name='customer']", "role:textbox:Customer", "the customer name field"]
 value = "${inputs.customer_name}"
 
 [[steps]]
 id = "submit_order"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='submit-order']", "role:button:Submit order", "the submit order button"]
 
 [[steps.assert]]

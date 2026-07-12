@@ -12,7 +12,9 @@ they run against.
 
 ## Run
 
-Two steps, from the repo root. First start the fixture server (terminal 1):
+From the repo root, start Chrome/Chromium with remote debugging enabled at `localhost:9222`, or
+add a `[config.connect]` block with `mode = "launch"` to the flow. Then start the fixture server
+in terminal 1:
 
 ```sh
 bun run examples/fixtures/server.ts   # serves http://localhost:3000 (alias: bun run fixtures)

@@ -1,6 +1,6 @@
 version = 2
 source = "/Users/jan/Documents/GitHub/flightplan/examples/flows/vision.toml"
-source_hash = "sha256:92522fbdad2fd627221500d8b3761de708cb80ad4534e13fe0103a3d936d584d"
+source_hash = "sha256:2d682bbca00036f4a00d2d0a8ba9f00ddf82552a488821852225194dfed48c11"
 description = "Vision-resolve and click the unlabeled trash icon on the vision fixture"
 
 [[targets]]

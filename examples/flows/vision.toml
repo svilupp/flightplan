@@ -35,15 +35,19 @@ url = "${inputs.base_url}/vision/icons"
 [[steps]]
 id = "delete_item"
 do = "click"
+effect = "at_most_once"
 target = "the trash-can / delete icon in the toolbar to delete the item"
 
 # Clicking the trash glyph renders data-testid="result" with text "Clicked: trash" (vs edit/share).
 [[steps.assert]]
 type = "visible"
+selector = "[data-testid='result']"
 text = "Clicked: trash"
 timeout_ms = 4000
 
 [[steps.assert]]
 type = "text"
+selector = "[data-testid='result']"
 text = "Clicked: trash"
+match = "exact"
 timeout_ms = 4000

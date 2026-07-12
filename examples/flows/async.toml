@@ -44,16 +44,21 @@ url = "${inputs.base_url}/async"
 # also work (deterministic asserts resolve non-interactive nodes via the driver's elementState).
 [[steps.assert]]
 type = "text"
+selector = "[data-testid='async-banner']"
 text = "Loaded asynchronously"
+match = "exact"
 timeout_ms = 4000
 
 [[steps]]
 id = "trigger_load"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='async-load']", "the Load data button"]
 
 # The result renders 900ms after the click — poll the page text until the result lands.
 [[steps.assert]]
 type = "text"
+selector = "[data-testid='result']"
 text = "Async action complete"
+match = "exact"
 timeout_ms = 4000

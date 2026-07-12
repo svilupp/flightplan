@@ -43,26 +43,28 @@ text = "generation: 1"
 [[steps]]
 id = "refresh_widget"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='rerender-trigger']", "the Refresh widget button"]
 
-# Bridge the fixed 600ms node-replacement delay before acting on the fresh subtree.
-[[steps]]
-id = "await_rerender"
-do = "wait"
-ms = 900
-
-# Proves the replacement happened: generation flips to 2 in the brand-new subtree.
+# Proves the replacement happened: generation flips to 2 in the brand-new subtree. The assertion
+# polls through the fixture's fixed 600ms replacement delay before the next action resolves.
 [[steps.assert]]
 type = "text"
+selector = "[data-testid='rerender-generation']"
 text = "generation: 2"
+match = "exact"
+purpose = "postcondition"
 timeout_ms = 4000
 
 [[steps]]
 id = "confirm_action"
 do = "click"
+effect = "at_most_once"
 target = ["[data-testid='rerender-action']", "the Confirm button in the refreshed widget"]
 
 [[steps.assert]]
 type = "text"
+selector = "[data-testid='result']"
 text = "Re-rendered action confirmed"
+match = "exact"
 timeout_ms = 4000
