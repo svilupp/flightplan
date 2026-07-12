@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out Flightplan
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Flightplan currently exercises the unreleased browser-pilot API. Build the
+      # public sibling repository in CI, then install Flightplan against that build.
+      - name: Check out browser-pilot
+        uses: actions/checkout@v4
+        with:
+          repository: svilupp/browser-pilot
+          path: .ci/browser-pilot
+
+      - name: Build browser-pilot
+        working-directory: .ci/browser-pilot
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Move browser-pilot outside the workspace
+        run: |
+          mv .ci/browser-pilot "$RUNNER_TEMP/browser-pilot"
+          rm -rf .ci
+
+      - name: Install dependencies
+        run: |
+          node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync('package.json', 'utf8')); p.dependencies['browser-pilot'] = 'file:' + process.env.RUNNER_TEMP + '/browser-pilot'; fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\\n');"
+          bun install
+
+      - name: Run checks
+        run: bun run check
