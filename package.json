@@ -14,18 +14,19 @@
   "publishConfig": {
     "access": "public"
   },
-  "module": "src/index.ts",
+  "module": "dist/index.js",
   "type": "module",
   "files": [
-    "src",
+    "dist",
     "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],
   "bin": {
-    "flightplan": "src/cli/index.ts"
+    "flightplan": "dist/flightplan.js"
   },
   "scripts": {
+    "build": "bun run scripts/build.ts",
     "flightplan": "bun run src/cli/index.ts",
     "fixtures": "bun run examples/fixtures/server.ts",
     "check": "bun run scripts/check.ts",
