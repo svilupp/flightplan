@@ -4,7 +4,7 @@
 // `max_screenshots` budget unit FIRST, captures a JPEG screenshot (`format:'jpeg', quality:60`),
 // builds a `data:image/jpeg;base64,...` URL, takes a fresh snapshot for refs/candidates/signature,
 // and calls the vision model with a multimodal `messages` payload (a `text` part + a `file` part)
-// at `maxOutputTokens ≥ 512` (Gemini thinking-token caveat — load-bearing). On a confident pick it
+// (Gemini thinking tokens count against the output-token cap — load-bearing). On a confident pick it
 // acts and returns `tier:'L3'`; otherwise it escalates → L4.
 
 import { z } from "zod";
@@ -23,7 +23,7 @@ import {
   gatherCandidates,
   storedNoteForStep,
 } from "./resolve-common.ts";
-import { AI_MIN_OUTPUT_TOKENS, L2_MIN_CONFIDENCE } from "./resolver-l2.ts";
+import { AI_DEFAULT_OUTPUT_TOKENS, L2_MIN_CONFIDENCE } from "./resolver-l2.ts";
 import { NOTE_MAX_LENGTH, ResolverDecisionSchema } from "./schemas.ts";
 import type { AiMessage } from "./types.ts";
 
@@ -159,7 +159,7 @@ export async function resolveL3(
       callRole: "vision",
       purpose: `vision:${step.id}`,
       schema: ResolverDecisionSchema,
-      maxOutputTokens: AI_MIN_OUTPUT_TOKENS, // ≥512 — Gemini thinking tokens (FINDINGS §3)
+      maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS, // Gemini thinking tokens count against this cap (FINDINGS §3)
       messages,
     });
   } catch (err) {
@@ -345,7 +345,7 @@ export async function resolveBatchL3(
       purpose: `vision-batch:${targets.map((t) => t.step.id).join(",")}`,
       // Lenient envelope (per-pick validation happens in `indexByKey`) — see PARSE ROBUSTNESS note.
       schema: BatchVisionEnvelope,
-      maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
+      maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS,
       messages,
     });
     byKey = indexByKey(decision.output.picks);

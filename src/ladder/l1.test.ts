@@ -454,6 +454,62 @@ describe("L1 — fill carries its value into the batch step", () => {
   });
 });
 
+describe("L1 — fill verify forwarded natively to the batch step", () => {
+  function fillDriver(): MockDriver {
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "textbox", name: "Phone" }),
+        ],
+      }),
+    );
+    d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "textbox", name: "Phone" })]);
+    d.setBatchResult(makeSuccessBatch("role:textbox:Phone", "fill"));
+    return d;
+  }
+
+  test('default (undefined verify) forwards browser-pilot\'s native "normalized" mode', async () => {
+    const d = fillDriver();
+    const step: Step = { id: "s1", do: "fill", target: "Phone", value: "+447881122333" };
+    const r = await resolveL1(step, ctxFor(d));
+    expect(r.ok).toBe(true);
+    const sent = d.callsTo("batch")[0]?.args[0] as Array<{ verify?: unknown }>;
+    expect(sent[0]?.verify).toBe("normalized");
+  });
+
+  test("verify:'exact' forwards \"exact\" to the batch step", async () => {
+    const d = fillDriver();
+    const step: Step = {
+      id: "s1",
+      do: "fill",
+      target: "Phone",
+      value: "+447881122333",
+      verify: "exact",
+    };
+    const r = await resolveL1(step, ctxFor(d));
+    expect(r.ok).toBe(true);
+    const sent = d.callsTo("batch")[0]?.args[0] as Array<{ verify?: unknown }>;
+    expect(sent[0]?.verify).toBe("exact");
+  });
+
+  test("verify:'off' forwards false to the batch step", async () => {
+    const d = fillDriver();
+    const step: Step = {
+      id: "s1",
+      do: "fill",
+      target: "Phone",
+      value: "+447881122333",
+      verify: "off",
+      secret: true,
+    };
+    const r = await resolveL1(step, ctxFor(d));
+    expect(r.ok).toBe(true);
+    const sent = d.callsTo("batch")[0]?.args[0] as Array<{ verify?: unknown }>;
+    expect(sent[0]?.verify).toBe(false);
+  });
+});
+
 describe("L1 — iframe mis-resolution guard", () => {
   // The /contexts benchmark trap: a testid hint whose only match lives inside a same-origin iframe
   // (not pierced by the AX snapshot), with a look-alike parent button ranked for the NL intent. The

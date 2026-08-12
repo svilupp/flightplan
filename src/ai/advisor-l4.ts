@@ -13,7 +13,7 @@ import { isBudgetExceeded } from "./budget.ts";
 import type { AiCallRuntime } from "./call.ts";
 import { aiCall } from "./call.ts";
 import { intentTextForStep } from "./resolve-common.ts";
-import { AI_MIN_OUTPUT_TOKENS } from "./resolver-l2.ts";
+import { AI_DEFAULT_OUTPUT_TOKENS } from "./resolver-l2.ts";
 import { AdvisorVerdictSchema } from "./schemas.ts";
 
 /** A one-line human summary of a verdict (the `StepExecution.error` / log note). */
@@ -87,7 +87,7 @@ export async function classifyL4(
       callRole: "advisor",
       purpose: `classify:${step.id}`,
       schema: AdvisorVerdictSchema,
-      maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
+      maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS,
       prompt: buildAdvisorPrompt(step, prior),
       deriveOutcome: (v) => ({ outcome: v.kind, advisoryVerdict: v.kind }),
       // A malformed / unparseable / hung advisor response must NEVER abort the run: degrade to a

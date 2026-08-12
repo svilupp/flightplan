@@ -165,4 +165,32 @@ describe("gatherSecretValues", () => {
     ];
     expect(gatherSecretValues(steps, {}).size).toBe(0);
   });
+
+  test("collects a secret:true EVALUATE expression (post-templating)", () => {
+    // evaluate has no `args` wrapper — the templated `expression` string itself carries the
+    // secret value, so it must be gathered wholesale, exactly like a secret eval's `args`.
+    const steps: Step[] = [
+      {
+        id: "run",
+        do: "evaluate",
+        expression: "document.querySelector('input').value = '5555444433331111'",
+        secret: true,
+        effect: "observe",
+      } as unknown as Step,
+    ];
+    const got = gatherSecretValues(steps, {});
+    expect(got.has("document.querySelector('input').value = '5555444433331111'")).toBe(true);
+  });
+
+  test("a non-secret evaluate expression is NOT collected", () => {
+    const steps: Step[] = [
+      {
+        id: "run",
+        do: "evaluate",
+        expression: "document.title",
+        effect: "observe",
+      } as unknown as Step,
+    ];
+    expect(gatherSecretValues(steps, {}).size).toBe(0);
+  });
 });

@@ -23,15 +23,20 @@
 // imported (see the report / `any`-cast notes). No `any` is used to do it.
 
 import type {
+  AwaitReplyOptions as BpAwaitReplyOptions,
   BatchOptions as BpBatchOptions,
   BatchResult as BpBatchResult,
   CandidateStrategy as BpCandidateStrategy,
   ElementState as BpElementState,
+  EmitReply as BpEmitReply,
+  EmitResult as BpEmitResult,
+  EmitWsOptions as BpEmitWsOptions,
   InteractiveElement as BpInteractiveElement,
   MatchedCondition as BpMatchedCondition,
   PageSnapshot as BpPageSnapshot,
   RankedCandidate as BpRankedCandidate,
   SnapshotNode as BpSnapshotNode,
+  SocketCandidate as BpSocketCandidate,
   Step as BpStep,
   StepResult as BpStepResult,
 } from "browser-pilot";
@@ -287,10 +292,12 @@ export interface ActionOpts {
   optional?: boolean;
 }
 
-/** `fill`-specific options (adds `blur`/`verify` over `ActionOpts`). */
+/** `fill`-specific options (adds `blur`/`verify` over `ActionOpts`). `verify` mirrors
+ * browser-pilot's native fill verification: `true`/`"exact"` (default), `"normalized"`
+ * (tolerates auto-formatting), or `false` to skip verification. */
 export interface FillOpts extends ActionOpts {
   blur?: boolean;
-  verify?: boolean;
+  verify?: boolean | "exact" | "normalized";
 }
 
 /** `type`-specific options (adds `blur`/`delay` over `ActionOpts`). */
@@ -307,6 +314,84 @@ export interface PressOpts {
 /** `submit`-specific options (`method` + `waitForNavigation`, both real bp `SubmitOptions`). */
 export interface SubmitOpts extends ActionOpts {
   method?: "enter" | "click" | "enter+click";
+}
+
+// ---------------------------------------------------------------------------
+// emit — WebSocket command injection (browser-pilot >=0.2.0 `page.emitMessage`)
+// ---------------------------------------------------------------------------
+
+/** A live WebSocket discovered in the page, re-exported from browser-pilot's `emitMessage` surface. */
+export type SocketCandidate = BpSocketCandidate;
+
+/** A frame received after an emit, matched by `awaitReply`. */
+export type EmitReply = BpEmitReply;
+
+/**
+ * How to match a reply frame, the boundary form of browser-pilot's `AwaitReplyOptions`. `where` is
+ * a dot-path field-equality map against the parsed JSON reply payload; `match` is a glob against
+ * the raw payload text; `timeout` bounds the wait (browser-pilot default 10000ms).
+ */
+export type EmitAwaitReplyOpts = BpAwaitReplyOptions;
+
+/**
+ * Options for `Driver.emitCommand()`. `channel` is restricted to `"ws"` (the only channel
+ * browser-pilot currently supports); `payload` is ALWAYS a string here — an inline-table flow
+ * payload is JSON-serialized by the caller (the runner) before it reaches the driver, since
+ * browser-pilot's `emitMessage` only accepts a string. `match`/`base64`/`awaitReply`/`confirmTimeout`
+ * are the boundary form of browser-pilot's `EmitWsOptions`.
+ */
+export interface EmitCommandOptions extends Omit<BpEmitWsOptions, "awaitReply"> {
+  channel: "ws";
+  payload: string;
+  awaitReply?: EmitAwaitReplyOpts;
+}
+
+/**
+ * The result of `Driver.emitCommand()` — the boundary form of browser-pilot's `EmitResult`.
+ * `delivered` is proven by a `Network.webSocketFrameSent` CDP event, NOT by a normal `send()`
+ * return (a closed-socket `send()` silently discards data). `reply` is populated only when
+ * `awaitReply` was requested AND a correlated reply frame arrived within its timeout.
+ */
+export type EmitCommandResult = BpEmitResult;
+
+// ---------------------------------------------------------------------------------------
+// eval — escape-hatch JS execution (browser-pilot `Page.evaluate`)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Options for `Driver.evalInFrame()` — the boundary form of the flow schema's `eval` step.
+ * `frame`, when given, identifies the `<iframe>` element (in the CURRENT document) to evaluate
+ * inside, per {@link Driver.switchToFrame}'s selector semantics — a same-origin iframe OR a
+ * genuine cross-origin OOPIF; `evaluate` pierces the latter via browser-pilot's frame-context
+ * routing even though the element verbs (fill/click/focus) cannot yet resolve a SELECTOR inside a
+ * real cross-origin child session. Omitted `frame` evaluates in the current context unchanged.
+ * `script` is the function body run as `(async function (args) { <script> })(<args>)`; `args` is
+ * JSON-serialized at the driver boundary rather than interpolated into `script`, so `script` is
+ * authored once and `args` supplies the per-run values.
+ */
+export interface EvalOptions {
+  frame?: string;
+  script: string;
+  args?: Record<string, unknown>;
+}
+
+/**
+ * The result of `Driver.evalInFrame()`. `ok: false` covers BOTH an unresolvable `frame` (the
+ * iframe element could not be found/attached — mirrors {@link Driver.switchToFrame}'s `false`) and
+ * a thrown evaluation exception; `error` carries a human-readable reason in either case. `value` is
+ * the script's returned value (`undefined` when the script returns nothing, or on failure).
+ *
+ * `phase` distinguishes the two `ok: false` kinds so the runner can map them to the right
+ * `dispatchState`: `"frame"` means the frame itself could never be entered — nothing ran, so the
+ * step is cleanly `not_dispatched`; `"script"` means the frame WAS entered and the script started
+ * executing before throwing — its side effects (if any) are unknown, so the step is `"uncertain"`,
+ * mirroring the emit case's `dispatched-unconfirmed`. Omitted on `ok: true`.
+ */
+export interface EvalResult {
+  ok: boolean;
+  value?: unknown;
+  error?: string;
+  phase?: "frame" | "script";
 }
 
 /** Options for `Driver.screenshot()`. Returns base64 (FINDINGS §7). */
@@ -553,6 +638,24 @@ export interface Driver {
    */
   currentFrame(): string | null;
 
+  /**
+   * Whether the CURRENTLY switched-into frame (per {@link currentFrame}) is a genuine
+   * cross-origin OOPIF, as opposed to a same-origin `<iframe>`. This distinction matters because
+   * a same-origin frame snapshots/resolves fine through the NORMAL ladder (healing + lock
+   * write-back intact), while a genuine OOPIF cannot be snapshotted at all (browser-pilot throws
+   * `assertOopifUnsupported` there) and therefore needs the orchestrator's direct-dispatch bypass
+   * (see `orchestrator.ts`'s "cross-origin frame bypass").
+   *
+   * OPTIONAL and best-effort: browser-pilot does not currently expose a PUBLIC signal for this
+   * (its OOPIF child-session bookkeeping is private to `Page`), so the real driver
+   * (`BrowserPilotDriver`) does not implement it and callers must treat `undefined` as "unknown"
+   * — NOT as "same-origin". The orchestrator therefore keeps its existing (documented) bypass-
+   * always-when-framed behavior when this returns `undefined`, and narrows the bypass to `true`
+   * once a driver can actually answer it (e.g. `MockDriver`, or a future browser-pilot release
+   * that exposes the OOPIF signal).
+   */
+  isCrossOriginFrame?(): boolean | undefined;
+
   // --- page operations (thin pass-throughs) ---
 
   /**
@@ -633,6 +736,44 @@ export interface Driver {
   press(key: string, opts?: PressOpts): Promise<boolean>;
   /** Submit a form. `sel` optional (submits the focused/ambient form). Navigating → settles. */
   submit(sel?: string | string[], opts?: SubmitOpts): Promise<boolean>;
+
+  // --- emit (WebSocket command injection) ---
+
+  /**
+   * Send a message on a WebSocket the page itself owns, delegating to browser-pilot's
+   * `page.emitMessage` (>=0.2.0). Never retried — a dispatched frame is an irreversible side
+   * effect on the server, so this is inherently `effect = "at_most_once"` at the flow level.
+   * `EmitTargetError`-shaped ambiguous-socket failures and delivery/reply-timeout failures both
+   * surface as a normal rejected promise; the caller (the runner) maps them to a step failure
+   * rather than an infra error. OPTIONAL so a driver built against browser-pilot <0.2.0 degrades
+   * gracefully: callers MUST feature-detect (`driver.emitCommand?.(...)`) and fail the `emit` step
+   * with a clear "browser-pilot >=0.2.0 required" message when absent.
+   */
+  emitCommand?(opts: EmitCommandOptions): Promise<EmitCommandResult>;
+
+  // --- eval (escape-hatch JS execution) ---
+
+  /**
+   * Run `opts.script` (optionally inside the `<iframe>`/OOPIF identified by `opts.frame`),
+   * delegating to browser-pilot's `Page.evaluate`. Restores whatever frame context was active
+   * BEFORE the call once it returns — `eval` is a single-purpose escape hatch, not a stateful
+   * frame switch like {@link switchToFrame}. Never throws: a frame-entry failure or a thrown
+   * evaluation exception both surface as `{ ok: false, error }`.
+   */
+  evalInFrame(opts: EvalOptions): Promise<EvalResult>;
+
+  // --- evaluate (bare escape-hatch JS expression) ---
+
+  /**
+   * Run a raw JS expression via browser-pilot's `page.evaluate`, delegating directly (no frame
+   * targeting, no args/expect wrapper — see the `evaluate` step schema). browser-pilot's
+   * `page.evaluate` already routes into whatever OOPIF child session `switch_frame` most recently
+   * entered, so no additional frame handling is needed here. OPTIONAL so a driver built against an
+   * older browser-pilot degrades gracefully: callers MUST feature-detect
+   * (`driver.evaluateExpression?.(...)`) and fail the `evaluate` step with a clear
+   * missing-capability message when absent.
+   */
+  evaluateExpression?(expression: string): Promise<unknown>;
 
   // --- screenshot ---
 

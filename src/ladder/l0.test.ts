@@ -188,6 +188,70 @@ describe("L0 — validate + replay", () => {
   });
 });
 
+describe("L0 — fill verify forwarded natively to the batch step (replay path)", () => {
+  const PHONE_TREE: SnapshotNode[] = [
+    { role: "main", ref: "n1", children: [{ role: "textbox", ref: "n2", name: "Phone" }] },
+  ];
+  const PHONE_ELEMENTS: InteractiveElement[] = [
+    makeInteractiveElement({ ref: "e2", role: "textbox", name: "Phone" }),
+  ];
+
+  function phoneSnapshot(): PageSnapshot {
+    return makeSnapshot({
+      url: URL,
+      accessibilityTree: PHONE_TREE,
+      interactiveElements: PHONE_ELEMENTS,
+    });
+  }
+
+  function phoneSig(): string {
+    return computeMatchSignature(computeMaskedTextHash(phoneSnapshot()), STRUCT_SIG);
+  }
+
+  function phoneDriver(): MockDriver {
+    return new MockDriver()
+      .setSnapshot(phoneSnapshot())
+      .setStructureSignature(STRUCT_SIG)
+      .setBatchResult(makeSuccessBatch("ref:e2"));
+  }
+
+  function phoneRecipe(): CachedRecipe {
+    return {
+      selector: "role:textbox:Phone",
+      strategy: "role_name",
+      match: { url_glob: "http://localhost:3000/drift*", sig: phoneSig() },
+    };
+  }
+
+  const fillStep: Step = { id: "s1", do: "fill", target: "Phone", value: "+447881122333" };
+
+  test('default (undefined verify) forwards browser-pilot\'s native "normalized" mode', async () => {
+    const driver = phoneDriver();
+    const r = await resolveL0(fillStep, { driver, now: () => 0, lock: hookFor(phoneRecipe()) });
+    expect(r.ok).toBe(true);
+    const sent = driver.callsTo("batch")[0]?.args[0] as Array<{ verify?: unknown }>;
+    expect(sent[0]?.verify).toBe("normalized");
+  });
+
+  test("verify:'exact' forwards \"exact\" to the batch step", async () => {
+    const driver = phoneDriver();
+    const exactStep: Step = { ...fillStep, verify: "exact" };
+    const r = await resolveL0(exactStep, { driver, now: () => 0, lock: hookFor(phoneRecipe()) });
+    expect(r.ok).toBe(true);
+    const sent = driver.callsTo("batch")[0]?.args[0] as Array<{ verify?: unknown }>;
+    expect(sent[0]?.verify).toBe("exact");
+  });
+
+  test("verify:'off' forwards false to the batch step", async () => {
+    const driver = phoneDriver();
+    const offStep: Step = { ...fillStep, verify: "off" };
+    const r = await resolveL0(offStep, { driver, now: () => 0, lock: hookFor(phoneRecipe()) });
+    expect(r.ok).toBe(true);
+    const sent = driver.callsTo("batch")[0]?.args[0] as Array<{ verify?: unknown }>;
+    expect(sent[0]?.verify).toBe(false);
+  });
+});
+
 describe("L0 — Layer 3 per-target revalidation on signature miss", () => {
   const recipe: CachedRecipe = {
     selector: "role:button:Create order",

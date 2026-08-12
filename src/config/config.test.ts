@@ -147,21 +147,21 @@ signature = "struct-only"
 describe("resolution-order precedence", () => {
   // built-in -> global -> imported -> flow -> CLI; each later layer wins.
   test("CLI beats flow beats imported beats global beats built-in", () => {
-    const global: Config = { ai: { provider: "global" } };
-    const imported: Config = { ai: { provider: "imported" } };
-    const flow: Config = { ai: { provider: "flow" } };
-    const cli: Config = { ai: { provider: "cli" } };
+    const global: Config = { ai: { api_key_env: "global" } };
+    const imported: Config = { ai: { api_key_env: "imported" } };
+    const flow: Config = { ai: { api_key_env: "flow" } };
+    const cli: Config = { ai: { api_key_env: "cli" } };
 
     const resolved = resolveConfig([BUILTIN_DEFAULTS, global, imported, flow, cli]);
-    expect(resolved.ai?.provider).toBe("cli");
+    expect(resolved.ai?.api_key_env).toBe("cli");
 
     // Drop CLI → flow wins.
-    expect(resolveConfig([BUILTIN_DEFAULTS, global, imported, flow]).ai?.provider).toBe("flow");
+    expect(resolveConfig([BUILTIN_DEFAULTS, global, imported, flow]).ai?.api_key_env).toBe("flow");
     // Drop flow → imported wins.
-    expect(resolveConfig([BUILTIN_DEFAULTS, global, imported]).ai?.provider).toBe("imported");
+    expect(resolveConfig([BUILTIN_DEFAULTS, global, imported]).ai?.api_key_env).toBe("imported");
     // Drop imported → global wins.
-    expect(resolveConfig([BUILTIN_DEFAULTS, global]).ai?.provider).toBe("global");
-    // Drop global → built-in default wins.
+    expect(resolveConfig([BUILTIN_DEFAULTS, global]).ai?.api_key_env).toBe("global");
+    // Drop global → built-in default (provider-dependent, unset until resolveConfigWithDefaults).
     expect(resolveConfig([BUILTIN_DEFAULTS]).ai?.provider).toBe("openrouter");
   });
 
@@ -337,6 +337,42 @@ describe("mergeable vs replaceable", () => {
     expect(merged.ai?.models?.resolver?.fallbacks).toEqual(["c"]);
   });
 
+  test("[ai.models.default] merges across config layers like any other role key", () => {
+    const base: Config = {
+      ai: { models: { default: { model: "m1", fallbacks: ["a"] } } },
+    };
+    const over: Config = {
+      ai: { models: { default: { model: "m1", pricing: { in: 1, out: 2 } } } },
+    };
+    const merged = mergeConfigLayer(base, over);
+    // `default` itself deep-merges: model/fallbacks from base survive, pricing added by over.
+    expect(merged.ai?.models?.default?.model).toBe("m1");
+    expect(merged.ai?.models?.default?.fallbacks).toEqual(["a"]);
+    expect(merged.ai?.models?.default?.pricing).toEqual({ in: 1, out: 2 });
+  });
+
+  test("[ai.models.default] coexists with an explicit role block across layers", () => {
+    const base: Config = {
+      ai: { models: { default: { model: "default-model" } } },
+    };
+    const over: Config = {
+      ai: { models: { resolver: { model: "resolver-model" } } },
+    };
+    const merged = mergeConfigLayer(base, over);
+    expect(merged.ai?.models?.default?.model).toBe("default-model");
+    expect(merged.ai?.models?.resolver?.model).toBe("resolver-model");
+  });
+
+  test("[config.ai.models.default] alone validates (strict schema)", async () => {
+    const p = writeTmp(
+      "ai-models-default.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[ai.models.default]\nmodel = "gpt-5.6-luna:xhigh"\nfallbacks = []\n`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.ai?.models?.default?.model).toBe("gpt-5.6-luna:xhigh");
+    expect(config.ai?.models?.default?.fallbacks).toEqual([]);
+  });
+
   test("run (RunLimits) is REPLACED wholesale when a layer sets it", () => {
     const base: Config = {
       run: { max_steps: 40, max_cost_usd: 0.05, assertions: "eager" },
@@ -385,5 +421,51 @@ describe("mergeable vs replaceable", () => {
     expect(merged.connect?.mode).toBe("launch");
     // No leakage of the attach-only field.
     expect(merged.connect && "wsUrl" in merged.connect).toBe(false);
+  });
+});
+
+describe("[ai].provider enum + provider-dependent api_key_env default", () => {
+  test("provider accepts openrouter | google | openai (strict enum)", async () => {
+    for (const provider of ["openrouter", "google", "openai"] as const) {
+      const p = writeTmp(
+        `ai-provider-${provider}.toml`,
+        `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[ai]\nprovider = "${provider}"\n`,
+      );
+      const loaded = await loadConfigFile(p);
+      expect(loaded.config.ai?.provider).toBe(provider);
+    }
+  });
+
+  test("an unknown provider value is rejected (strict enum)", async () => {
+    const p = writeTmp(
+      "ai-provider-bad.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[ai]\nprovider = "anthropic"\n`,
+    );
+    await expect(loadConfigFile(p)).rejects.toThrow(ConfigValidationError);
+  });
+
+  test("no [ai] block → default provider openrouter + OPENROUTER_API_KEY", () => {
+    const resolved = resolveConfigWithDefaults([]);
+    expect(resolved.ai?.provider).toBe("openrouter");
+    expect(resolved.ai?.api_key_env).toBe("OPENROUTER_API_KEY");
+  });
+
+  test("provider = google → default api_key_env is GOOGLE_GENERATIVE_AI_API_KEY", () => {
+    const resolved = resolveConfigWithDefaults([{ ai: { provider: "google" } }]);
+    expect(resolved.ai?.provider).toBe("google");
+    expect(resolved.ai?.api_key_env).toBe("GOOGLE_GENERATIVE_AI_API_KEY");
+  });
+
+  test("provider = openai → default api_key_env is OPENAI_API_KEY", () => {
+    const resolved = resolveConfigWithDefaults([{ ai: { provider: "openai" } }]);
+    expect(resolved.ai?.provider).toBe("openai");
+    expect(resolved.ai?.api_key_env).toBe("OPENAI_API_KEY");
+  });
+
+  test("an explicit api_key_env is NEVER overridden by the provider-dependent default", () => {
+    const resolved = resolveConfigWithDefaults([
+      { ai: { provider: "google", api_key_env: "MY_CUSTOM_KEY" } },
+    ]);
+    expect(resolved.ai?.api_key_env).toBe("MY_CUSTOM_KEY");
   });
 });

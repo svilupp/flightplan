@@ -301,6 +301,7 @@ The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authori
 <tr><td><code>run</code></td><td><code>flow</code> (req), <code>with</code> (Record)</td><td><span class="fileref">:339</span></td></tr>
 <tr><td><code>switch_frame</code></td><td><code>target</code> (selector string or array, req)</td><td><span class="fileref">:315</span></td></tr>
 <tr><td><code>switch_to_main</code></td><td>no additional fields</td><td><span class="fileref">:329</span></td></tr>
+<tr><td><code>emit</code></td><td><code>channel</code> (<code>"ws"</code>, req), <code>payload</code> (string or table, req), <code>match?</code> (URL glob), <code>base64?</code>, <code>await_reply?</code> (<code>{where, match?, timeout_ms}</code>), <code>secret</code></td><td></td></tr>
 </tbody>
 </table>
 </div>
@@ -312,7 +313,7 @@ id = "name"
 do = "fill"
 target = ["[data-testid='wizard-name']", "the full name field"]
 value = "${inputs.full_name}"</code></pre>
-<p><code>css:</code> is a Flightplan authoring prefix and is stripped at the driver boundary. Browser-pilot 0.1.0 accepts both <code>role:button:Next</code> and <code>role:button[name="Next"]</code>. <code>fingerprint:</code>/<code>fp:</code>/<code>structure:</code> are internal lock identity tokens, not executable target selectors; <code>label:</code> is not part of the target contract.</p>
+<p><code>css:</code> is a Flightplan authoring prefix and is stripped at the driver boundary. Browser-pilot 0.2.0 accepts both <code>role:button:Next</code> and <code>role:button[name="Next"]</code>. <code>fingerprint:</code>/<code>fp:</code>/<code>structure:</code> are internal lock identity tokens, not executable target selectors; <code>label:</code> is not part of the target contract.</p>
 <p>Pure prose targets route straight to vision when hinted, e.g. <code>vision.toml</code>:</p>
 <pre><code>target = "the trash-can / delete icon in the toolbar to delete the item"
 tier_hint = "vision"</code></pre>
@@ -369,7 +370,7 @@ count    = 5</code></pre>
 <tr><td><code>[browser]</code></td><td><code>provider</code> "browser-pilot", <code>version</code>, <code>reuse_window?</code> (schema-accepted but ignored by runtime), <code>record</code> false, <code>dialog</code> "dismiss"|"accept"|"fail"|"prompt"|"manual" (default dismiss). <code>accept</code>/<code>dismiss</code> auto-answer native dialogs; the other policies record a failure and dismiss the dialog. Tab selection is controlled by <code>[connect] targetUrl</code>, not <code>reuse_window</code>. <span class="fileref">src/config/schema.ts:66</span></td></tr>
 <tr><td><code>[connect]</code></td><td>Union on <code>mode</code>: <strong>attach</strong> (<code>wsUrl?</code>, <code>browserURL?</code>, <code>autodiscover?</code>, <code>targetUrl?</code>, <code>sessionName?</code>) or <strong>launch</strong> (<code>headless?</code>, default <code>true</code>; <code>headless = false</code> is supported, <code>channel?</code>, <code>userDataDir?</code>, <code>chromeFlags?</code>). Replaced wholesale. Default: attach CDP <code>localhost:9222</code>. <span class="fileref">:121</span></td></tr>
 <tr><td><code>[ai]</code></td><td><code>provider</code> "openrouter", <code>api_key_env</code> "OPENROUTER_API_KEY", <code>max_model_calls</code>, <code>max_screenshots</code>, <code>models</code>. <span class="fileref">:51</span></td></tr>
-<tr><td><code>[ai.models.*]</code></td><td>For <code>resolver</code>, <code>advisor</code>, <code>vision</code>, <code>planner</code>, <code>planner_capable</code>: <code>{model, fallbacks?[], pricing?{in,out}}</code>. <span class="fileref">:16</span></td></tr>
+<tr><td><code>[ai.models.*]</code></td><td>For <code>resolver</code>, <code>advisor</code>, <code>vision</code>, <code>planner</code>, <code>planner_capable</code>: <code>{model, fallbacks?[], pricing?{in,out}}</code>. An additional <code>[ai.models.default]</code> block sets the same fields as the default for every role; per-role field &gt; <code>default</code> field &gt; built-in registry, role blocks deep-merge over <code>default</code>, and <code>fallbacks</code> arrays replace wholesale (not merged). Older flightplan versions reject <code>default</code> as an unknown key under strict schema validation. <span class="fileref">:16</span></td></tr>
 <tr><td><code>[run]</code></td><td><code>max_steps</code>, <code>max_model_calls</code>, <code>max_screenshots</code>, <code>max_cost_usd</code>, <code>max_replans</code>, <code>assertions</code> eager|deferred (default eager), <code>fail_on_assertion</code> (default true), <code>assert_timeout_ms</code> (default 5000). Replaced wholesale. <span class="fileref">:130</span></td></tr>
 <tr><td><code>[assertions]</code></td><td>Schema-accepted compatibility shape (<code>mode</code>, <code>fail_on_failure</code>, <code>assert_timeout_ms</code>), but not normalized into <code>[run]</code> by the current resolver. Use <code>[run]</code> for effective assertion policy. <span class="fileref">src/config/schema.ts:153</span></td></tr>
 <tr><td><code>[telemetry.logfire]</code></td><td><code>enabled</code> "auto"|bool, <code>token_env</code>, <code>service_name</code>. <span class="fileref">:165</span></td></tr>
@@ -446,7 +447,7 @@ count    = 5</code></pre>
 <p><span class="fileref">src/ai/provider.ts</span> is the only file importing the AI SDK (<code>ai@6</code>, <code>@openrouter/ai-sdk-provider</code>). It uses the Output API — <code>generateText({output: Output.object({schema})})</code> → <code>result.output</code> — with fallback iteration in <code>defaultGenerate</code> <span class="fileref">:123</span> (models tried in order, one shared <code>AbortSignal.timeout</code> across the chain).</p>
 
 <h3>Model registry</h3>
-<p><span class="fileref">src/ai/registry.ts</span>, pricing in USD per 1M tokens (in/out). All overridable via <code>[ai.models.*]</code>.</p>
+<p><span class="fileref">src/ai/registry.ts</span>, pricing in USD per 1M tokens (in/out). All overridable via <code>[ai.models.*]</code>, or in one place via <code>[ai.models.default]</code> (applies to all roles unless a role block overrides a field). If <code>default</code> sets <code>model</code> without <code>fallbacks</code>, roles keep the built-in OpenRouter fallback slugs — set <code>fallbacks = []</code> in <code>default</code> when routing to a non-OpenRouter provider.</p>
 <div class="tablewrap">
 <table>
 <thead><tr><th>Role</th><th>Model</th><th>In</th><th>Out</th></tr></thead>
@@ -487,7 +488,7 @@ count    = 5</code></pre>
 <p><code>capturePageSignature</code> (<span class="fileref">src/ladder/page-signature.ts</span>) builds the composite <code>text:&lt;textSig&gt;;struct:&lt;structSig&gt;</code>. The <em>text</em> signature is a volatile-masked hash (excluding <code>aria-live</code>, <code>data-live</code>, hidden nodes, and <code>[cache] ignore_regions</code>). The <em>struct</em> signature is a role-tree hash. Signature mode (<code>full</code> vs <code>struct-only</code>) is set per-step via <code>cache</code> or globally via <code>[cache] signature</code>.</p>
 
 <h3>Path divergence</h3>
-<p><code>detectDivergence</code> (<span class="fileref">src/runner/path-repair.ts:101</span>): after a mutating step, compare the current signature against the <em>next</em> step's <code>match.sig</code>. No expectation → <code>null</code>. Only the mutating verbs (<code>goto</code>, <code>click</code>, <code>fill</code>, <code>select</code>, <code>ai_pick</code>) participate. A divergence is one of the two triggers for the (opt-in) L5 planner.</p>
+<p><code>detectDivergence</code> (<span class="fileref">src/runner/path-repair.ts:101</span>): after a mutating step, compare the current signature against the <em>next</em> step's <code>match.sig</code>. No expectation → <code>null</code>. Only the mutating verbs (<code>goto</code>, <code>click</code>, <code>fill</code>, <code>select</code>, <code>ai_pick</code>) participate; <code>emit</code> is excluded and never triggers divergence detection. A divergence is one of the two triggers for the (opt-in) L5 planner.</p>
 </section>
 
 <!-- 10 -->

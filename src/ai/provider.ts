@@ -1,20 +1,95 @@
-// Flightplan — the ONLY file that imports the AI SDK (`ai`), `@openrouter/ai-sdk-provider`, and
-// (optionally) `@ai-sdk/google`. It supplies the REAL `GenerateFn` (`defaultGenerate`) so the
-// rest of `ai/` and ALL tests stay SDK-free behind the `GenerateFn` seam.
+// Flightplan — the ONLY file that imports the AI SDK (`ai`), `@openrouter/ai-sdk-provider`,
+// `@ai-sdk/google`, and `@ai-sdk/openai`. It supplies the REAL `GenerateFn` (`defaultGenerate`) so
+// the rest of `ai/` and ALL tests stay SDK-free behind the `GenerateFn` seam.
 //
 // Chosen transport (FINDINGS_ai_integration §3, decision 2026-06-29): vision + text BOTH run on
-// the one OpenRouter provider on `ai@6`. The Output API is `generateText({ output:
+// the one OpenRouter provider on `ai@6` by default. The Output API is `generateText({ output:
 // Output.object({schema}) }) → result.output` (NOT `experimental_output`; FINDINGS §2 / spike 11).
-// Vision attaches the screenshot as a `file` part with a `data:` URL and uses `maxOutputTokens
-// ≥512` to cover Gemini thinking tokens (FINDINGS §3 / spike 12/17). `@ai-sdk/google` +
-// raw OpenRouter HTTP remain documented fallbacks ONLY (not wired in v1) and, if ever needed,
-// would also live here behind this boundary.
+// Vision attaches the screenshot as a `file` part with a `data:` URL, and Gemini thinking tokens
+// count against the output-token cap (FINDINGS §3 / spike 12/17). `[ai].provider` also selects
+// `google` (`@ai-sdk/google`) or `openai` (`@ai-sdk/openai`) as native alternatives — same
+// `defaultGenerate` call shape, a different `resolveModel`/`providerOptions` mapping (below).
+//
+// Reasoning-effort suffix (`"openai/gpt-5.6-luna:xhigh"`, `"google/gemini-3-pro:high"`): a model id
+// in a `GenerateRequest.models` entry may carry a trailing `:effort` (one of `minimal|low|medium|
+// high|xhigh` — see `registry.ts`'s `parseModelId`). `defaultGenerate` parses it off EVERY model id
+// as it walks the fallback chain, strips it before handing the slug to the SDK provider, and merges
+// the effort into `providerOptions` per family:
+//   - openrouter: `reasoning: { effort }` (OpenRouter's own reasoning-tokens knob — accepts our
+//     exact vocabulary incl. `xhigh`).
+//   - openai:     `reasoningEffort: effort` (the native option accepts our exact vocabulary too).
+//   - google:     `thinkingConfig.thinkingLevel` — the native option only accepts
+//     `minimal|low|medium|high` (no `xhigh`), so `xhigh` maps down to `"high"` (documented
+//     lossy mapping; there is no higher native level to map to).
 
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
 import type { OpenRouterProvider } from "@openrouter/ai-sdk-provider";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { LanguageModel, ModelMessage } from "ai";
 import { generateText, Output } from "ai";
+import type { ReasoningEffort } from "./registry.ts";
+import { parseModelId } from "./registry.ts";
 import type { GenerateFn, GenerateRequest, RawUsage } from "./types.ts";
+
+/** Which native SDK family a {@link DefaultGenerateOptions.resolveModel} is backed by — selects the
+ * `providerOptions` shape {@link defaultGenerate} merges in for a reasoning-effort suffix. */
+export type ProviderFamily = "openrouter" | "google" | "openai";
+
+/** Google's `thinkingConfig.thinkingLevel` has no `xhigh` — map it down to `"high"` (see header). */
+function googleThinkingLevel(effort: ReasoningEffort): "minimal" | "low" | "medium" | "high" {
+  return effort === "xhigh" ? "high" : effort;
+}
+
+/** Build the family-specific `providerOptions` slice for a parsed reasoning effort, if any. */
+function effortProviderOptions(
+  family: ProviderFamily,
+  effort: ReasoningEffort | undefined,
+): Record<string, unknown> {
+  if (!effort) return {};
+  switch (family) {
+    case "openrouter":
+      return { openrouter: { reasoning: { effort } } };
+    case "openai":
+      return { openai: { reasoningEffort: effort } };
+    case "google":
+      return { google: { thinkingConfig: { thinkingLevel: googleThinkingLevel(effort) } } };
+    default:
+      return {};
+  }
+}
+
+/**
+ * Family-specific `providerOptions` applied to EVERY call (effort or not). OpenAI's Responses API
+ * defaults to STRICT structured outputs, which reject any JSON schema whose `required` does not
+ * list every property — several of our output schemas (`JudgeSchema`, `L2PickSchema`,
+ * `PlannerPlanSchema`, ...) deliberately carry `.optional()` fields, so strict mode 400s before
+ * the model even runs. `strictJsonSchema: false` keeps schema validation on OUR side (the SDK
+ * still parses/validates via `Output.object({schema})`) while letting the request through.
+ */
+function familyBaseProviderOptions(family: ProviderFamily): Record<string, unknown> {
+  switch (family) {
+    case "openai":
+      return { openai: { strictJsonSchema: false } };
+    default:
+      return {};
+  }
+}
+
+/** Shallow-per-family merge of two `providerOptions` maps (later wins per key within a family). */
+function mergeProviderOptions(
+  base: Record<string, unknown>,
+  over: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [family, opts] of Object.entries(over)) {
+    out[family] = {
+      ...(out[family] as Record<string, unknown> | undefined),
+      ...(opts as Record<string, unknown>),
+    };
+  }
+  return out;
+}
 
 /** Options for {@link createProvider}. */
 export interface CreateProviderOptions {
@@ -79,8 +154,12 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** Options for {@link defaultGenerate}. `resolveModel` is injectable for isolated SDK tests. */
 export interface DefaultGenerateOptions {
-  /** Map a model id → a `LanguageModel`. Real = `provider(id)`; tests inject a mock model. */
+  /** Map a (suffix-stripped) model id → a `LanguageModel`. Real = `provider(id)`; tests inject a
+   * mock model. */
   resolveModel: (modelId: string) => LanguageModel;
+  /** Which native SDK family `resolveModel` is backed by (default `"openrouter"`) — selects the
+   * `providerOptions` shape for a `:effort`-suffixed model id (see the file header). */
+  family?: ProviderFamily;
 }
 
 /**
@@ -131,8 +210,10 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
     // A fail-FAST model (throws immediately, e.g. a rotated id) still falls through to the next model
     // within budget — the shared signal only bites a genuinely SLOW/HUNG chain.
     const abortSignal = AbortSignal.timeout(timeoutMs);
+    const family = opts.family ?? "openrouter";
     let lastErr: unknown;
-    for (const modelId of req.models) {
+    for (const rawModelId of req.models) {
+      const { model: modelId, effort } = parseModelId(rawModelId);
       try {
         // Build the call with EXACTLY one of `messages` / `prompt` (the SDK `Prompt` is a strict
         // XOR — a spread of an optional union widens it and fails typecheck), so branch here.
@@ -140,11 +221,25 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
         // throws, never resolves) can't block indefinitely — the 174s L4 iframe hang this guards
         // against. A fired timeout aborts the in-flight attempt; the `catch` below treats it like any
         // other failure and moves to the next model (which then rejects at once on the same signal).
+        const effortOptions = mergeProviderOptions(
+          familyBaseProviderOptions(family),
+          effortProviderOptions(family, effort),
+        );
+        const openrouterOptions =
+          family === "openrouter"
+            ? {
+                usage: { include: true },
+                ...(effortOptions.openrouter as Record<string, unknown> | undefined),
+              }
+            : undefined;
         const common = {
           model: opts.resolveModel(modelId),
           output: Output.object({ schema: req.schema }),
           maxOutputTokens: req.maxOutputTokens,
-          providerOptions: { openrouter: { usage: { include: true } } },
+          providerOptions: {
+            ...effortOptions,
+            ...(openrouterOptions !== undefined ? { openrouter: openrouterOptions } : {}),
+          },
           abortSignal,
         };
         // Three shapes, all a strict XOR in the SDK `Prompt`:
@@ -163,7 +258,7 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
         } else {
           result = await generateText({ ...common, prompt: req.prompt ?? "" });
         }
-        return { output: result.output, model: modelId, usage: extractRawUsage(result) };
+        return { output: result.output, model: rawModelId, usage: extractRawUsage(result) };
       } catch (err) {
         // Any error (incl. AI_NoOutputGeneratedError from a tight Gemini cap, or a rotated id) is
         // fallback-eligible — try the next model. Throw only after the whole chain is exhausted.
@@ -180,5 +275,27 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
  */
 export function createOpenRouterGenerate(opts: CreateProviderOptions): GenerateFn {
   const provider = createProvider(opts);
-  return defaultGenerate({ resolveModel: (id) => provider(id) });
+  return defaultGenerate({ resolveModel: (id) => provider(id), family: "openrouter" });
+}
+
+/**
+ * Convenience: build the Google (`@ai-sdk/google`) native-backed {@link GenerateFn} from an API
+ * key (`GOOGLE_GENERATIVE_AI_API_KEY` by convention — see `config/resolve.ts`). Model ids in the
+ * registry/config are Google's OWN model ids (e.g. `gemini-3-pro`), not OpenRouter slugs, when this
+ * provider is selected.
+ */
+export function createGoogleGenerate(opts: CreateProviderOptions): GenerateFn {
+  const provider = createGoogleGenerativeAI({ apiKey: opts.apiKey });
+  return defaultGenerate({ resolveModel: (id) => provider(id), family: "google" });
+}
+
+/**
+ * Convenience: build the OpenAI (`@ai-sdk/openai`) native-backed {@link GenerateFn} from an API
+ * key (`OPENAI_API_KEY` by convention — see `config/resolve.ts`). Model ids in the registry/config
+ * are OpenAI's OWN model ids (e.g. `gpt-5.6-luna`), not OpenRouter slugs, when this provider is
+ * selected.
+ */
+export function createOpenAiGenerate(opts: CreateProviderOptions): GenerateFn {
+  const provider = createOpenAI({ apiKey: opts.apiKey });
+  return defaultGenerate({ resolveModel: (id) => provider(id), family: "openai" });
 }

@@ -152,6 +152,21 @@ export function createRedactor(opts: RedactorOptions): Redactor {
  *
  * Call this AFTER templating so `step.value` / `step.url` is the resolved literal.
  */
+/** Collect every non-empty string leaf of `value` (recursing into objects/arrays) into `out`. */
+function collectStringLeaves(value: unknown, out: Set<string>): void {
+  if (typeof value === "string") {
+    if (value.length > 0) out.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectStringLeaves(v, out);
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const v of Object.values(value)) collectStringLeaves(v, out);
+  }
+}
+
 export function gatherSecretValues(
   steps: readonly Step[],
   inputs: Record<string, string> = {},
@@ -159,8 +174,28 @@ export function gatherSecretValues(
   const secrets = new Set<string>();
   for (const step of steps) {
     // `secret` is declared on the fill step in the schema, but honor it on ANY verb that carries a
-    // templated payload (fill/select `value`, goto `url`) so a secret used outside `fill` is masked.
+    // templated payload (fill/select `value`, goto `url`, emit `payload`) so a secret used outside
+    // `fill` is masked.
     if ((step as { secret?: unknown }).secret !== true) continue;
+    if (step.do === "emit") {
+      // emit's `payload` is a string OR an inline table; gather every string leaf of a table
+      // payload too, so a secret nested inside a JSON-serializable table is masked wholesale.
+      collectStringLeaves(step.payload, secrets);
+      continue;
+    }
+    if (step.do === "eval") {
+      // eval's `args` carries the structured per-run values (never string-interpolated into
+      // `script`); gather every string leaf so a secret passed through `args` is masked wholesale
+      // wherever it might surface (script echoes, the eval result, trace/browser-action text).
+      collectStringLeaves(step.args, secrets);
+      continue;
+    }
+    if (step.do === "evaluate") {
+      // evaluate has no `args` — the (post-templating) `expression` string itself carries the
+      // secret value, so gather it wholesale (mirrors the eval branch above).
+      collectStringLeaves(step.expression, secrets);
+      continue;
+    }
     const payload =
       "value" in step && typeof step.value === "string"
         ? step.value

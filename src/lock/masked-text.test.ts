@@ -31,17 +31,14 @@ describe("computeMaskedTextHash — volatile-region masking (Layer 1)", () => {
     expect(computeMaskedTextHash(after)).toBe(computeMaskedTextHash(before));
   });
 
-  test.each([
-    "alert",
-    "log",
-    "timer",
-    "progressbar",
-    "marquee",
-  ])("masks the dynamic role %s", (role) => {
-    const before = snap([{ role, ref: "n1", name: "one" }]);
-    const after = snap([{ role, ref: "n1", name: "two" }]);
-    expect(computeMaskedTextHash(after)).toBe(computeMaskedTextHash(before));
-  });
+  test.each(["alert", "log", "timer", "progressbar", "marquee"])(
+    "masks the dynamic role %s",
+    (role) => {
+      const before = snap([{ role, ref: "n1", name: "one" }]);
+      const after = snap([{ role, ref: "n1", name: "two" }]);
+      expect(computeMaskedTextHash(after)).toBe(computeMaskedTextHash(before));
+    },
+  );
 
   test("stable when an [aria-live] region's text changes", () => {
     const before = snap([

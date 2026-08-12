@@ -18,7 +18,7 @@ npm install browser-pilot
 ```
 
 Do not use a `file:` path, a workspace reference, or a sibling checkout in a consumer install.
-Flightplan itself pins the released `browser-pilot@0.1.0` package.
+Flightplan itself uses the published `browser-pilot@0.2.1` package.
 
 ## Canonical authoring flow
 
@@ -107,6 +107,60 @@ Flightplan strips its authoring-only `css:` prefix before sending the selector t
 `fingerprint:`, `fp:`, and `structure:` are internal lock identity tokens, not author-facing target
 prefixes. Keep a stable natural-language intent even when a selector is available; the intent is
 used when the recorded selector drifts.
+
+## Fill verification (`verify`) passthrough
+
+A `fill` step's `verify` option (`"exact" | "normalized" | "off"`, default `"normalized"`) is
+forwarded straight into the batch `Step.verify` browser-pilot dispatches (requires
+**browser-pilot >=0.2.1**, which added native `verify` support to `page.fill` and its batch
+executor): `"exact"` maps to browser-pilot's `"exact"`, `"off"` maps to `false`, and
+`"normalized"`/unset maps to `"normalized"`. browser-pilot itself performs the NFKC +
+whitespace-collapse (then whitespace-stripped) comparison and skips the char-by-char retype when
+only formatting differs — Flightplan no longer parses or recovers from a "did not stick" error
+message.
+
+## `emit` — WebSocket command injection
+
+`do = "emit"` sends a message on a WebSocket the page itself already owns, delegating to
+browser-pilot's `page.emitMessage` (requires **browser-pilot >=0.2.0**). It travels the app's real
+connection with its real headers/cookies/session token, so it is the mechanism for driving a
+client's own realtime protocol (e.g. a chat app's `client.response.text` command) without faking a
+server:
+
+```toml
+[[steps]]
+id = "send"
+do = "emit"
+channel = "ws"                       # only "ws" is supported
+match = "wss://*/session/*"          # optional URL glob; required only when the page owns >1 socket
+payload = { type = "client.response.text", content = "say hi" }   # a string or an inline table
+base64 = false                        # optional; treat payload as base64 for a binary frame
+
+[steps.await_reply]                   # optional — wait for a correlated reply frame
+where = { type = "response.end" }     # dot-path field-equality against the parsed JSON reply
+match = "*done*"                      # optional glob against the raw reply payload text
+timeout_ms = 10000
+```
+
+A table `payload` is JSON-serialized before it reaches browser-pilot (which only accepts a string
+payload); templating (`${inputs.*}`/`${env.*}`) works in a string payload and in string values
+nested inside a table payload. `secret = true` redacts the (templated) payload everywhere the same
+way a secret `fill`/`select`/`goto` does.
+
+**`emit` is inherently `effect = "at_most_once"`.** The field is forced/defaulted to
+`"at_most_once"` at the schema level — an explicit different value is a schema error — because a
+dispatched frame is an irreversible side effect on the server that browser-pilot never retries.
+`steps/emit-no-retry` (lint, error) rejects `retry.max > 0` on an `emit` step for the same reason,
+and the existing `effect/at-most-once-postcondition` rule still requires a deterministic
+after-assertion so the step's real-world effect is verified rather than assumed. A failed delivery
+(unconfirmed dispatch) or a missing awaited reply is a normal step failure — `on_fail`/verdict
+handling applies exactly as for any other verb — never an infra `error` verdict.
+
+`emit` has **no ladder, no lock, and produces no lock entries**: there is no selector to resolve or
+learn, so nothing about an `emit` step is ever persisted into `<flow>.lock.toml`. This also means
+the never-persist-`ref:eN` rule extends trivially here — an `emit` step carries no
+session-scoped browser-pilot identifiers (socket ids, target ids) into any artifact; only the
+templated payload (redacted per `secret`) and the delivery outcome are traced.
 
 ## API-key conditions
 

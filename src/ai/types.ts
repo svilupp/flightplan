@@ -52,7 +52,7 @@ export interface GenerateRequest {
   models: string[];
   /** The zod Output schema the validated value must satisfy. */
   schema: z.ZodType;
-  /** Output-token cap. Always ≥512 (Gemini thinking-token caveat — FINDINGS §3). */
+  /** Output-token cap (the constant `AI_DEFAULT_OUTPUT_TOKENS = 4000` is typical). Gemini thinking tokens count against this cap (FINDINGS §3). */
   maxOutputTokens: number;
   /** Text prompt (text tiers). */
   prompt?: string;
