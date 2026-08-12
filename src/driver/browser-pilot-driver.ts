@@ -10,6 +10,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 // The single allowed `import ... from 'browser-pilot'` in the whole codebase.
 import {
+  type EmitWsOptions as BpEmitWsOptions,
   type Browser,
   captureStateSignature as bpCaptureStateSignature,
   captureStructureSignature as bpCaptureStructureSignature,
@@ -41,6 +42,10 @@ import type {
   BrowserPilotProvenance,
   Driver,
   ElementState,
+  EmitCommandOptions,
+  EmitCommandResult,
+  EvalOptions,
+  EvalResult,
   FillOpts,
   GotoOpts,
   NativeDialogPolicy,
@@ -628,7 +633,12 @@ export class BrowserPilotDriver implements Driver {
 
   async fill(sel: string | string[], value: string, opts?: FillOpts): Promise<boolean> {
     const page = this.requirePage();
-    const fillOpts: { timeout?: number; optional?: boolean; blur?: boolean; verify?: boolean } = {
+    const fillOpts: {
+      timeout?: number;
+      optional?: boolean;
+      blur?: boolean;
+      verify?: boolean | "exact" | "normalized";
+    } = {
       timeout: opts?.timeout ?? this.actionTimeoutMs,
     };
     if (opts?.optional !== undefined) fillOpts.optional = opts.optional;
@@ -695,6 +705,94 @@ export class BrowserPilotDriver implements Driver {
     // ambient form via the empty-string selector (browser-pilot resolves the active form).
     const selector = sel === undefined ? "" : normalizeSelectorArg(sel);
     return page.submit(selector, sopts);
+  }
+
+  // --- emit (WebSocket command injection) ---
+
+  /**
+   * Delegate to browser-pilot's `page.emitMessage` (>=0.2.0). Feature-detected: a `Page` from an
+   * older browser-pilot lacks `emitMessage`, and this throws a clear upgrade error rather than
+   * silently misbehaving — the pin's `TODO` marks where this stops being purely defensive. Any bp
+   * throw (ambiguous-socket `EmitTargetError`, an `awaitReply` timeout) propagates as-is; the
+   * runner's `emit` case catches it and maps it to a normal step failure, not an infra error.
+   */
+  async emitCommand(opts: EmitCommandOptions): Promise<EmitCommandResult> {
+    const page = this.requirePage() as Page & {
+      emitMessage?(payload: string, options?: BpEmitWsOptions): Promise<EmitCommandResult>;
+    };
+    if (typeof page.emitMessage !== "function") {
+      throw new Error(
+        "emit step requires browser-pilot >=0.2.0 (page.emitMessage is not available on the " +
+          "connected browser-pilot Page) — upgrade the pinned browser-pilot dependency.",
+      );
+    }
+    const { channel: _channel, payload, ...wsOpts } = opts;
+    return page.emitMessage(payload, wsOpts);
+  }
+
+  // --- eval (escape-hatch JS execution) ---
+
+  /**
+   * Enter `opts.frame` (if given), run `opts.script` via browser-pilot's `Page.evaluate` — which
+   * routes to the active OOPIF child session when one is switched into, unlike the element verbs
+   * that cannot yet resolve a SELECTOR inside a real cross-origin child session — then restore
+   * whatever frame context was active before the call (this is a one-shot escape hatch, not a
+   * stateful switch like {@link switchToFrame}). `args` is JSON-serialized and spliced into an
+   * async-function-call wrapper around `script` rather than string-interpolated into it. Never
+   * throws: an unresolvable frame or a thrown evaluation exception both become `{ ok: false, error }`.
+   */
+  async evalInFrame(opts: EvalOptions): Promise<EvalResult> {
+    const page = this.requirePage() as Page & {
+      evaluate<T = unknown>(expression: string): Promise<T>;
+    };
+    const previousFrame = this.frameSelector;
+    if (opts.frame !== undefined) {
+      const entered = await page.switchToFrame(opts.frame, { optional: true });
+      if (!entered) {
+        return {
+          ok: false,
+          error: `evalInFrame: could not enter frame (${opts.frame})`,
+          phase: "frame",
+        };
+      }
+      this.frameSelector = opts.frame;
+    }
+    try {
+      const argsJson = JSON.stringify(opts.args ?? {});
+      const wrapped = `(async function (args) {\n${opts.script}\n})(${argsJson})`;
+      const value = await page.evaluate(wrapped);
+      return { ok: true, value };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        phase: "script",
+      };
+    } finally {
+      if (opts.frame !== undefined) {
+        if (previousFrame !== undefined) {
+          await page.switchToFrame(previousFrame, { optional: true });
+          this.frameSelector = previousFrame;
+        } else {
+          await page.switchToMain();
+          this.frameSelector = undefined;
+        }
+      }
+    }
+  }
+
+  // --- evaluate (bare escape-hatch JS expression) ---
+
+  /**
+   * Delegate directly to browser-pilot's `page.evaluate` — no frame targeting, no args/expect
+   * wrapper. browser-pilot's `page.evaluate` already routes into whatever OOPIF child session a
+   * prior `switch_frame` step entered, so this needs no extra frame handling of its own.
+   */
+  async evaluateExpression(expression: string): Promise<unknown> {
+    const page = this.requirePage() as Page & {
+      evaluate<T = unknown>(expression: string): Promise<T>;
+    };
+    return page.evaluate(expression);
   }
 
   // --- screenshot ---

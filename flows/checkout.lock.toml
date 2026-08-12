@@ -1,0 +1,764 @@
+version = 2
+source = "flows/checkout.toml"
+source_hash = "sha256:e284c28810908c250eef82f12acdc3f80f251eb4331c4d317f45617ba9cbc762"
+description = "Production checkout flow: adds a jacket to cart, fills checkout/shipping/payment, and pays with an Adyen test card on the window-shop-dovid-test UAT storefront."
+
+[[targets]]
+step = "accept_cookies"
+target = "the Accept all button in the cookie consent banner"
+last_seen = "2026-08-12T11:27:43.394Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|10zsusk;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|1fiqyi6"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:Accept all"
+greens = 1
+last_ok = "2026-08-12T11:27:43.394Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "add_to_cart"
+target = "the Add to cart button on the product card"
+last_seen = "2026-08-12T11:27:48.270Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|1o8flu2;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|10kxzbo"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:Add to cart"
+greens = 1
+last_ok = "2026-08-12T11:27:48.270Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "continue_to_payment"
+target = "the Continue to Payment button"
+last_seen = "2026-08-12T11:28:12.726Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|1kxxrfa;struct:/window-shop-dovid-test/checkout|1bdmc9v"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:Continue to Payment"
+greens = 1
+last_ok = "2026-08-12T11:28:12.726Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "continue_to_shipping"
+target = "the Continue to shipping button"
+last_seen = "2026-08-12T11:28:09.568Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|1avvvby;struct:/window-shop-dovid-test/checkout|4jasgd"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:Continue to shipping"
+greens = 1
+last_ok = "2026-08-12T11:28:09.568Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "dismiss_welcome_guide"
+target = "the Skip button on the welcome guide overlay"
+last_seen = "2026-08-12T11:27:44.331Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|8xvhkb;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|1bz4bit"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='welcome-guide-dismiss']"
+greens = 1
+last_ok = "2026-08-12T11:27:44.331Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "expand_size_selector"
+target = "the color and size selector toggle on the product card"
+last_seen = "2026-08-12T11:27:46.912Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|1rckq6v;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|1x0gm3s"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='pdp-controls-tab-variant']"
+greens = 1
+last_ok = "2026-08-12T11:27:46.912Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "fill_address"
+target = "the Address field"
+last_seen = "2026-08-12T11:27:56.339Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|8j0drc;struct:/window-shop-dovid-test/checkout|1xf3jw9"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[placeholder=\"Enter street name and number*\"]"
+greens = 1
+last_ok = "2026-08-12T11:27:56.339Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "fill_city_fallback"
+target = "the City field"
+last_seen = "2026-08-12T11:28:06.369Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|1avvvby;struct:/window-shop-dovid-test/checkout|4jasgd"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[placeholder=\"Enter city*\"]"
+greens = 1
+last_ok = "2026-08-12T11:28:06.369Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "fill_email"
+target = "the Email address field"
+last_seen = "2026-08-12T11:28:05.400Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|uyt8w1;struct:/window-shop-dovid-test/checkout|p1lz4w"
+
+[[targets.strategies]]
+kind = "css"
+selector = "input[type='email']"
+greens = 1
+last_ok = "2026-08-12T11:28:05.400Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "fill_full_name"
+target = "the Full name field"
+last_seen = "2026-08-12T11:27:55.631Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|19qap79;struct:/window-shop-dovid-test/checkout|1gqtc4t"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[placeholder=\"Enter your full name*\"]"
+greens = 1
+last_ok = "2026-08-12T11:27:55.631Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Continue to shipping\""
+greens = 0
+
+[[targets]]
+step = "fill_phone"
+target = "the Phone number field"
+last_seen = "2026-08-12T11:28:05.920Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|1avvvby;struct:/window-shop-dovid-test/checkout|4jasgd"
+
+[[targets.strategies]]
+kind = "css"
+selector = "input[type='tel']"
+greens = 1
+last_ok = "2026-08-12T11:28:05.920Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "fill_postal_code_fallback"
+target = "the Postal code field"
+last_seen = "2026-08-12T11:28:06.804Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|1avvvby;struct:/window-shop-dovid-test/checkout|4jasgd"
+
+[[targets.strategies]]
+kind = "label"
+selector = "[placeholder=\"Enter postal code*\"]"
+greens = 1
+last_ok = "2026-08-12T11:28:06.804Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "go_to_checkout"
+target = "the Go to checkout button in the cart drawer"
+last_seen = "2026-08-12T11:27:55.047Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|cemvrz;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|121aik1"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='cart-checkout-button']"
+greens = 1
+last_ok = "2026-08-12T11:27:55.047Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "open_cart"
+target = "the shopping cart button in the header"
+last_seen = "2026-08-12T11:27:50.787Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|10hk1a7;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|128fyvw"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='button-shopping-cart']"
+greens = 1
+last_ok = "2026-08-12T11:27:50.787Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "pay"
+target = "the Pay button"
+last_seen = "2026-08-12T11:28:16.288Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|17vwlkf;struct:/window-shop-dovid-test/checkout|1faoodx"
+
+[[targets.strategies]]
+kind = "css"
+selector = "button.adyen-checkout__button--pay"
+greens = 1
+last_ok = "2026-08-12T11:28:16.288Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "select_address_suggestion"
+target = ".MuiPopper-root button; the first address suggestion in the autocomplete dropdown"
+last_seen = "2026-08-12T11:28:04.936Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|ureaw5;struct:/window-shop-dovid-test/checkout|1aj40rl"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:1 Tottenham Court Road, Bedford Avenue, London, UK"
+greens = 1
+last_ok = "2026-08-12T11:28:04.936Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1 Alfred Mews, Tottenham Court Road, London, UK\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1 Tottenham Court Road, Bedford Avenue, London, UK\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1 Tottenham Court, Jersey City, NJ, USA\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets]]
+step = "select_shipping"
+target = "the Standard Shipping (Free Shipping) delivery option"
+last_seen = "2026-08-12T11:28:10.040Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/checkout|zps2c8;struct:/window-shop-dovid-test/checkout|1bdmc9v"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:radio:Standard Shipping (Free Shipping), Standard delivery, FREE"
+greens = 1
+last_ok = "2026-08-12T11:28:10.040Z"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"1. Checkout details\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"2. Shipping\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"3. Payment\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apple Pay\""
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Apply\""
+greens = 0
+
+[[targets]]
+step = "select_shipping_region"
+target = "the United Kingdom option in the region picker"
+last_seen = "2026-08-12T11:27:45.915Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|a978ii;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|qagblj"
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:United Kingdom"
+greens = 1
+last_ok = "2026-08-12T11:27:45.915Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "select_size"
+target = "the M size option on the product card"
+last_seen = "2026-08-12T11:27:47.604Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|n5h7uu;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|dkprzm"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='pdp-controls-size']:nth-of-type(3)"
+greens = 1
+last_ok = "2026-08-12T11:27:47.604Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0

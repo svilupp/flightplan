@@ -303,6 +303,47 @@ describe("MockDriver — signatures + screenshots", () => {
   });
 });
 
+describe('MockDriver — evalInFrame (do = "eval" escape hatch)', () => {
+  test("is present without any scripting (required on the Driver interface) and defaults to ok:true", async () => {
+    const d = new MockDriver();
+    const result = await d.evalInFrame({ script: "return 1;" });
+    expect(result).toEqual({ ok: true, value: true });
+    expect(d.callsTo("evalInFrame")).toHaveLength(1);
+    expect(d.callsTo("evalInFrame")[0]?.args[0]).toEqual({ script: "return 1;" });
+  });
+
+  test("setEvalResult overrides the default; enqueueEvalResult is one-shot FIFO before it", async () => {
+    const d = new MockDriver()
+      .setEvalResult({ ok: true, value: "default" })
+      .enqueueEvalResult({ ok: true, value: "first" });
+    expect(await d.evalInFrame({ script: "x" })).toEqual({ ok: true, value: "first" });
+    expect(await d.evalInFrame({ script: "x" })).toEqual({ ok: true, value: "default" });
+  });
+
+  test("enqueueEvalError makes the next call reject, then falls back to the default", async () => {
+    const d = new MockDriver().enqueueEvalError(new Error("boom"));
+    await expect(d.evalInFrame({ script: "x" })).rejects.toThrow("boom");
+    expect(await d.evalInFrame({ script: "x" })).toEqual({ ok: true, value: true });
+  });
+
+  test("onEval takes precedence and receives the full opts + a monotonic call index", async () => {
+    const d = new MockDriver().onEval((opts, callIndex) => ({
+      ok: true,
+      value: `${opts.frame ?? "main"}:${callIndex}`,
+    }));
+    const r1 = await d.evalInFrame({ frame: "iframe#card", script: "x", args: { a: 1 } });
+    expect(r1.value).toBe("iframe#card:0");
+  });
+
+  test("reset() clears eval queues/providers but keeps the configured default", async () => {
+    const d = new MockDriver()
+      .setEvalResult({ ok: true, value: "kept" })
+      .enqueueEvalResult({ ok: true, value: "one-shot" });
+    d.reset();
+    expect(await d.evalInFrame({ script: "x" })).toEqual({ ok: true, value: "kept" });
+  });
+});
+
 describe("MockDriver — ref map round-trip", () => {
   test("importRefMap then exportRefMap returns a copy", () => {
     const d = new MockDriver();

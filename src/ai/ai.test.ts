@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AiCallEvent } from "../artifacts/events.ts";
-import type { Config } from "../config/types.ts";
+import type { Config, ModelRole } from "../config/types.ts";
 import {
   MockDriver,
   makeFailureBatch,
@@ -21,6 +21,7 @@ import type { AiJudgeAssertion, Step } from "../flow/types.ts";
 import type { ResolveContext, StepExecution } from "../ladder/index.ts";
 import { resolveStep } from "../ladder/orchestrator.ts";
 import type { AdvisoryVerdict } from "../types.ts";
+import { MODEL_ROLES } from "../types.ts";
 import { BudgetExceededError } from "./budget.ts";
 import { DEFAULT_TIMEOUT_MS_BY_ROLE } from "./call.ts";
 import { DEFAULT_MODEL_REGISTRY, resolveRegistry } from "./registry.ts";
@@ -525,6 +526,64 @@ describe("registry — config overriding only resolver.model keeps the rest of t
     expect(reg.resolver.model).toBe("deepseek/deepseek-v4-flash");
     expect(reg.vision.model).toBe("google/gemini-3-flash-preview");
     expect(reg.advisor.model).toBe("z-ai/glm-5.2");
+  });
+});
+
+describe("registry — [ai.models.default] seeds every role", () => {
+  test("a default.model applies to all 5 roles when no role overrides it", () => {
+    const reg = resolveRegistry({ ai: { models: { default: { model: "openai/gpt-5.6-luna" } } } });
+    for (const role of MODEL_ROLES) {
+      expect(reg[role].model).toBe("openai/gpt-5.6-luna");
+    }
+  });
+
+  test("an explicit role field beats the default field for that role only", () => {
+    const reg = resolveRegistry({
+      ai: {
+        models: {
+          default: { model: "openai/gpt-5.6-luna" },
+          resolver: { model: "custom/resolver-x" },
+        },
+      },
+    });
+    expect(reg.resolver.model).toBe("custom/resolver-x");
+    expect(reg.vision.model).toBe("openai/gpt-5.6-luna");
+    expect(reg.advisor.model).toBe("openai/gpt-5.6-luna");
+  });
+
+  test("fields the default block does not set fall through to the built-ins", () => {
+    const reg = resolveRegistry({ ai: { models: { default: { model: "openai/gpt-5.6-luna" } } } });
+    // pricing/fallbacks untouched by `default` → still the per-role built-in values.
+    expect(reg.resolver.pricing).toEqual(DEFAULT_MODEL_REGISTRY.resolver.pricing);
+    expect(reg.resolver.fallbacks).toEqual(DEFAULT_MODEL_REGISTRY.resolver.fallbacks);
+    expect(reg.vision.pricing).toEqual(DEFAULT_MODEL_REGISTRY.vision.pricing);
+  });
+
+  test("default.fallbacks = [] wipes the built-in fallbacks for every role not overriding it", () => {
+    const reg = resolveRegistry({
+      ai: { models: { default: { model: "openai/gpt-5.6-luna", fallbacks: [] } } },
+    });
+    for (const role of MODEL_ROLES) {
+      expect(reg[role].fallbacks).toEqual([]);
+    }
+  });
+
+  test("a role can override just pricing and still inherit default's model", () => {
+    // `vision` here has no `model` (only pricing) — not TOML-authorable via the strict
+    // schema (model is required per role), but valid at the mergeRole/resolveRegistry level,
+    // which is what this test exercises directly.
+    const visionPricingOnly = { pricing: { in: 9, out: 9 } } as unknown as ModelRole;
+    const reg = resolveRegistry({
+      ai: {
+        models: {
+          default: { model: "openai/gpt-5.6-luna", fallbacks: [] },
+          vision: visionPricingOnly,
+        },
+      },
+    });
+    expect(reg.vision.model).toBe("openai/gpt-5.6-luna");
+    expect(reg.vision.fallbacks).toEqual([]);
+    expect(reg.vision.pricing).toEqual({ in: 9, out: 9 });
   });
 });
 

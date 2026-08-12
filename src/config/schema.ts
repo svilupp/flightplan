@@ -33,6 +33,13 @@ export const ModelRoleSchema = z
  * The `[ai.models]` registry: one entry per named role. All optional (merged key-by-key).
  * `planner` (cheap) + `planner_capable` (escalation-only, UNPROVEN) back the L5 path-repair planner
  * (PLAN_v003 v003-6); override them via `[ai.models.planner]` / `[ai.models.planner_capable]`.
+ *
+ * `default` is a reserved, non-role key: `[ai.models.default]` sets fallback values applied to
+ * EVERY role (resolver/advisor/vision/planner/planner_capable) before the role's own explicit
+ * fields are applied. Precedence per field is: explicit role field > `default` field > built-in
+ * DEFAULT_MODEL_REGISTRY[role] field (see `resolveRegistry` in src/ai/registry.ts). `default` is
+ * never itself a role — it never appears in `MODEL_ROLES`, `ResolvedRegistry`, cost aggregation,
+ * or timeout lookups.
  */
 export const ModelRegistrySchema = z
   .object({
@@ -41,6 +48,7 @@ export const ModelRegistrySchema = z
     vision: ModelRoleSchema.optional(),
     planner: ModelRoleSchema.optional(),
     planner_capable: ModelRoleSchema.optional(),
+    default: ModelRoleSchema.optional(),
   })
   .strict();
 
@@ -48,9 +56,17 @@ export const ModelRegistrySchema = z
 // [ai] — provider, key env, budgets, model registry
 // ---------------------------------------------------------------------------
 
+/**
+ * Supported AI transports (Section 2, PLAN update): `"openrouter"` (default) routes every model
+ * through OpenRouter slugs; `"google"` / `"openai"` route directly to the native `@ai-sdk/google` /
+ * `@ai-sdk/openai` providers, in which case registry model ids are the PROVIDER'S OWN ids (e.g.
+ * `gemini-3-pro`, `gpt-5.6-luna`), not OpenRouter slugs.
+ */
+export const AI_PROVIDERS = ["openrouter", "google", "openai"] as const;
+
 export const AiConfigSchema = z
   .object({
-    provider: z.string().min(1).optional(),
+    provider: z.enum(AI_PROVIDERS).optional(),
     api_key_env: z.string().min(1).optional(),
     // budgets may live under [ai] (global) and/or [run] (flow-local). Both are allowed.
     max_model_calls: z.number().int().nonnegative().optional(),

@@ -295,7 +295,14 @@ export async function actOnPick(
   // ref at all we emit just the selector (never `ref:undefined`).
   const selectors = chosen.ref ? [`ref:${chosen.ref}`, chosen.selector] : [chosen.selector];
   const batchStep = buildBatchStep(step, action, selectors);
-  const dispatched = await dispatchResolved(ctx.driver, [batchStep], { onFail: "stop" });
+  const dispatched = await dispatchResolved(
+    ctx.driver,
+    [batchStep],
+    { onFail: "stop" },
+    {
+      allowed: true,
+    },
+  );
   const sr = dispatched.stepResult;
 
   const succeeded =

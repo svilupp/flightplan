@@ -1,0 +1,528 @@
+# Flightplan flow — production E2E checkout test on the "window-shop-dovid-test" agentic
+# storefront (UAT: https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test).
+#
+# Navigates directly to a known product's chat/PDP URL, picks a size, adds to cart, goes to
+# checkout, fills checkout/shipping/payment details, pays with an Adyen test card, and asserts
+# the "Payment Successful!" screen. `[config.ai].max_model_calls = 0` on the mutating happy path
+# keeps resolution deterministic; a small non-zero cap on optional overlay steps (see below).
+#
+# Notable non-obvious selectors:
+#   - The PDP size selector renders one button per size, all sharing
+#     `[data-testid='pdp-controls-size']` with no distinguishing attribute beyond visible text, so
+#     `:nth-of-type` (1=XS 2=S 3=M 4=L 5=XL) is the disambiguator; `size_index` is an input so the
+#     size can be changed without touching step targets.
+#   - The address field is backed by a Google Places autocomplete widget; suggestions render as
+#     `button` elements with the full suggestion string as their accessible name.
+#   - Payment fields are Adyen Secured Fields inside cross-origin iframes titled "Iframe for card
+#     number" / "Iframe for expiry date" / "Iframe for security code". Each iframe contains a
+#     hidden `#shiftTabField` FIRST, so a bare `input` selector hits the wrong element — the real
+#     field is `input[id^='adyen-checkout-encrypted...']`.
+
+version = 1
+kind = "flow"
+id = "swap.window_shop_checkout_oopif"
+description = "Production checkout flow: adds a jacket to cart, fills checkout/shipping/payment, and pays with an Adyen test card on the window-shop-dovid-test UAT storefront."
+
+[inputs]
+base_url = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test"
+# Navigate straight to the product's chat/PDP URL instead of driving the chat-search composer.
+product_url = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz"
+product_title = "Olive Green Jacket"
+# 3 = M in the PDP size list (1=XS 2=S 3=M 4=L 5=XL).
+size_index = "3"
+
+customer_name = "Jan Siml"
+customer_email = "jan@swap-commerce.com"
+# `fill` REPLACES the whole field value rather than appending after the pre-seeded "+44 " prefix,
+# so the full E.164-style number (with its own "+44") is supplied directly.
+customer_phone = "+447881122333"
+# Typed into the Google-Places-backed address field; the flow accepts whichever suggestion the
+# widget offers first (see `select_address_suggestion`).
+address_query = "1 Tottenham Court"
+
+card_number = "5555444433331111"
+card_holder = "Consumer"
+card_expiry = "0330"
+card_cvc = "737"
+
+[run]
+max_steps = 150
+assertions = "eager"
+assert_timeout_ms = 8000
+
+# Pin the L5 path-repair planner OFF for a deterministic, byte-stable happy path.
+[config.plan]
+enabled = false
+
+# Every target below has a durable CSS/attribute selector as its FIRST locator, so most steps
+# resolve at L0/L1 without a model call. The optional onboarding-overlay presence checks need a
+# small non-zero AI budget to escalate before concluding an overlay is absent (a zero budget turns
+# an absent overlay into a hard, fail-closed `budget exceeded` runner error instead of a normal
+# step failure); the mutating happy path never touches this budget.
+[config.ai]
+provider = "openai"
+max_model_calls = 12
+
+[config.ai.models.resolver]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+[config.ai.models.vision]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+[config.ai.models.advisor]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+[config.ai.models.planner]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+[config.ai.models.planner_capable]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+# xhigh reasoning routinely exceeds the few-second default per-role AI-call ceilings.
+[config.timeouts]
+ai_call_ms = 90000
+
+# Launch a fresh, dedicated Chrome instance rather than attaching to an ambient CDP session.
+[config.connect]
+mode = "launch"
+headless = false
+
+[config.browser]
+record = true
+
+# --------------------------------------------------------------------------------------------
+# 0. Navigate straight to the product page and dismiss whatever onboarding overlays appear.
+# --------------------------------------------------------------------------------------------
+
+[[steps]]
+id = "open_product"
+do = "goto"
+url = "${inputs.product_url}"
+
+# The onboarding overlays below are each OPTIONAL and may appear late: on a fresh browser profile
+# the sequence is cookie consent -> a "welcome guide" tour -> a "Where are you shopping from?"
+# region picker; on a returning profile none of them render at all. Each overlay's dismiss click
+# is gated behind its own precondition-only `assert` step (never a bare click) that polls for the
+# overlay's real marker element, since `on_fail` is only safe to jump on from an assert step (no
+# dispatch has happened yet). This flow must never click a suggested-prompt/`button-chip` element.
+[[steps]]
+id = "cookie_modal_present"
+do = "assert"
+on_fail = { goto = "welcome_guide_present", max = 1 }
+
+[[steps.assert]]
+type = "visible"
+text = "Cookie preferences"
+purpose = "precondition"
+timeout_ms = 8000
+
+[[steps]]
+id = "accept_cookies"
+do = "click"
+effect = "idempotent"
+target = ["role:button:Accept all", "the Accept all button in the cookie consent banner"]
+
+[[steps.assert]]
+type = "hidden"
+text = "Cookie preferences"
+purpose = "postcondition"
+timeout_ms = 4000
+
+[[steps]]
+id = "welcome_guide_present"
+do = "assert"
+on_fail = { goto = "shipping_region_present", max = 1 }
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='welcome-guide-dismiss']"
+purpose = "precondition"
+timeout_ms = 8000
+
+[[steps]]
+id = "dismiss_welcome_guide"
+do = "click"
+effect = "idempotent"
+target = ["[data-testid='welcome-guide-dismiss']", "the Skip button on the welcome guide overlay"]
+
+[[steps.assert]]
+type = "hidden"
+selector = "[data-testid='welcome-guide-dismiss']"
+purpose = "postcondition"
+timeout_ms = 4000
+
+[[steps]]
+id = "shipping_region_present"
+do = "assert"
+on_fail = { goto = "product_page_ready", max = 1 }
+
+[[steps.assert]]
+type = "visible"
+text = "Where are you shopping from?"
+purpose = "precondition"
+timeout_ms = 8000
+
+[[steps]]
+id = "select_shipping_region"
+do = "click"
+effect = "idempotent"
+target = ["role:button:United Kingdom", "the United Kingdom option in the region picker"]
+
+[[steps.assert]]
+type = "hidden"
+text = "Where are you shopping from?"
+purpose = "postcondition"
+timeout_ms = 4000
+
+[[steps]]
+id = "product_page_ready"
+do = "assert"
+
+[[steps.assert]]
+type = "visible"
+text = "${inputs.product_title}"
+purpose = "postcondition"
+timeout_ms = 10000
+
+[[steps.assert]]
+type = "visible"
+text = "Add to cart"
+purpose = "postcondition"
+timeout_ms = 10000
+
+# --------------------------------------------------------------------------------------------
+# 2. Pick a size and add the product to the cart.
+# --------------------------------------------------------------------------------------------
+
+[[steps]]
+id = "expand_size_selector"
+do = "click"
+effect = "idempotent"
+target = [
+  "[data-testid='pdp-controls-tab-variant']",
+  "the color and size selector toggle on the product card",
+]
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='pdp-controls-size']"
+purpose = "postcondition"
+timeout_ms = 4000
+
+[[steps]]
+id = "select_size"
+do = "click"
+effect = "idempotent"
+target = [
+  "[data-testid='pdp-controls-size']:nth-of-type(${inputs.size_index})",
+  "the M size option on the product card",
+]
+
+[[steps.assert]]
+type = "text"
+text = "Size: M"
+match = "contains"
+purpose = "postcondition"
+timeout_ms = 4000
+
+[[steps]]
+id = "add_to_cart"
+do = "click"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["role:button:Add to cart", "the Add to cart button on the product card"]
+
+[[steps.assert]]
+type = "visible"
+text = "Added to cart"
+purpose = "postcondition"
+timeout_ms = 8000
+
+[[steps.assert]]
+type = "visible"
+text = "View cart (1)"
+purpose = "postcondition"
+timeout_ms = 8000
+
+# --------------------------------------------------------------------------------------------
+# 3. Open the cart drawer and go to checkout.
+# --------------------------------------------------------------------------------------------
+
+[[steps]]
+id = "wait_for_toast_settle"
+do = "wait"
+ms = 1500
+
+[[steps]]
+id = "open_cart"
+do = "click"
+effect = "idempotent"
+target = ["[data-testid='button-shopping-cart']", "the shopping cart button in the header"]
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='cart-checkout-button']"
+purpose = "postcondition"
+timeout_ms = 6000
+
+[[steps]]
+id = "go_to_checkout"
+do = "click"
+effect = "idempotent"
+target = ["[data-testid='cart-checkout-button']", "the Go to checkout button in the cart drawer"]
+
+[[steps.assert]]
+type = "url"
+url = "${inputs.base_url}/checkout"
+match = "origin_path"
+purpose = "postcondition"
+timeout_ms = 8000
+
+[[steps.assert]]
+type = "visible"
+selector = "[placeholder=\"Enter your full name*\"]"
+purpose = "postcondition"
+timeout_ms = 8000
+
+# --------------------------------------------------------------------------------------------
+# 4. Checkout details: name, address (via the Places autocomplete), email, phone.
+# --------------------------------------------------------------------------------------------
+
+[[steps]]
+id = "fill_full_name"
+do = "fill"
+effect = "idempotent"
+target = ["[placeholder=\"Enter your full name*\"]", "the Full name field"]
+value = "${inputs.customer_name}"
+
+# This is a test order, so the address only needs to be plausible: type a short prefix and accept
+# whichever Places suggestion the widget offers first.
+[[steps]]
+id = "fill_address"
+do = "fill"
+effect = "idempotent"
+target = ["[placeholder=\"Enter street name and number*\"]", "the Address field"]
+value = "${inputs.address_query}"
+
+[[steps.assert]]
+type = "visible"
+text = "London"
+purpose = "postcondition"
+timeout_ms = 6000
+
+# Each Places suggestion is a plain `<button>` inside a `.MuiPopper-root` dropdown with no shared
+# testid, so the first one is targeted positionally. Clicking a suggestion (rather than typing a
+# full address) is also what reliably autofills City/Postal Code below.
+[[steps]]
+id = "select_address_suggestion"
+do = "click"
+effect = "idempotent"
+target = [".MuiPopper-root button", "the first address suggestion in the autocomplete dropdown"]
+
+[[steps.assert]]
+type = "text"
+text = "United Kingdom"
+match = "contains"
+purpose = "postcondition"
+timeout_ms = 6000
+
+[[steps]]
+id = "fill_email"
+do = "fill"
+effect = "idempotent"
+target = ["css:input[type='email']", "the Email address field"]
+value = "${inputs.customer_email}"
+
+[[steps]]
+id = "fill_phone"
+do = "fill"
+effect = "idempotent"
+target = ["css:input[type='tel']", "the Phone number field"]
+value = "${inputs.customer_phone}"
+
+# The address suggestion above autofills City/Postal Code in the common case, but there is no
+# conditional fill in the step schema, so both are always (idempotently) re-filled with the
+# known-good values as a no-op-or-fallback. "Continue to shipping" stays disabled until both are
+# non-empty.
+[[steps]]
+id = "fill_city_fallback"
+do = "fill"
+effect = "idempotent"
+target = ["[placeholder=\"Enter city*\"]", "the City field"]
+value = "London"
+
+[[steps]]
+id = "fill_postal_code_fallback"
+do = "fill"
+effect = "idempotent"
+target = ["[placeholder=\"Enter postal code*\"]", "the Postal code field"]
+value = "WC1B 3AU"
+
+[[steps]]
+id = "address_ready"
+do = "assert"
+
+[[steps.assert]]
+type = "state"
+state = "enabled"
+selector = "role:button:Continue to shipping"
+purpose = "precondition"
+timeout_ms = 6000
+
+[[steps]]
+id = "continue_to_shipping"
+do = "click"
+effect = "idempotent"
+target = ["role:button:Continue to shipping", "the Continue to shipping button"]
+
+[[steps.assert]]
+type = "visible"
+text = "Continue to Payment"
+purpose = "postcondition"
+timeout_ms = 8000
+
+# --------------------------------------------------------------------------------------------
+# 5. Shipping: pick the free standard option and continue to payment.
+# --------------------------------------------------------------------------------------------
+
+[[steps]]
+id = "select_shipping"
+do = "click"
+effect = "idempotent"
+target = [
+  "role:radio:Standard Shipping (Free Shipping), Standard delivery, FREE",
+  "the Standard Shipping (Free Shipping) delivery option",
+]
+
+[[steps]]
+id = "continue_to_payment"
+do = "click"
+effect = "idempotent"
+target = ["role:button:Continue to Payment", "the Continue to Payment button"]
+
+[[steps.assert]]
+type = "visible"
+text = "Card number"
+purpose = "postcondition"
+timeout_ms = 8000
+
+# --------------------------------------------------------------------------------------------
+# 6. Payment: Adyen Secured Fields, each a cross-origin iframe. The hidden `#shiftTabField` is
+#    always the FIRST input in each iframe, so the real field is targeted by its
+#    `adyen-checkout-encrypted*` id prefix, never a bare `input` selector. Fields live in a
+#    cross-origin iframe, so they must be targeted with `css:` selectors while framed via
+#    `switch_frame`.
+# --------------------------------------------------------------------------------------------
+
+[[steps]]
+id = "enter_card_number_frame"
+do = "switch_frame"
+effect = "observe"
+target = ["css:iframe[title='Iframe for card number']", "the card number payment iframe"]
+
+[[steps]]
+id = "fill_card_number"
+do = "fill"
+effect = "idempotent"
+secret = true
+target = [
+  "css:input[id^='adyen-checkout-encryptedCardNumber']",
+  "the card number field inside the payment iframe",
+]
+value = "${inputs.card_number}"
+
+[[steps]]
+id = "fill_cardholder_name"
+do = "fill"
+effect = "idempotent"
+target = ["css:#acNmField", "the cardholder name field inside the payment iframe"]
+value = "${inputs.card_holder}"
+
+[[steps]]
+id = "leave_card_number_frame"
+do = "switch_to_main"
+effect = "observe"
+
+[[steps]]
+id = "enter_expiry_frame"
+do = "switch_frame"
+effect = "observe"
+target = ["css:iframe[title='Iframe for expiry date']", "the expiry date payment iframe"]
+
+[[steps]]
+id = "fill_expiry"
+do = "fill"
+effect = "idempotent"
+# Adyen's masked expiry field auto-inserts a "/" separator ("0330" -> "03/30"), so verify="off"
+# skips the value-echo check rather than fighting the formatter.
+verify = "off"
+target = [
+  "css:input[id^='adyen-checkout-encryptedExpiryDate']",
+  "the expiry date field inside the payment iframe",
+]
+value = "${inputs.card_expiry}"
+
+[[steps]]
+id = "leave_expiry_frame"
+do = "switch_to_main"
+effect = "observe"
+
+[[steps]]
+id = "enter_cvc_frame"
+do = "switch_frame"
+effect = "observe"
+target = ["css:iframe[title='Iframe for security code']", "the security code payment iframe"]
+
+[[steps]]
+id = "fill_cvc"
+do = "fill"
+effect = "idempotent"
+secret = true
+target = [
+  "css:input[id^='adyen-checkout-encryptedSecurityCode']",
+  "the security code field inside the payment iframe",
+]
+value = "${inputs.card_cvc}"
+
+[[steps]]
+id = "leave_cvc_frame"
+do = "switch_to_main"
+effect = "observe"
+
+[[steps]]
+id = "leave_cvc_frame_settle"
+do = "wait"
+ms = 300
+
+[[steps]]
+id = "payment_ready"
+do = "assert"
+
+[[steps.assert]]
+type = "state"
+state = "enabled"
+selector = "css:button.adyen-checkout__button--pay"
+purpose = "postcondition"
+timeout_ms = 30000
+
+# The final at-most-once mutation: submit payment. No self-retry — a click that dispatches must
+# never be re-entered.
+[[steps]]
+id = "pay"
+do = "click"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["css:button.adyen-checkout__button--pay", "the Pay button"]
+
+[[steps.assert]]
+type = "text"
+selector = "css:h2"
+text = "Payment Successful!"
+match = "exact"
+purpose = "postcondition"
+timeout_ms = 20000

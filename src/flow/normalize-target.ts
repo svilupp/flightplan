@@ -80,3 +80,36 @@ export function describeTarget(target: string | readonly string[] | undefined): 
   const n = normalizeTarget(target);
   return n.nl ?? n.selectors[0];
 }
+
+/**
+ * The stripped selector when `target` carries EXACTLY ONE explicit `css:`-prefixed (case-
+ * insensitive) entry and NO OTHER selector-classed entry — the frame-bypass gate (cross-origin
+ * `switch_frame` context, PLAN.md ladder-in-frame note). A trailing natural-language fallback
+ * entry (the normal authoring convention — "try this selector, else find this") is IGNORED here
+ * on purpose: the bypass never consults it (there is no ladder to hand it to while framed), but
+ * its mere presence must not disqualify an otherwise-unambiguous `css:` target, since that
+ * convention is used throughout the flows this bypass targets (e.g. `checkout-oopif.toml`'s
+ * payment steps). Deliberately narrower than `normalizeTarget().selectors`: a bare `[attr=val]`
+ * (no `css:` prefix) or a `ref:`/`role:`/`text:` entry does NOT qualify (browser-pilot's OOPIF
+ * actions have only been proven against a genuine CSS selector), and MULTIPLE selector-classed
+ * entries (however classed) do not qualify either — a frame bypass has no ladder to disambiguate
+ * between them. Returns `undefined` when `target` does not qualify.
+ */
+export function cssOnlyTarget(target: string | readonly string[] | undefined): string | undefined {
+  if (target === undefined) return undefined;
+  const entries = typeof target === "string" ? [target] : target;
+  let cssSelector: string | undefined;
+  let selectorCount = 0;
+  for (const raw of entries) {
+    const entry = raw.trim();
+    if (entry.length === 0) continue;
+    if (classifyLocator(entry) === "nl") continue; // ignored — no ladder to hand it to anyway.
+    selectorCount += 1;
+    if (/^css:/i.test(entry)) {
+      const stripped = entry.slice(entry.indexOf(":") + 1).trim();
+      if (stripped.length > 0) cssSelector = stripped;
+    }
+  }
+  if (selectorCount !== 1 || cssSelector === undefined) return undefined;
+  return cssSelector;
+}

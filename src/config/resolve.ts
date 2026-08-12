@@ -15,9 +15,12 @@
 //
 //   MERGEABLE (deep-merged key-by-key; a later layer adds/overrides individual keys but
 //   does NOT wipe sibling keys a lower layer set):
-//     - `ai.models` registry         — merged per role (resolver/advisor/vision), and
-//                                       within a role each field (model/fallbacks/pricing)
-//                                       is replaced wholesale if the later layer sets it.
+//     - `ai.models` registry         — merged per role (resolver/advisor/vision/planner/
+//                                       planner_capable/default), and within a role each field
+//                                       (model/fallbacks/pricing) is replaced wholesale if the
+//                                       later layer sets it. `default` is a reserved non-role
+//                                       key merged the same way; it is applied by resolveRegistry
+//                                       (src/ai/registry.ts) as a fallback layer for every role.
 //     - `ai` scalar fields           — provider, api_key_env, etc. merged key-by-key.
 //     - `browser`, `telemetry.logfire`, `artifacts`, `redaction` — merged key-by-key.
 //     - `connect`                    — see special-case note below.
@@ -33,7 +36,7 @@
 //   replaced WHOLESALE whenever a later layer sets it (the later layer's `mode` and all of
 //   its fields win); never partially merged across differing modes.
 
-import { ConfigSchema } from "./schema.ts";
+import { type AI_PROVIDERS, ConfigSchema } from "./schema.ts";
 import type { Config, ModelRegistry, ModelRole, ResolvedConfig, RunLimits } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -84,11 +87,24 @@ export const DEFAULT_TIMEOUTS = {
 } as const;
 
 /** Default AI provider/key wiring (PROPOSAL "Hard decisions"). Models stay unset by default
- * (the registry is config-driven; PLAN.md §8 risk #4 — never hardcode model ids). */
+ * (the registry is config-driven; PLAN.md §8 risk #4 — never hardcode model ids).
+ *
+ * `api_key_env` is deliberately NOT defaulted here: it is provider-DEPENDENT
+ * ({@link DEFAULT_API_KEY_ENV_BY_PROVIDER}), and `BUILTIN_DEFAULTS` is the LOWEST merge layer, so a
+ * value set here would already occupy the key before a user's `provider` override is applied and
+ * could never be overridden by the provider-dependent default. `resolveConfigWithDefaults` fills it
+ * in AFTER all layers are merged, keyed off the FINAL resolved `provider`, and only when the user
+ * did not set `api_key_env` explicitly. */
 export const DEFAULT_AI = {
   provider: "openrouter",
-  api_key_env: "OPENROUTER_API_KEY",
 } as const;
+
+/** The default `[ai].api_key_env` per `[ai].provider`, applied post-merge (see {@link DEFAULT_AI}). */
+export const DEFAULT_API_KEY_ENV_BY_PROVIDER: Record<(typeof AI_PROVIDERS)[number], string> = {
+  openrouter: "OPENROUTER_API_KEY",
+  google: "GOOGLE_GENERATIVE_AI_API_KEY",
+  openai: "OPENAI_API_KEY",
+};
 
 /** Default browser wiring: attach to an existing window (PROPOSAL "Global config example"). */
 export const DEFAULT_BROWSER = {
@@ -144,7 +160,14 @@ function mergeModelRegistry(
   if (!base) return over;
   if (!over) return base;
   const out: ModelRegistry = { ...base };
-  for (const role of ["resolver", "advisor", "vision", "planner", "planner_capable"] as const) {
+  for (const role of [
+    "resolver",
+    "advisor",
+    "vision",
+    "planner",
+    "planner_capable",
+    "default",
+  ] as const) {
     const o = over[role];
     if (o === undefined) continue;
     const b = base[role];
@@ -216,8 +239,11 @@ export function resolveConfigWithDefaults(layers: ReadonlyArray<Config>): Resolv
   const merged = resolveConfig([BUILTIN_DEFAULTS, ...layers]);
   // Re-validate the merged shape (defense-in-depth; cheap, and catches a bad CLI override).
   const parsed = ConfigSchema.parse(merged);
+  const provider = parsed.ai?.provider ?? DEFAULT_AI.provider;
+  const apiKeyEnv = parsed.ai?.api_key_env ?? DEFAULT_API_KEY_ENV_BY_PROVIDER[provider];
   return {
     ...parsed,
+    ai: { ...parsed.ai, provider, api_key_env: apiKeyEnv },
     run: parsed.run ?? { ...DEFAULT_RUN_LIMITS },
     redaction: parsed.redaction ?? { ...DEFAULT_REDACTION },
     // The planner is disabled-by-default (opt-in): a layer may set `plan.enabled = true`, but when

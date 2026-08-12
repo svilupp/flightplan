@@ -215,7 +215,14 @@ export async function resolveL0(
   }
   const orderedSelectors = acceptable;
   const batchStep = buildBatchStep(step, action, orderedSelectors);
-  const dispatched = await dispatchResolved(ctx.driver, [batchStep], { onFail: "stop" });
+  const dispatched = await dispatchResolved(
+    ctx.driver,
+    [batchStep],
+    { onFail: "stop" },
+    {
+      allowed: true,
+    },
+  );
   const stepResult = dispatched.stepResult;
   if (!stepResult) {
     return replayMiss("L0 miss: cached recipe returned no step result", dispatched);

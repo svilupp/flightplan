@@ -54,7 +54,9 @@ From the Flightplan checkout:
 bun install
 ```
 
-Record the resolved package version and lockfile state in the run notes.
+Record the resolved package version and lockfile state in the run notes. The `emit` step verb
+requires browser-pilot >= 0.2.0 (`page.emitMessage`); confirm the installed version before authoring
+a flow that emits WebSocket commands.
 
 ### 3. Discover the application, then express it in Flightplan
 
@@ -110,6 +112,10 @@ For `at_most_once` steps:
 - preserve the original before-state when observing a retry boundary;
 - use a fixture/server ledger to count committed effects;
 - add fault injection after commit and prove observation rescues the result without redispatch.
+
+`emit` has no resolution, ladder, or lock, so "resolve and veto ambiguity before dispatch" is replaced
+by browser-pilot's own ambiguous-socket rejection: the optional `match` glob must select exactly one
+open WebSocket, or the emit fails before anything is sent.
 
 For read-only flows, prove non-mutation with both unchanged business state and a zero-entry ledger.
 

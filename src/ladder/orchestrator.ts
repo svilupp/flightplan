@@ -15,10 +15,11 @@
 // classifyL4}` (see `AiHooks` in `types.ts`). This file imports NOTHING from `ai/`. Phase 4
 // wires the AI tiers in by supplying `ctx.ai` — no change to this file's core is needed.
 
+import { cssOnlyTarget, normalizeTarget } from "../flow/normalize-target.ts";
 import type { Step } from "../flow/types.ts";
-import { mayHaveDispatched } from "./dispatch.ts";
+import { dispatchResolved, mayHaveDispatched } from "./dispatch.ts";
 import { resolveL0 } from "./l0.ts";
-import { type L1Options, resolveL1 } from "./l1.ts";
+import { actionVerbForStep, buildBatchStep, type L1Options, resolveL1 } from "./l1.ts";
 import { attemptRepair, type RepairOptions } from "./repair.ts";
 import type {
   AiHooks,
@@ -110,6 +111,94 @@ export async function resolveStep(
 ): Promise<LadderResult> {
   const now = ctx.now ?? Date.now;
   const attempts: ResolutionAttempt[] = [];
+
+  // --- Cross-origin frame bypass (switch_frame context) ------------------------------------
+  // browser-pilot 0.2.1 can dispatch fill/click/select (and more) inside a cross-origin OOPIF
+  // once `switchToFrame` has entered it, but `snapshot`/`resolveAll` throw `assertOopifUnsupported`
+  // there — so the normal ladder (which ALWAYS opens with a snapshot) can never resolve a step
+  // while a frame is active. `driver.currentFrame()` is the single source of truth for "are we
+  // inside a switched frame right now" (set by `switchToFrame`/cleared by `switchToMain`/`goto` —
+  // see `Driver.currentFrame`'s doc). When it reports an active frame AND the step is a targeting
+  // verb, skip the ladder entirely: an explicit single `css:` target is dispatched straight to the
+  // driver (no snapshot, no ranking, no lock write-back — mirroring how `eval`/`emit` steps are
+  // ladder-exempt); anything else (a bare selector, `ref:`/`role:`/`text:`, or natural language)
+  // fails clean with a message pointing at `css:`, because AI resolution cannot see into the frame
+  // to pick a target for it.
+  // Narrow the bypass to genuine cross-origin frames when the driver can actually tell (Item 3):
+  // `isCrossOriginFrame()` is OPTIONAL and best-effort (see its doc in `driver/types.ts`) — browser-
+  // pilot exposes no PUBLIC signal for this today, so `BrowserPilotDriver` always reports `undefined`
+  // ("unknown") and the bypass keeps firing for EVERY framed context exactly as before (a same-origin
+  // iframe therefore still loses healing/lock write-back on the real driver — a known, documented
+  // limitation, not a silent one). A driver that CAN answer (e.g. `MockDriver` in tests, or a future
+  // browser-pilot release) narrows the bypass to `true` (definite OOPIF); `false` (definite same-
+  // origin) falls through to the normal ladder below, which snapshots/resolves/heals/locks exactly
+  // as it would outside a frame.
+  const crossOrigin =
+    ctx.driver.currentFrame() !== null ? ctx.driver.isCrossOriginFrame?.() : undefined;
+  if (ctx.driver.currentFrame() !== null && crossOrigin !== false) {
+    const verb = actionVerbForStep(step);
+    if (verb === "click" || verb === "fill" || verb === "select") {
+      const target = "target" in step ? step.target : undefined;
+      const selector = cssOnlyTarget(target);
+      if (selector !== undefined) {
+        // Explicit single `css:` target while framed → direct-dispatch, no snapshot, no ladder —
+        // but STILL through `dispatchResolved` (Item 2) so a framed action gets the same
+        // ActionReceipt/dispatch-state trace evidence as the normal ladder path, without
+        // reintroducing any snapshot/ranking/lock behavior (the dispatch policy stays the default
+        // `{ allowed: true }`; nothing above this call touches the driver).
+        const batchStep = buildBatchStep(step, verb, [selector]);
+        const dispatched = await dispatchResolved(ctx.driver, [batchStep], { onFail: "stop" });
+        const stepResult = dispatched.stepResult;
+        const ok =
+          stepResult?.success === true &&
+          stepResult.outcomeStatus !== "ambiguous" &&
+          dispatched.dispatchState !== "not_dispatched";
+        const exec: StepExecution = {
+          ok,
+          tier: "L1",
+          selectorUsed: selector,
+          strategy: "css",
+          escalate: false,
+          dispatchState: dispatched.dispatchState,
+          retrySafe: dispatched.retrySafe,
+          attempts: dispatched.attempts,
+          ...(dispatched.retryDecisionReason !== undefined
+            ? { retryDecisionReason: dispatched.retryDecisionReason }
+            : {}),
+          ...(dispatched.retryReason !== undefined ? { retryReason: dispatched.retryReason } : {}),
+          receipt: dispatched.receipt,
+          ...(ok
+            ? {}
+            : {
+                error:
+                  stepResult?.error ?? `${step.do} ${selector} failed inside the current frame`,
+              }),
+        };
+        return { execution: exec, attempts };
+      }
+      // Not a single `css:` target: a target carrying at least one real selector entry
+      // (`ref:`/`role:`/`text:`/bare `[attr]`/multiple selectors) still has a chance through the
+      // NORMAL ladder — L1 already relaxes its iframe mis-resolution guard while `currentFrame()`
+      // is set (same-origin iframes snapshot fine; a genuine cross-origin OOPIF will fail there
+      // exactly as it did before this change — unchanged behavior, no new capability claimed for
+      // it). Only a PURE natural-language target (no selector entries at all) is rejected up
+      // front: no AI/ladder tier can see into a frame to resolve free-text intent, and letting it
+      // fall through would just burn an expensive, guaranteed-to-fail climb before failing anyway.
+      const hasSelectorEntry = normalizeTarget(target).selectors.length > 0;
+      if (!hasSelectorEntry) {
+        const exec: StepExecution = {
+          ok: false,
+          tier: "L1",
+          escalate: false,
+          error:
+            `step ${step.id}: inside a frame context (after switch_frame), a natural-language-` +
+            "only target cannot be resolved — AI resolution can't see into a frame. Use an " +
+            "explicit `css:`-prefixed selector for this target.",
+        };
+        return { execution: exec, attempts };
+      }
+    }
+  }
 
   // --- AI-only baseline (`--start-tier l3`): skip L0 + L1 entirely, start at L3 ------------
   // No L0/L1 `ResolutionAttempt`s are recorded (they never ran) so a baseline run's trace.jsonl

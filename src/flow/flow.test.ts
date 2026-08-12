@@ -211,6 +211,47 @@ description = "d"
   });
 });
 
+// verify (fill-verification normalization mode): schema acceptance/rejection.
+describe("fill step verify option", () => {
+  function flowWith(stepToml: string): string {
+    return `
+version = 1
+kind = "flow"
+id = "x"
+description = "d"
+[[steps]]
+${stepToml}
+`;
+  }
+
+  test.each(["exact", "normalized", "off"])("accepts verify = %s on a fill step", (mode) => {
+    const { flow } = parseFlowFile(
+      flowWith(`id = "s1"\ndo = "fill"\ntarget = "field"\nvalue = "x"\nverify = "${mode}"`),
+      "ok.toml",
+    );
+    const step = flow.steps[0]!;
+    expect("verify" in step && step.verify).toBe(mode);
+  });
+
+  test("omitting verify leaves it undefined (default is applied at ladder dispatch time)", () => {
+    const { flow } = parseFlowFile(
+      flowWith('id = "s1"\ndo = "fill"\ntarget = "field"\nvalue = "x"'),
+      "ok.toml",
+    );
+    const step = flow.steps[0]!;
+    expect(step.do === "fill" ? step.verify : "n/a").toBeUndefined();
+  });
+
+  test("rejects an invalid verify value", () => {
+    expect(() =>
+      parseFlowFile(
+        flowWith('id = "s1"\ndo = "fill"\ntarget = "field"\nvalue = "x"\nverify = "bogus"'),
+        "bad.toml",
+      ),
+    ).toThrow(FlowValidationError);
+  });
+});
+
 // tier_hint (PLAN_v003 §4 v003-3): the vision-batch opt-in on targeting steps.
 describe("tier_hint = vision on targeting steps", () => {
   function flowWith(stepToml: string): string {

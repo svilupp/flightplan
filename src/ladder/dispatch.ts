@@ -58,6 +58,7 @@ export async function dispatchResolved(
 
   const result = normalizeBatchResult(await driver.batch(steps, opts));
   const stepResult = result.steps[0];
+
   if (!stepResult) {
     const retryReason = "driver returned no step result after dispatch was attempted";
     const retryDecisionReason: RetryDecisionReason = "missing_retry_metadata";

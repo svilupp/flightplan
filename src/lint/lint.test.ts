@@ -291,6 +291,36 @@ ${SCREENSHOT_STEP}`;
     const ids = result.diagnostics.map((x) => x.ruleId);
     expect(ids).not.toContain("assert/screenshot-needs-vision");
   });
+
+  test("clean when [config.ai.models.default] sets a model (covers vision via the default layer)", async () => {
+    const source = `version = 1
+kind = "flow"
+id = "x"
+description = "screenshot judge, default model"
+
+[config.ai.models.default]
+model = "openai/gpt-5.6-luna"
+${SCREENSHOT_STEP}`;
+    const result = await lintFlowFile("shot-default-model.toml", { sourceText: source });
+    const ids = result.diagnostics.map((x) => x.ruleId);
+    expect(ids).not.toContain("assert/screenshot-needs-vision");
+  });
+
+  test("still warns when the registry has neither vision nor a default.model", async () => {
+    const source = `version = 1
+kind = "flow"
+id = "x"
+description = "screenshot judge, default has no model"
+
+[config.ai.models.resolver]
+model = "openai/gpt-x"
+[config.ai.models.default]
+fallbacks = []
+${SCREENSHOT_STEP}`;
+    const result = await lintFlowFile("shot-default-no-model.toml", { sourceText: source });
+    const d = result.diagnostics.find((x) => x.ruleId === "assert/screenshot-needs-vision");
+    expect(d).toBeDefined();
+  });
 });
 
 describe("assert/end-state-unasserted", () => {

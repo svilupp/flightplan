@@ -21,7 +21,43 @@ bun run flightplan run examples/flows/wizard.toml --frozen --no-lock-write --jso
 The fixture server listens on `http://localhost:3000`. The example flows use the default CDP attach
 at `localhost:9222`, so start Chrome/Chromium with remote debugging enabled first, or add a
 `[config.connect]` block with `mode = "launch"`. Deterministic L0/L1 flows need no API key.
-AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY`.
+AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY` by default.
+
+The simplest way to pick a model is `[config.ai.models.default]`: it seeds every AI role (resolver,
+advisor, vision, planner, planner_capable) at once, so you don't repeat the same block per role:
+
+```toml
+[config.ai.models.default]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+```
+
+This is the recommended way to force a single model across the whole flow. Resolution per role is
+field-by-field: an explicit field in that role's own block wins, then the same field in `default`,
+then the built-in registry. Role blocks deep-merge over `default` — set `model` in `default` and
+override just `pricing` for one role, for example — but `fallbacks` arrays replace wholesale rather
+than merging. If `default` sets `model` but not `fallbacks`, roles still fall back to the built-in
+OpenRouter fallback slugs; set `fallbacks = []` explicitly in `default` when using a non-OpenRouter
+provider to avoid an unexpected fallback to an OpenRouter model id. Older flightplan versions reject
+`[config.ai.models.default]` as an unknown key (strict schema), so it is not forward-compatible with
+older CLIs.
+
+For advanced setups, keep per-role `[config.ai.models.<role>]` blocks — e.g. a cheap resolver with a
+stronger planner — or set `[config.ai] provider = "google" | "openai"` to route through
+`@ai-sdk/google` / `@ai-sdk/openai` instead (with `GOOGLE_GENERATIVE_AI_API_KEY` / `OPENAI_API_KEY`
+as the matching default key env, overridable via `api_key_env`); model ids in `[ai.models.*]` are
+then the provider's OWN ids, not OpenRouter slugs. Any model id may carry a `:effort` suffix
+(`minimal|low|medium|high|xhigh`), e.g. `"openai/gpt-5.6-luna:xhigh"`, to set the reasoning effort
+for that model (Google has no native `xhigh`; it maps to `high`). Example — Gemini with high
+reasoning, per-role:
+
+```toml
+[config.ai]
+provider = "google"          # uses GOOGLE_GENERATIVE_AI_API_KEY
+
+[config.ai.models.resolver]
+model = "gemini-3-pro:high"  # native Google model id + reasoning effort suffix
+```
 
 ## Install
 
@@ -109,10 +145,41 @@ purpose = "postcondition"
 | `idempotent` | Safe repeated setup or navigation |
 | `at_most_once` | Create, approve, pay, save, submit, confirm |
 
-Mark action steps explicitly. The linter treats clicks, fills, and selects as mutation-capable, even
-when they only filter a table or change tabs. Do not add `on_fail = { goto = "self" }` to a step that
-may have dispatched. Use `retry = { policy = "never" }` for dangerous steps and let an exact
-postcondition rescue an uncertain result.
+Mark action steps explicitly. The linter treats clicks, fills, selects, and `emit` as
+mutation-capable, even when a click only filters a table or changes tabs. `emit` (WebSocket command
+injection, see [docs/BROWSER_PILOT_INTEGRATION.md](docs/BROWSER_PILOT_INTEGRATION.md#emit--websocket-command-injection))
+is always `at_most_once` - the linter rejects any other value. Do not add `on_fail = { goto = "self" }`
+to a step that may have dispatched. Use `retry = { policy = "never" }` for dangerous steps and let an
+exact postcondition rescue an uncertain result.
+
+### 1a. Fill verification (`verify`)
+
+_Requires browser-pilot >= 0.2.1._ `page.fill` verifies by reading the field back and comparing it
+to what was typed. Some fields auto-format as you type (a phone field re-spacing
+`+447881122333` into `+44 7881 122333`, a card field spacing out digits) — that legitimate
+reformat looks identical to a real fill failure. Flightplan's `verify` option maps straight onto
+browser-pilot's native fill verification, forwarded through the batch step:
+
+```toml
+[[steps]]
+id = "enter_phone"
+do = "fill"
+target = "phone number"
+value = "+447881122333"
+verify = "normalized" # default — tolerates a whitespace/formatting-only mismatch
+```
+
+| `verify` | Behavior |
+|---|---|
+| `"normalized"` (default) | browser-pilot compares the typed value to the field's value after Unicode NFKC normalization and whitespace-collapse; if that still doesn't match, it falls back to a whitespace-stripped compare (covering an auto-spacing formatter, e.g. a phone or card field). A genuine mismatch still fails the step. |
+| `"off"` | Verification is skipped entirely. Use when a formatter inserts punctuation (dashes, parens) that a normalized compare won't tolerate. |
+| `"exact"` | The strict `!==` compare — any mismatch fails the step. |
+
+`verify` never changes how the value is TYPED — browser-pilot's own char-by-char typing fallback
+(when a direct value-set doesn't stick) still applies regardless of `verify`; this option only
+controls whether a post-fill readback mismatch is treated as pass or fail. The `"normalized"`
+compare is case-sensitive by design (emails, passwords, and codes are case-significant) and never
+strips punctuation like `-()./`.
 
 ### 2. Resolve before acting
 
@@ -274,6 +341,32 @@ Read the result as a state machine:
 | Stale lock | Flow and learned recipe differ | Review diff, refresh lock intentionally, or run frozen to fail closed |
 
 Artifacts are the source of truth. Exit code alone cannot prove that an action committed once.
+
+## Troubleshooting
+
+**"You are using an unsupported command-line flag: --no-sandbox. Stability and security will
+suffer."** Flightplan launches Chrome with `--no-sandbox` by default so it also works in
+containerized and root environments. In headed mode Chrome shows this as a yellow warning bar; it's
+expected and harmless outside those environments. If you don't need it, override the defaults with
+an explicit `chromeFlags` array in `[config.connect]` (an empty array falls back to the defaults, so
+list the flags you want, and add `"--headless=new"` yourself for headless runs):
+
+```toml
+[config.connect]
+mode = "launch"
+headless = false
+chromeFlags = ["--disable-gpu", "--window-size=1280,720"]
+```
+
+**A fill step fails with `Fill value did not stick. Expected "+447881122333" but got
+"+44 7881 122333".`** The target field auto-formats as you type (a phone field re-spacing digits, a
+card field inserting spaces). The default `verify = "normalized"` (see
+[Fill verification](#1a-fill-verification-verify)) already tolerates whitespace/NFKC formatting
+differences, so this usually only surfaces on browser-pilot < 0.2.1 or with an explicit
+`verify = "exact"`. If the formatter inserts punctuation instead (dashes, parens, etc. —
+`normalized` won't strip those), set `verify = "off"` on that step to skip verification entirely.
+Set `verify = "exact"` to restore strict verification once you've confirmed the field's real
+behavior. This option requires browser-pilot >= 0.2.1.
 
 ## AI tiers and planner
 

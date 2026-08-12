@@ -200,6 +200,8 @@ export interface BrowserActionEvent {
   receipt?: ActionReceipt;
   effect?: "observe" | "idempotent" | "at_most_once";
   anchor?: string;
+  /** A non-fatal human-readable note about the outcome. Absent on a step with nothing to note. */
+  note?: string;
 }
 
 /** A single rung of the resolution ladder being attempted for a step. */

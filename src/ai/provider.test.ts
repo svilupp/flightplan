@@ -53,6 +53,117 @@ function failingModel(): LanguageModelV3 {
   });
 }
 
+/** A mock model that records the `providerOptions` it was invoked with (for effort-threading tests). */
+function capturingModel(captured: { providerOptions?: unknown }[]): LanguageModelV3 {
+  const result: LanguageModelV3GenerateResult = {
+    content: [{ type: "text", text: '{"pass":true,"reason":"ok"}' }],
+    finishReason: { unified: "stop", raw: "stop" },
+    usage: {
+      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+      outputTokens: { total: 1, text: 1, reasoning: 0 },
+    },
+    warnings: [],
+  };
+  return new MockLanguageModelV3({
+    doGenerate: async (options: { providerOptions?: unknown }) => {
+      captured.push({ providerOptions: options.providerOptions });
+      return result;
+    },
+  });
+}
+
+describe("provider.defaultGenerate — reasoning-effort suffix threading", () => {
+  test("a `:effort` suffix is stripped before resolveModel and merged into openrouter providerOptions", async () => {
+    const captured: { providerOptions?: unknown }[] = [];
+    const resolvedIds: string[] = [];
+    const generate = defaultGenerate({
+      resolveModel: (id) => {
+        resolvedIds.push(id);
+        return capturingModel(captured);
+      },
+      family: "openrouter",
+    });
+
+    const result = await generate({
+      modelRole: "resolver",
+      models: ["openai/gpt-5.6-luna:xhigh"],
+      schema: JudgeSchema,
+      maxOutputTokens: 512,
+      prompt: "judge it",
+    });
+
+    // stripped before resolveModel...
+    expect(resolvedIds).toEqual(["openai/gpt-5.6-luna"]);
+    // ...but the raw (suffixed) id is still what the caller sees as the winning model.
+    expect(result.model).toBe("openai/gpt-5.6-luna:xhigh");
+    expect(captured[0]?.providerOptions).toMatchObject({
+      openrouter: { usage: { include: true }, reasoning: { effort: "xhigh" } },
+    });
+  });
+
+  test("google family maps effort to thinkingConfig.thinkingLevel (xhigh → high)", async () => {
+    const captured: { providerOptions?: unknown }[] = [];
+    const generate = defaultGenerate({
+      resolveModel: () => capturingModel(captured),
+      family: "google",
+    });
+
+    await generate({
+      modelRole: "vision",
+      models: ["google/gemini-3-pro:xhigh"],
+      schema: JudgeSchema,
+      maxOutputTokens: 512,
+      prompt: "judge it",
+    });
+
+    expect(captured[0]?.providerOptions).toMatchObject({
+      google: { thinkingConfig: { thinkingLevel: "high" } },
+    });
+  });
+
+  test("openai family passes the effort through verbatim as reasoningEffort", async () => {
+    const captured: { providerOptions?: unknown }[] = [];
+    const generate = defaultGenerate({
+      resolveModel: () => capturingModel(captured),
+      family: "openai",
+    });
+
+    await generate({
+      modelRole: "resolver",
+      models: ["openai/gpt-5.6-luna:medium"],
+      schema: JudgeSchema,
+      maxOutputTokens: 512,
+      prompt: "judge it",
+    });
+
+    expect(captured[0]?.providerOptions).toMatchObject({ openai: { reasoningEffort: "medium" } });
+  });
+
+  test("an OpenRouter `:free` slug is NOT treated as an effort suffix", async () => {
+    const captured: { providerOptions?: unknown }[] = [];
+    const resolvedIds: string[] = [];
+    const generate = defaultGenerate({
+      resolveModel: (id) => {
+        resolvedIds.push(id);
+        return capturingModel(captured);
+      },
+      family: "openrouter",
+    });
+
+    const result = await generate({
+      modelRole: "resolver",
+      models: ["deepseek/deepseek-v3.2:free"],
+      schema: JudgeSchema,
+      maxOutputTokens: 512,
+      prompt: "judge it",
+    });
+
+    expect(resolvedIds).toEqual(["deepseek/deepseek-v3.2:free"]);
+    expect(result.model).toBe("deepseek/deepseek-v3.2:free");
+    expect(captured[0]?.providerOptions).toEqual({ openrouter: { usage: { include: true } } });
+  });
+});
+
 describe("provider.defaultGenerate — Output API call shape + fallback iteration", () => {
   test("output: Output.object({schema}) → validated result.output", async () => {
     const generate = defaultGenerate({
