@@ -263,6 +263,12 @@ export const FillStepSchema = z
     ...targetingCommon,
     value: z.string(), // fill requires a value
     secret: z.boolean().optional(), // secret → redacted everywhere
+    /** Fill-verification strictness, forwarded to browser-pilot's native `page.fill` `verify`
+     * option (requires browser-pilot >= 0.2.1). `"normalized"` (default) tolerates
+     * auto-formatting (NFKC + whitespace-collapse, e.g. phone/card spacing); `"off"` skips
+     * verification entirely (use when a formatter inserts punctuation like dashes/parens);
+     * `"exact"` requires the typed value to stick unchanged. */
+    verify: z.enum(["exact", "normalized", "off"]).optional(),
   })
   .strict();
 
@@ -387,6 +393,69 @@ export const EmitStepSchema = z
   })
   .strict();
 
+/**
+ * eval — an escape-hatch verb that runs raw JavaScript in the page (or, when `frame` is given, in
+ * a same-origin `<iframe>`/genuine cross-origin OOPIF) via browser-pilot's `Page.evaluate`, which
+ * pierces cross-origin child sessions (unlike the element verbs, which only route
+ * fill/click/focus/etc. into an OOPIF's own child session — resolving a SELECTOR inside a real
+ * cross-origin frame is not yet supported there). Use it ONLY when no targeting verb can reach the
+ * element (documented gotcha: a genuine OOPIF, e.g. an Adyen secure card field).
+ *
+ * `args` is passed as STRUCTURED data — a JSON literal spliced at the driver boundary into an
+ * async-function-call wrapper around `script` — never string-interpolated into the script body
+ * itself (`script` is authored once; `args` supplies the per-run values). `script`'s statements run
+ * inside `(async function (args) { ...script... })(<args-as-JSON>)`, so `return <value>` inside
+ * `script` becomes the step's result and `await` is valid.
+ *
+ * `expect` gates success: `"truthy"` (default) passes when the result is JS-truthy; any other
+ * string is compared to `JSON.stringify(result)` for an exact literal match. This REPLACES the
+ * normal fill-verification path other verbs get — eval owns its own success predicate.
+ *
+ * eval is EXEMPT from the healing ladder (L0 only; it never escalates and is never learned into the
+ * lock file — the escape hatch is intentionally invisible to self-healing, PLAN.md/README skill
+ * guidance). It otherwise behaves like any other step for `retry`/`on_fail`.
+ */
+export const EvalStepSchema = z
+  .object({
+    ...stepCommon,
+    do: z.literal("eval"),
+    /** CSS selector identifying the `<iframe>` element to evaluate inside; omitted = main frame. */
+    frame: z.string().min(1).optional(),
+    /** The script body, run as `(async function (args) { <script> })(<args>)`. */
+    script: z.string().min(1),
+    /** Structured arguments passed to `script` as `args`, templated like any other step value. */
+    args: z.record(z.string(), z.unknown()).optional(),
+    /** secret → args/script/result are redacted everywhere. */
+    secret: z.boolean().optional(),
+    /** `"truthy"` (default) or a literal string compared against `JSON.stringify(result)`. */
+    expect: z.string().min(1).optional().default("truthy"),
+  })
+  .strict();
+
+/**
+ * evaluate — a bare escape-hatch verb that runs a raw JS expression via browser-pilot's
+ * `page.evaluate`, which pierces cross-origin child sessions (OOPIFs) that a `switch_frame` step
+ * has entered — unlike the element verbs (fill/click/etc.), which cannot resolve a SELECTOR inside
+ * a genuine cross-origin frame. Use it ONLY when no targeting verb can reach the element
+ * (documented gotcha: a genuine OOPIF, e.g. an Adyen secure card field).
+ *
+ * Deliberately minimal relative to `eval` (no `frame`, `args`, or `expect` predicate — just a
+ * single expression string run as-is): this is a narrow, no-frills escape hatch, not a scripting
+ * surface. `effect` is REQUIRED (not defaulted) — a raw expression's side effects are opaque to
+ * the schema, so the author must state them explicitly.
+ */
+export const EvaluateStepSchema = z
+  .object({
+    ...stepCommon,
+    do: z.literal("evaluate"),
+    /** The raw JS expression run via `page.evaluate(expression)`. */
+    expression: z.string().min(1),
+    /** secret → the (templated) expression is redacted everywhere. */
+    secret: z.boolean().optional(),
+    effect: z.enum(EFFECTS),
+  })
+  .strict();
+
 export const StepSchema = z.discriminatedUnion("do", [
   GotoStepSchema,
   ClickStepSchema,
@@ -400,6 +469,8 @@ export const StepSchema = z.discriminatedUnion("do", [
   SwitchFrameStepSchema,
   SwitchToMainStepSchema,
   EmitStepSchema,
+  EvalStepSchema,
+  EvaluateStepSchema,
 ]);
 
 // ---------------------------------------------------------------------------

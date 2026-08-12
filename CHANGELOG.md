@@ -2,16 +2,27 @@
 
 Semver. Each release gets a short, user-facing note: what changed for someone *using* the platform (operators, API consumers, deployers), not internal refactors. Keep entries minimal - one line where possible, grouped under `Added` / `Changed` / `Fixed` / `Removed` only when needed.
 
+## [Unreleased]
+
+### Added
+
+### Fixed
+
 ## [0.0.2] - 2026-08-12
 
 ### Added
 
 - **Native Google and OpenAI providers.** `[ai].provider = "google" | "openai"` routes through the native SDKs (provider-matched `api_key_env` defaults); model ids may carry a `:effort` suffix (`minimal|low|medium|high|xhigh`) to set reasoning effort. Default output-token cap raised to 4000 to make room for reasoning tokens.
 - **`emit` step verb.** Send a message on a WebSocket the page already owns (via browser-pilot's `page.emitMessage`), optionally waiting for a correlated reply; always `at_most_once` and never persisted to lock files.
+- **`[config.ai.models.default]` block.** One model block that serves as the default for every AI role (`resolver`, `advisor`, `vision`, `planner`, `planner_capable`) unless a specific role block overrides it. Precedence per role, field-by-field: explicit role field > `default` field > built-in registry; role blocks deep-merge over `default`. `fallbacks` arrays replace wholesale rather than merging — if `default` sets `model` but omits `fallbacks`, roles keep the built-in OpenRouter fallback slugs, so set `fallbacks = []` in `default` when routing to a non-OpenRouter provider.
 
 ### Changed
 
-- **Browser-pilot 0.1.0 → 0.2.0.** Required for the new `emit` step verb.
+- **Browser-pilot 0.1.0 → 0.2.1.** Required for the new `emit` step verb.
+
+### Compatibility
+
+- Older flightplan versions reject `[config.ai.models.default]` as an unknown key under strict schema validation; this is not forward-compatible with older CLIs.
 
 ## [0.0.1] - 2026-07-12
 

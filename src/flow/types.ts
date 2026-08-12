@@ -16,6 +16,8 @@ import type {
   DeterministicAssertionSchema,
   EmitAwaitReplySchema,
   EmitStepSchema,
+  EvalStepSchema,
+  EvaluateStepSchema,
   FillStepSchema,
   FlowFileSchema,
   GotoStepSchema,
@@ -70,6 +72,8 @@ export type SwitchFrameStep = z.infer<typeof SwitchFrameStepSchema>;
 export type SwitchToMainStep = z.infer<typeof SwitchToMainStepSchema>;
 export type EmitAwaitReply = z.infer<typeof EmitAwaitReplySchema>;
 export type EmitStep = z.infer<typeof EmitStepSchema>;
+export type EvalStep = z.infer<typeof EvalStepSchema>;
+export type EvaluateStep = z.infer<typeof EvaluateStepSchema>;
 export type Step = z.infer<typeof StepSchema>;
 
 // ---- Imports ----

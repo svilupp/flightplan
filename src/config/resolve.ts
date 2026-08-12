@@ -15,9 +15,12 @@
 //
 //   MERGEABLE (deep-merged key-by-key; a later layer adds/overrides individual keys but
 //   does NOT wipe sibling keys a lower layer set):
-//     - `ai.models` registry         — merged per role (resolver/advisor/vision), and
-//                                       within a role each field (model/fallbacks/pricing)
-//                                       is replaced wholesale if the later layer sets it.
+//     - `ai.models` registry         — merged per role (resolver/advisor/vision/planner/
+//                                       planner_capable/default), and within a role each field
+//                                       (model/fallbacks/pricing) is replaced wholesale if the
+//                                       later layer sets it. `default` is a reserved non-role
+//                                       key merged the same way; it is applied by resolveRegistry
+//                                       (src/ai/registry.ts) as a fallback layer for every role.
 //     - `ai` scalar fields           — provider, api_key_env, etc. merged key-by-key.
 //     - `browser`, `telemetry.logfire`, `artifacts`, `redaction` — merged key-by-key.
 //     - `connect`                    — see special-case note below.
@@ -157,7 +160,14 @@ function mergeModelRegistry(
   if (!base) return over;
   if (!over) return base;
   const out: ModelRegistry = { ...base };
-  for (const role of ["resolver", "advisor", "vision", "planner", "planner_capable"] as const) {
+  for (const role of [
+    "resolver",
+    "advisor",
+    "vision",
+    "planner",
+    "planner_capable",
+    "default",
+  ] as const) {
     const o = over[role];
     if (o === undefined) continue;
     const b = base[role];

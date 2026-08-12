@@ -41,7 +41,7 @@
     "@ai-sdk/openai": "3.0.86",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "ai": "^6.0.0",
-    "browser-pilot": "0.2.0",
+    "browser-pilot": "0.2.1",
     "smol-toml": "^1.4.2",
     "zod": "4.4.3"
   },

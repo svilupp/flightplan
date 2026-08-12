@@ -110,9 +110,24 @@ export function buildBatchStep(
     ...(anchor !== undefined ? { anchor } : {}),
   };
   if ((step.do === "fill" || step.do === "select") && "value" in step) {
+    if (step.do === "fill") {
+      return { ...base, value: step.value, verify: batchFillVerify(step.verify) };
+    }
     return { ...base, value: step.value };
   }
   return base;
+}
+
+/** Map the flow step's `verify` mode to browser-pilot's native batch `Step.verify` (requires
+ * browser-pilot >= 0.2.1). Default/undefined and `"normalized"` both tolerate auto-formatting
+ * (NFKC + whitespace-collapse); `"off"` disables verification; `"exact"` keeps the strict
+ * `!==` compare. */
+export function batchFillVerify(
+  mode: "exact" | "normalized" | "off" | undefined,
+): boolean | "exact" | "normalized" {
+  if (mode === "off") return false;
+  if (mode === "exact") return "exact";
+  return "normalized";
 }
 
 // ---------------------------------------------------------------------------

@@ -183,6 +183,19 @@ export function gatherSecretValues(
       collectStringLeaves(step.payload, secrets);
       continue;
     }
+    if (step.do === "eval") {
+      // eval's `args` carries the structured per-run values (never string-interpolated into
+      // `script`); gather every string leaf so a secret passed through `args` is masked wholesale
+      // wherever it might surface (script echoes, the eval result, trace/browser-action text).
+      collectStringLeaves(step.args, secrets);
+      continue;
+    }
+    if (step.do === "evaluate") {
+      // evaluate has no `args` — the (post-templating) `expression` string itself carries the
+      // secret value, so gather it wholesale (mirrors the eval branch above).
+      collectStringLeaves(step.expression, secrets);
+      continue;
+    }
     const payload =
       "value" in step && typeof step.value === "string"
         ? step.value

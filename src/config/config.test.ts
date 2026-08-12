@@ -337,6 +337,42 @@ describe("mergeable vs replaceable", () => {
     expect(merged.ai?.models?.resolver?.fallbacks).toEqual(["c"]);
   });
 
+  test("[ai.models.default] merges across config layers like any other role key", () => {
+    const base: Config = {
+      ai: { models: { default: { model: "m1", fallbacks: ["a"] } } },
+    };
+    const over: Config = {
+      ai: { models: { default: { model: "m1", pricing: { in: 1, out: 2 } } } },
+    };
+    const merged = mergeConfigLayer(base, over);
+    // `default` itself deep-merges: model/fallbacks from base survive, pricing added by over.
+    expect(merged.ai?.models?.default?.model).toBe("m1");
+    expect(merged.ai?.models?.default?.fallbacks).toEqual(["a"]);
+    expect(merged.ai?.models?.default?.pricing).toEqual({ in: 1, out: 2 });
+  });
+
+  test("[ai.models.default] coexists with an explicit role block across layers", () => {
+    const base: Config = {
+      ai: { models: { default: { model: "default-model" } } },
+    };
+    const over: Config = {
+      ai: { models: { resolver: { model: "resolver-model" } } },
+    };
+    const merged = mergeConfigLayer(base, over);
+    expect(merged.ai?.models?.default?.model).toBe("default-model");
+    expect(merged.ai?.models?.resolver?.model).toBe("resolver-model");
+  });
+
+  test("[config.ai.models.default] alone validates (strict schema)", async () => {
+    const p = writeTmp(
+      "ai-models-default.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[ai.models.default]\nmodel = "gpt-5.6-luna:xhigh"\nfallbacks = []\n`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.ai?.models?.default?.model).toBe("gpt-5.6-luna:xhigh");
+    expect(config.ai?.models?.default?.fallbacks).toEqual([]);
+  });
+
   test("run (RunLimits) is REPLACED wholesale when a layer sets it", () => {
     const base: Config = {
       run: { max_steps: 40, max_cost_usd: 0.05, assertions: "eager" },

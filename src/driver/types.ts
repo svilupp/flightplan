@@ -292,10 +292,12 @@ export interface ActionOpts {
   optional?: boolean;
 }
 
-/** `fill`-specific options (adds `blur`/`verify` over `ActionOpts`). */
+/** `fill`-specific options (adds `blur`/`verify` over `ActionOpts`). `verify` mirrors
+ * browser-pilot's native fill verification: `true`/`"exact"` (default), `"normalized"`
+ * (tolerates auto-formatting), or `false` to skip verification. */
 export interface FillOpts extends ActionOpts {
   blur?: boolean;
-  verify?: boolean;
+  verify?: boolean | "exact" | "normalized";
 }
 
 /** `type`-specific options (adds `blur`/`delay` over `ActionOpts`). */
@@ -351,6 +353,46 @@ export interface EmitCommandOptions extends Omit<BpEmitWsOptions, "awaitReply"> 
  * `awaitReply` was requested AND a correlated reply frame arrived within its timeout.
  */
 export type EmitCommandResult = BpEmitResult;
+
+// ---------------------------------------------------------------------------------------
+// eval — escape-hatch JS execution (browser-pilot `Page.evaluate`)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Options for `Driver.evalInFrame()` — the boundary form of the flow schema's `eval` step.
+ * `frame`, when given, identifies the `<iframe>` element (in the CURRENT document) to evaluate
+ * inside, per {@link Driver.switchToFrame}'s selector semantics — a same-origin iframe OR a
+ * genuine cross-origin OOPIF; `evaluate` pierces the latter via browser-pilot's frame-context
+ * routing even though the element verbs (fill/click/focus) cannot yet resolve a SELECTOR inside a
+ * real cross-origin child session. Omitted `frame` evaluates in the current context unchanged.
+ * `script` is the function body run as `(async function (args) { <script> })(<args>)`; `args` is
+ * JSON-serialized at the driver boundary rather than interpolated into `script`, so `script` is
+ * authored once and `args` supplies the per-run values.
+ */
+export interface EvalOptions {
+  frame?: string;
+  script: string;
+  args?: Record<string, unknown>;
+}
+
+/**
+ * The result of `Driver.evalInFrame()`. `ok: false` covers BOTH an unresolvable `frame` (the
+ * iframe element could not be found/attached — mirrors {@link Driver.switchToFrame}'s `false`) and
+ * a thrown evaluation exception; `error` carries a human-readable reason in either case. `value` is
+ * the script's returned value (`undefined` when the script returns nothing, or on failure).
+ *
+ * `phase` distinguishes the two `ok: false` kinds so the runner can map them to the right
+ * `dispatchState`: `"frame"` means the frame itself could never be entered — nothing ran, so the
+ * step is cleanly `not_dispatched`; `"script"` means the frame WAS entered and the script started
+ * executing before throwing — its side effects (if any) are unknown, so the step is `"uncertain"`,
+ * mirroring the emit case's `dispatched-unconfirmed`. Omitted on `ok: true`.
+ */
+export interface EvalResult {
+  ok: boolean;
+  value?: unknown;
+  error?: string;
+  phase?: "frame" | "script";
+}
 
 /** Options for `Driver.screenshot()`. Returns base64 (FINDINGS §7). */
 export interface ScreenshotOpts {
@@ -596,6 +638,24 @@ export interface Driver {
    */
   currentFrame(): string | null;
 
+  /**
+   * Whether the CURRENTLY switched-into frame (per {@link currentFrame}) is a genuine
+   * cross-origin OOPIF, as opposed to a same-origin `<iframe>`. This distinction matters because
+   * a same-origin frame snapshots/resolves fine through the NORMAL ladder (healing + lock
+   * write-back intact), while a genuine OOPIF cannot be snapshotted at all (browser-pilot throws
+   * `assertOopifUnsupported` there) and therefore needs the orchestrator's direct-dispatch bypass
+   * (see `orchestrator.ts`'s "cross-origin frame bypass").
+   *
+   * OPTIONAL and best-effort: browser-pilot does not currently expose a PUBLIC signal for this
+   * (its OOPIF child-session bookkeeping is private to `Page`), so the real driver
+   * (`BrowserPilotDriver`) does not implement it and callers must treat `undefined` as "unknown"
+   * — NOT as "same-origin". The orchestrator therefore keeps its existing (documented) bypass-
+   * always-when-framed behavior when this returns `undefined`, and narrows the bypass to `true`
+   * once a driver can actually answer it (e.g. `MockDriver`, or a future browser-pilot release
+   * that exposes the OOPIF signal).
+   */
+  isCrossOriginFrame?(): boolean | undefined;
+
   // --- page operations (thin pass-throughs) ---
 
   /**
@@ -690,6 +750,30 @@ export interface Driver {
    * with a clear "browser-pilot >=0.2.0 required" message when absent.
    */
   emitCommand?(opts: EmitCommandOptions): Promise<EmitCommandResult>;
+
+  // --- eval (escape-hatch JS execution) ---
+
+  /**
+   * Run `opts.script` (optionally inside the `<iframe>`/OOPIF identified by `opts.frame`),
+   * delegating to browser-pilot's `Page.evaluate`. Restores whatever frame context was active
+   * BEFORE the call once it returns — `eval` is a single-purpose escape hatch, not a stateful
+   * frame switch like {@link switchToFrame}. Never throws: a frame-entry failure or a thrown
+   * evaluation exception both surface as `{ ok: false, error }`.
+   */
+  evalInFrame(opts: EvalOptions): Promise<EvalResult>;
+
+  // --- evaluate (bare escape-hatch JS expression) ---
+
+  /**
+   * Run a raw JS expression via browser-pilot's `page.evaluate`, delegating directly (no frame
+   * targeting, no args/expect wrapper — see the `evaluate` step schema). browser-pilot's
+   * `page.evaluate` already routes into whatever OOPIF child session `switch_frame` most recently
+   * entered, so no additional frame handling is needed here. OPTIONAL so a driver built against an
+   * older browser-pilot degrades gracefully: callers MUST feature-detect
+   * (`driver.evaluateExpression?.(...)`) and fail the `evaluate` step with a clear
+   * missing-capability message when absent.
+   */
+  evaluateExpression?(expression: string): Promise<unknown>;
 
   // --- screenshot ---
 

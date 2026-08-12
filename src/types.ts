@@ -51,6 +51,8 @@ export const STEP_DOS = [
   "switch_frame",
   "switch_to_main",
   "emit",
+  "eval",
+  "evaluate",
 ] as const;
 export type StepDo = (typeof STEP_DOS)[number];
 

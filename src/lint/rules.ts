@@ -337,6 +337,9 @@ const stepsRequiredFields: Rule = {
         case "switch_frame":
           requireField("target", "an ordered locator identifying the <iframe> element to enter");
           break;
+        case "eval":
+          requireField("script", "the JavaScript to evaluate");
+          break;
         case "emit": {
           requireField("channel", 'the emit channel (currently only "ws")');
           requireField("payload", "the message payload (a string or an inline table)");
@@ -1339,6 +1342,9 @@ const assertScreenshotNeedsVision: Rule = {
     // No explicit registry → the built-in default vision model applies; nothing to warn about.
     if (registry === null) return [];
     if (isRecord(registry.vision)) return []; // vision role is configured
+    // `[ai.models.default]` with a `model` seeds every role — including vision — so it also
+    // counts as covering the vision role (resolveRegistry, src/ai/registry.ts).
+    if (isRecord(registry.default) && typeof registry.default.model === "string") return [];
     const out: Diagnostic[] = [];
     eachAssertion(ctx.doc, (a, sid, loc) => {
       if (a.type !== "ai_judge") return;
@@ -1754,6 +1760,65 @@ const emitNoRetry: Rule = {
   },
 };
 
+const stepsEvalEscapeHatch: Rule = {
+  id: "steps/eval-escape-hatch",
+  severity: "warning",
+  description:
+    "eval/evaluate steps are an escape hatch invisible to self-healing; prefer a targeting verb.",
+  run(ctx) {
+    return rawSteps(ctx.doc).flatMap((step, i) => {
+      if (step.do !== "eval" && step.do !== "evaluate") return [];
+      return [
+        diag(
+          ctx,
+          "steps/eval-escape-hatch",
+          "warning",
+          `Step \`${stepId(step, i)}\` (do = "${step.do}") is an escape hatch — it runs L0 only, ` +
+            "never escalates, and is invisible to self-healing (never learned into the lock file). " +
+            "Prefer a targeting verb (click/fill/select/ai_pick) and reach for eval/evaluate only " +
+            "when no verb can target the element (e.g. a genuine cross-origin OOPIF).",
+          { stepId: stepId(step, i), location: `steps[${i}].do` },
+        ),
+      ];
+    });
+  },
+};
+
+const stepsEvalStringInterpolation: Rule = {
+  id: "steps/eval-string-interpolation",
+  severity: "warning",
+  description:
+    "`${` inside eval.script/evaluate.expression looks like string interpolation into JS — an " +
+    "injection risk; use structured `args` instead.",
+  run(ctx) {
+    return rawSteps(ctx.doc).flatMap((step, i) => {
+      let code: unknown;
+      let field: string;
+      if (step.do === "eval") {
+        code = (step as { script?: unknown }).script;
+        field = "script";
+      } else if (step.do === "evaluate") {
+        code = (step as { expression?: unknown }).expression;
+        field = "expression";
+      } else {
+        return [];
+      }
+      if (typeof code !== "string" || !code.includes("${")) return [];
+      return [
+        diag(
+          ctx,
+          "steps/eval-string-interpolation",
+          "warning",
+          `Step \`${stepId(step, i)}\` (do = "${step.do}") has \`\${\` inside \`${field}\` — ` +
+            "templating a value directly into the JS body is an injection risk. Pass the value " +
+            "through `args` (eval) instead of string-interpolating it into the script/expression.",
+          { stepId: stepId(step, i), location: `steps[${i}].${field}` },
+        ),
+      ];
+    });
+  },
+};
+
 const assertionCriticalBroadMatch: Rule = {
   id: "assert/critical-broad-match",
   severity: "warning",
@@ -1838,6 +1903,8 @@ export const RULES: readonly Rule[] = [
   effectAiOnlyPostcondition,
   assertionCriticalBroadMatch,
   emitNoRetry,
+  stepsEvalEscapeHatch,
+  stepsEvalStringInterpolation,
 ];
 
 /** Rule ids only — for tooling/tests. */

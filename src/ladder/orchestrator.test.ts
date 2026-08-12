@@ -547,3 +547,167 @@ describe("orchestrator — `startTier: 'L3'` (AI-only vision baseline)", () => {
     expect(execution.tier).toBe("L1");
   });
 });
+
+describe("orchestrator — cross-origin frame bypass (after switch_frame)", () => {
+  test("in a frame context, a css: target dispatches directly (via dispatchResolved/batch) with NO snapshot and NO attempts", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-iframe]"); // enters frame context: currentFrame() !== null
+    d.setBatchResult(makeSuccessBatch("#cardNumber", "fill"));
+
+    const step: Step = { id: "fill_card", do: "fill", target: "css:#cardNumber", value: "4242" };
+    const { execution, attempts } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    expect(execution.ok).toBe(true);
+    expect(execution.tier).toBe("L1");
+    expect(execution.selectorUsed).toBe("#cardNumber");
+    expect(execution.strategy).toBe("css");
+    expect(attempts).toHaveLength(0);
+    expect(d.callsTo("snapshot")).toHaveLength(0);
+    // Item 2: the bypass now routes through the shared dispatch owner (driver.batch), never a
+    // direct driver.fill/click/select call, so the receipt/dispatch-state machinery fires.
+    expect(d.callsTo("fill")).toHaveLength(0);
+    const batchCalls = d.callsTo("batch");
+    expect(batchCalls).toHaveLength(1);
+    expect(batchCalls[0]?.args[0]).toEqual([
+      expect.objectContaining({ action: "fill", selector: ["#cardNumber"], value: "4242" }),
+    ]);
+    expect(execution.dispatchState).toBe("dispatched");
+    expect(execution.receipt).toBeDefined();
+    expect(execution.receipt?.dispatchState).toBe("dispatched");
+  });
+
+  test("a css: target with a trailing NL fallback (the normal authoring convention) still bypasses", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-iframe]");
+    d.setBatchResult(makeSuccessBatch("#cardNumber", "fill"));
+
+    const step: Step = {
+      id: "fill_card",
+      do: "fill",
+      target: ["css:#cardNumber", "the card number field inside the payment iframe"],
+      value: "4242",
+    };
+    const { execution } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    expect(execution.ok).toBe(true);
+    expect(execution.selectorUsed).toBe("#cardNumber");
+    expect(d.callsTo("batch")).toHaveLength(1);
+    expect(d.callsTo("snapshot")).toHaveLength(0);
+  });
+
+  test("a click step in a frame context dispatches via batch with the stripped selector", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-iframe]");
+    d.setBatchResult(makeSuccessBatch("button.submit", "click"));
+
+    const step: Step = { id: "submit_card", do: "click", target: "css:button.submit" };
+    const { execution } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    expect(execution.ok).toBe(true);
+    const batchCalls = d.callsTo("batch");
+    expect(batchCalls).toHaveLength(1);
+    expect(batchCalls[0]?.args[0]).toEqual([
+      expect.objectContaining({ action: "click", selector: ["button.submit"] }),
+    ]);
+    expect(d.callsTo("click")).toHaveLength(0);
+    expect(d.callsTo("snapshot")).toHaveLength(0);
+  });
+
+  test("a FAILING framed dispatch still produces receipt/dispatch-state trace evidence (Item 2)", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-iframe]");
+    d.setBatchResult(
+      makeFailureBatch("missing", { action: "fill", dispatchState: "not_dispatched" }),
+    );
+
+    const step: Step = { id: "fill_card", do: "fill", target: "css:#cardNumber", value: "4242" };
+    const { execution, attempts } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    expect(execution.ok).toBe(false);
+    expect(attempts).toHaveLength(0); // still bypasses the ladder attempts, not the receipt
+    expect(d.callsTo("batch")).toHaveLength(1);
+    expect(execution.dispatchState).toBe("not_dispatched");
+    expect(execution.receipt).toBeDefined();
+    expect(execution.receipt?.dispatchState).toBe("not_dispatched");
+    expect(execution.error).toBeDefined();
+  });
+
+  test("a genuine OOPIF (isCrossOriginFrame() === true) still bypasses the ladder", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-iframe]");
+    d.setCrossOriginFrame(true);
+    d.setBatchResult(makeSuccessBatch("#cardNumber", "fill"));
+
+    const step: Step = { id: "fill_card", do: "fill", target: "css:#cardNumber", value: "4242" };
+    const { execution, attempts } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    expect(execution.ok).toBe(true);
+    expect(attempts).toHaveLength(0);
+    expect(d.callsTo("snapshot")).toHaveLength(0);
+    expect(d.callsTo("batch")).toHaveLength(1);
+  });
+
+  test("a same-origin iframe (isCrossOriginFrame() === false) is routed through the NORMAL ladder, not bypassed", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-iframe]");
+    d.setCrossOriginFrame(false);
+    d.setSnapshot(snapshotWith("Card number"));
+    d.setBatchResult(makeSuccessBatch("#cardNumber", "fill"));
+
+    const step: Step = { id: "fill_card", do: "fill", target: "css:#cardNumber", value: "4242" };
+    const { execution, attempts } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    // The normal ladder ran (snapshot + attempts recorded) — healing/lock write-back is intact for
+    // a same-origin iframe once the driver can prove it isn't a genuine OOPIF.
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(d.callsTo("snapshot").length).toBeGreaterThan(0);
+    expect(execution.ok).toBe(true);
+  });
+
+  test("outside a frame context, the same css: target runs the normal ladder (unchanged)", async () => {
+    const d = new MockDriver();
+    d.setSnapshot(snapshotWith("Card number"));
+    d.setBatchResult(makeSuccessBatch("css:#cardNumber"));
+
+    const step: Step = { id: "fill_card", do: "fill", target: "css:#cardNumber", value: "4242" };
+    const { attempts } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    // Normal L0→L1 walk ran (snapshot taken, attempts recorded) — no bypass outside a frame.
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(d.callsTo("snapshot").length).toBeGreaterThan(0);
+  });
+
+  test("in a frame context, a non-css target fails clean pointing at `css:`", async () => {
+    const d = new MockDriver();
+    await d.switchToFrame("[data-iframe]");
+
+    const step: Step = {
+      id: "fill_card",
+      do: "fill",
+      target: "the card number field",
+      value: "4242",
+    };
+    const { execution, attempts } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    expect(execution.ok).toBe(false);
+    expect(execution.error).toMatch(/css:/);
+    expect(attempts).toHaveLength(0);
+    expect(d.callsTo("snapshot")).toHaveLength(0);
+    expect(d.callsTo("fill")).toHaveLength(0);
+  });
+
+  test("in a frame context, a bare (non-css:-prefixed) selector falls through to the normal ladder unchanged", async () => {
+    // A same-origin-iframe target reachable by an ordinary selector must keep working exactly as
+    // before (L1's relaxed iframe guard) — the frame bypass only intercepts explicit `css:`
+    // targets; it never hard-fails a target that still carries a real (non-css:) selector entry.
+    const d = new MockDriver();
+    await d.switchToFrame("[data-iframe]");
+    d.setSnapshot(snapshotWith("Card number"));
+    d.setBatchResult(makeSuccessBatch("[data-testid=card]"));
+
+    const step: Step = { id: "fill_card", do: "fill", target: "[data-testid=card]", value: "4242" };
+    const { attempts } = await resolveStep(step, { driver: d, now: () => 0 });
+
+    expect(attempts.length).toBeGreaterThan(0); // the normal L0/L1 walk ran, not the bypass.
+  });
+});

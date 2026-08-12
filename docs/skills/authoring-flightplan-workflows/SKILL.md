@@ -75,6 +75,17 @@ re-entered.
 Do not write `on_fail = { goto = "self" }` for an effect that may have dispatched. Use a deterministic
 postcondition and observation polling instead.
 
+### Fill verification (`verify`)
+
+A `fill` step accepts `verify = "exact" | "normalized" | "off"` (default `"normalized"`), forwarded
+to browser-pilot's native fill verification (requires browser-pilot >=0.2.1). Some fields
+auto-format as you type — a phone field re-spacing `+447881122333` into `+44 7881 122333`, a card
+field inserting spaces — which trips a strict post-fill readback compare with
+`Fill value did not stick. Expected "..." but got "...".`. The default `"normalized"` tolerates
+that (Unicode NFKC + whitespace-collapse, then whitespace-stripped, compare); use `"off"` when a
+formatter inserts punctuation the normalized compare won't strip (dashes, parens), and `"exact"`
+to keep the strict compare.
+
 ### Target repeated controls
 
 Use an ordered locator list. Put durable selectors first and one concise anchor last:
@@ -157,10 +168,28 @@ parent budget, and `on_fail` targets cannot cross a `run` boundary.
 
 ### Pick provider, model, and reasoning effort
 
-AI tiers default to OpenRouter (`OPENROUTER_API_KEY`). To route through a native provider, set
-`[config.ai] provider = "google" | "openai"` (key envs: `GOOGLE_GENERATIVE_AI_API_KEY` /
-`OPENAI_API_KEY`) and use that provider's own model ids. Any model id may carry a `:effort`
-suffix (`minimal|low|medium|high|xhigh`) to set reasoning effort:
+AI tiers default to OpenRouter (`OPENROUTER_API_KEY`). The simplest way to pin a model is
+`[config.ai.models.default]`: it seeds every role at once (resolver, advisor, vision, planner,
+planner_capable), so a flow that does not need per-role tiering never repeats the block:
+
+```toml
+[config.ai.models.default]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+```
+
+This is the recommended default. Precedence per role, field-by-field: explicit role field >
+`default` field > built-in registry. Role blocks deep-merge over `default`; `fallbacks` arrays
+replace wholesale, they do not merge. Footgun: if `default` sets `model` but omits `fallbacks`,
+roles keep the built-in OpenRouter fallback slugs — set `fallbacks = []` in `default` when using
+a non-OpenRouter provider. Older flightplan versions reject `[config.ai.models.default]` as an
+unknown key.
+
+For advanced, mixed setups keep per-role `[config.ai.models.<role>]` blocks (e.g. cheap resolver,
+stronger planner), or route through a native provider by setting `[config.ai] provider = "google"
+| "openai"` (key envs: `GOOGLE_GENERATIVE_AI_API_KEY` / `OPENAI_API_KEY`) and using that provider's
+own model ids. Any model id may carry a `:effort` suffix (`minimal|low|medium|high|xhigh`) to set
+reasoning effort:
 
 ```toml
 [config.ai]

@@ -1,22 +1,16 @@
-# Flightplan flow — end-to-end checkout on the "window-shop-dovid-test" agentic storefront (UAT).
+# Flightplan flow — production E2E checkout test on the "window-shop-dovid-test" agentic
+# storefront (UAT: https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test).
 #
-# Authored by translating a live browser-pilot exploration of https://uat-ws-pilot-web.api-swap-os.com
-# /window-shop-dovid-test (a chat-driven "window shop" storefront, not a classic click-through PDP
-# grid): go straight to a known product's chat/PDP URL, pick a size, add to cart, go to checkout,
-# fill checkout/shipping/payment, pay with an Adyen test card, and assert the "Payment Successful!"
-# screen. No browser-pilot `ref:eN` values are persisted here — every target below was translated
-# to a durable CSS/attribute selector (checked live with `bp diagnose`) plus a natural-language
-# fallback anchor, and `[config.ai].max_model_calls = 0` keeps resolution deterministic (L0/L1
-# only) so a missing optional overlay fails its step FAST instead of paying for an AI escalation.
+# Navigates directly to a known product's chat/PDP URL, picks a size, adds to cart, goes to
+# checkout, fills checkout/shipping/payment details, pays with an Adyen test card, and asserts
+# the "Payment Successful!" screen. `[config.ai].max_model_calls = 0` on the mutating happy path
+# keeps resolution deterministic; a small non-zero cap on optional overlay steps (see below).
 #
-# Notable non-obvious selectors, discovered live (see PR/session notes):
-#   - Direct-navigating to the PDP chat URL (`/chat/products/<shopify-gid-base64>`) reproduces the
-#     exact destination landed on after searching "jacket" and clicking the Olive Green Jacket
-#     result, without the composer-submit/agent-search round trip that used to precede it.
+# Notable non-obvious selectors:
 #   - The PDP size selector renders one button per size, all sharing
 #     `[data-testid='pdp-controls-size']` with no distinguishing attribute beyond visible text, so
-#     `:nth-of-type` (1=XS 2=S 3=M 4=L 5=XL) is the only durable disambiguator; `size_index` is an
-#     input so the size can be changed without touching step targets.
+#     `:nth-of-type` (1=XS 2=S 3=M 4=L 5=XL) is the disambiguator; `size_index` is an input so the
+#     size can be changed without touching step targets.
 #   - The address field is backed by a Google Places autocomplete widget; suggestions render as
 #     `button` elements with the full suggestion string as their accessible name.
 #   - Payment fields are Adyen Secured Fields inside cross-origin iframes titled "Iframe for card
@@ -26,39 +20,33 @@
 
 version = 1
 kind = "flow"
-id = "swap.window_shop_checkout"
-description = "Open a product directly, add to cart, and pay on window-shop-dovid-test, asserting Payment Successful"
+id = "swap.window_shop_checkout_oopif"
+description = "Production checkout flow: adds a jacket to cart, fills checkout/shipping/payment, and pays with an Adyen test card on the window-shop-dovid-test UAT storefront."
 
 [inputs]
 base_url = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test"
 # Navigate straight to the product's chat/PDP URL instead of driving the chat-search composer.
-# This was found live via `bp diagnose`/click-through, is stable (a Shopify GID-derived path), and
-# removes the flakiest, slowest part of the flow (composer submit + waiting on chat-agent search
-# results) in favor of one deterministic `goto`.
 product_url = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz"
 product_title = "Olive Green Jacket"
-# 3 = M in the PDP size list (1=XS 2=S 3=M 4=L 5=XL). Kept as an input so a size swap does not
-# require touching step targets; task guidance is "prefer M, else any available size" — this flow
-# targets M directly since M was confirmed available for the chosen product during authoring.
+# 3 = M in the PDP size list (1=XS 2=S 3=M 4=L 5=XL).
 size_index = "3"
 
 customer_name = "Jan Siml"
 customer_email = "jan@swap-commerce.com"
 # `fill` REPLACES the whole field value rather than appending after the pre-seeded "+44 " prefix,
-# so the full E.164-style number (with its own "+44") is supplied directly — typing just the
-# national number let the widget's own formatter misread the leading "7" as a +7 (Russia) country
-# code once already.
+# so the full E.164-style number (with its own "+44") is supplied directly.
 customer_phone = "+447881122333"
-# Typed into the Google-Places-backed address field; a short, unambiguous prefix is enough since
-# the flow accepts whichever suggestion the widget offers first (see `select_address_suggestion`).
+# Typed into the Google-Places-backed address field; the flow accepts whichever suggestion the
+# widget offers first (see `select_address_suggestion`).
 address_query = "1 Tottenham Court"
 
 card_number = "5555444433331111"
+card_holder = "Consumer"
 card_expiry = "0330"
 card_cvc = "737"
 
 [run]
-max_steps = 40
+max_steps = 150
 assertions = "eager"
 assert_timeout_ms = 8000
 
@@ -67,19 +55,39 @@ assert_timeout_ms = 8000
 enabled = false
 
 # Every target below has a durable CSS/attribute selector as its FIRST locator, so most steps
-# resolve at L0/L1 without a model call. A hard `max_model_calls = 0` cap was tried here but proved
-# unsafe for the optional onboarding-overlay steps (cookie/guide/region): when one of those overlays
-# is ABSENT, the resolver's "is this really gone" check needs a bounded L2 escalation rather than an
-# instant miss, and a zero budget turns that into a hard `budget exceeded` runner error that bypasses
-# `on_fail` entirely (a budget ceiling is fail-closed and propagates, by design — it is not a normal
-# step failure). A small non-zero budget keeps the flow deterministic on the mutating happy path
-# (add-to-cart, checkout, payment all resolve at L0/L1 and never touch this budget) while letting the
-# optional overlay probes escalate a little before giving up.
+# resolve at L0/L1 without a model call. The optional onboarding-overlay presence checks need a
+# small non-zero AI budget to escalate before concluding an overlay is absent (a zero budget turns
+# an absent overlay into a hard, fail-closed `budget exceeded` runner error instead of a normal
+# step failure); the mutating happy path never touches this budget.
 [config.ai]
+provider = "openai"
 max_model_calls = 12
 
-# Launch a fresh, dedicated Chrome instance rather than attaching to whatever CDP endpoint an
-# ambient `bp connect` session happens to expose — this flow owns its browser end to end.
+[config.ai.models.resolver]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+[config.ai.models.vision]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+[config.ai.models.advisor]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+[config.ai.models.planner]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+[config.ai.models.planner_capable]
+model = "gpt-5.6-luna:xhigh"
+fallbacks = []
+
+# xhigh reasoning routinely exceeds the few-second default per-role AI-call ceilings.
+[config.timeouts]
+ai_call_ms = 90000
+
+# Launch a fresh, dedicated Chrome instance rather than attaching to an ambient CDP session.
 [config.connect]
 mode = "launch"
 headless = false
@@ -91,27 +99,33 @@ record = true
 # 0. Navigate straight to the product page and dismiss whatever onboarding overlays appear.
 # --------------------------------------------------------------------------------------------
 
-# `goto` the PDP chat URL directly rather than driving the chat-search composer: it is the exact
-# URL landed on after searching "jacket" and clicking the Olive Green Jacket result during
-# authoring, so it reproduces the same destination deterministically and in one step, without the
-# composer-submit/agent-search round trip.
 [[steps]]
 id = "open_product"
 do = "goto"
 url = "${inputs.product_url}"
 
-# The onboarding overlays below are each OPTIONAL: on a fresh browser profile the sequence is
-# cookie consent -> a 2-page "welcome guide" tour -> a "Where are you shopping from?" region
-# picker, each stacked on top of the (inert) product page; on a returning profile none of them
-# render at all. Each step's `on_fail = { goto = ..., max = 1 }` makes it a no-op fallthrough to
-# the next one instead of failing the run when its target is absent — the chain always ends at
-# `product_page_ready`, whether zero, some, or all three overlays appeared.
+# The onboarding overlays below are each OPTIONAL and may appear late: on a fresh browser profile
+# the sequence is cookie consent -> a "welcome guide" tour -> a "Where are you shopping from?"
+# region picker; on a returning profile none of them render at all. Each overlay's dismiss click
+# is gated behind its own precondition-only `assert` step (never a bare click) that polls for the
+# overlay's real marker element, since `on_fail` is only safe to jump on from an assert step (no
+# dispatch has happened yet). This flow must never click a suggested-prompt/`button-chip` element.
+[[steps]]
+id = "cookie_modal_present"
+do = "assert"
+on_fail = { goto = "welcome_guide_present", max = 1 }
+
+[[steps.assert]]
+type = "visible"
+text = "Cookie preferences"
+purpose = "precondition"
+timeout_ms = 8000
+
 [[steps]]
 id = "accept_cookies"
 do = "click"
 effect = "idempotent"
 target = ["role:button:Accept all", "the Accept all button in the cookie consent banner"]
-on_fail = { goto = "dismiss_welcome_guide", max = 1 }
 
 [[steps.assert]]
 type = "hidden"
@@ -119,69 +133,45 @@ text = "Cookie preferences"
 purpose = "postcondition"
 timeout_ms = 4000
 
-# Confirmed durable selector (per live inspection): `[data-testid='welcome-guide-dismiss']` is the
-# guide's own Skip control, unlike the tour's plain "Skip" TEXT which is not unique/stable across
-# the tour's pages.
+[[steps]]
+id = "welcome_guide_present"
+do = "assert"
+on_fail = { goto = "shipping_region_present", max = 1 }
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-testid='welcome-guide-dismiss']"
+purpose = "precondition"
+timeout_ms = 8000
+
 [[steps]]
 id = "dismiss_welcome_guide"
 do = "click"
 effect = "idempotent"
 target = ["[data-testid='welcome-guide-dismiss']", "the Skip button on the welcome guide overlay"]
-on_fail = { goto = "select_shipping_region", max = 1 }
 
 [[steps.assert]]
 type = "hidden"
-text = "Meet the agent"
+selector = "[data-testid='welcome-guide-dismiss']"
 purpose = "postcondition"
 timeout_ms = 4000
+
+[[steps]]
+id = "shipping_region_present"
+do = "assert"
+on_fail = { goto = "product_page_ready", max = 1 }
+
+[[steps.assert]]
+type = "visible"
+text = "Where are you shopping from?"
+purpose = "precondition"
+timeout_ms = 8000
 
 [[steps]]
 id = "select_shipping_region"
 do = "click"
 effect = "idempotent"
 target = ["role:button:United Kingdom", "the United Kingdom option in the region picker"]
-on_fail = { goto = "recheck_cookies", max = 1 }
-
-# Both the cookie-consent dialog and the welcome-guide tour have been observed (in UAT) to
-# hydrate LATE — up to ~5s after page load — i.e. AFTER the dismissal chain above has already run
-# and skipped them as absent. Re-check both here, right before the flow starts clicking real page
-# controls, so a late-rendering overlay gets dismissed instead of silently covering (and failing)
-# a later click.
-[[steps]]
-id = "recheck_cookies"
-do = "click"
-effect = "idempotent"
-target = ["role:button:Accept all", "the Accept all button in the cookie consent banner"]
-on_fail = { goto = "recheck_welcome_guide", max = 1 }
-
-[[steps.assert]]
-type = "hidden"
-text = "Cookie preferences"
-purpose = "postcondition"
-timeout_ms = 4000
-
-[[steps]]
-id = "recheck_welcome_guide"
-do = "click"
-effect = "idempotent"
-target = ["[data-testid='welcome-guide-dismiss']", "the Skip button on the welcome guide overlay"]
-on_fail = { goto = "recheck_shipping_region", max = 1 }
-
-[[steps.assert]]
-type = "hidden"
-text = "Meet the agent"
-purpose = "postcondition"
-timeout_ms = 4000
-
-# The "Where are you shopping from?" region picker has also been observed to hydrate LATE — after
-# the first `select_shipping_region` attempt above already ran and found nothing to click — so it
-# is re-checked here too, right before the flow starts driving real page controls.
-[[steps]]
-id = "recheck_shipping_region"
-do = "click"
-effect = "idempotent"
-target = ["role:button:United Kingdom", "the United Kingdom option in the region picker"]
-on_fail = { goto = "product_page_ready", max = 1 }
 
 [[steps.assert]]
 type = "hidden"
@@ -214,7 +204,7 @@ id = "expand_size_selector"
 do = "click"
 effect = "idempotent"
 target = [
-  "role:button:Color: Olive Green · Size: XS",
+  "[data-testid='pdp-controls-tab-variant']",
   "the color and size selector toggle on the product card",
 ]
 
@@ -263,15 +253,16 @@ timeout_ms = 8000
 # 3. Open the cart drawer and go to checkout.
 # --------------------------------------------------------------------------------------------
 
-# The header cart icon only shows a tooltip on hover/click — it does not open the cart drawer.
-# The reliable path to the drawer is the "View cart (N)" link inside the "Added to cart" toast
-# that appears immediately after `add_to_cart` (confirmed live: clicking the header icon left the
-# `cart-checkout-button` assertion below timing out with no matching element).
+[[steps]]
+id = "wait_for_toast_settle"
+do = "wait"
+ms = 1500
+
 [[steps]]
 id = "open_cart"
 do = "click"
 effect = "idempotent"
-target = ["role:link:View cart (1)", "the View cart link in the Added to cart toast"]
+target = ["[data-testid='button-shopping-cart']", "the shopping cart button in the header"]
 
 [[steps.assert]]
 type = "visible"
@@ -310,9 +301,7 @@ target = ["[placeholder=\"Enter your full name*\"]", "the Full name field"]
 value = "${inputs.customer_name}"
 
 # This is a test order, so the address only needs to be plausible: type a short prefix and accept
-# whichever Places suggestion the widget offers first, rather than typing and matching a full,
-# exact address string (which drifted once already — the widget can phrase a suggestion as
-# "Court Road" vs. the typed "Ct Rd", among other paraphrases).
+# whichever Places suggestion the widget offers first.
 [[steps]]
 id = "fill_address"
 do = "fill"
@@ -326,22 +315,14 @@ text = "London"
 purpose = "postcondition"
 timeout_ms = 6000
 
-# Select the FIRST Places suggestion via the keyboard (ArrowDown highlights it, Enter accepts it)
-# rather than clicking a specific suggestion by its exact text — the suggestion list has no shared
-# `data-testid`/class to target positionally, and its wording is not guaranteed stable, so the
-# keyboard is the durable, address-agnostic way to "accept the first Places match". Focus stays on
-# the address input after `fill`, so no explicit `click` is needed before these key presses.
+# Each Places suggestion is a plain `<button>` inside a `.MuiPopper-root` dropdown with no shared
+# testid, so the first one is targeted positionally. Clicking a suggestion (rather than typing a
+# full address) is also what reliably autofills City/Postal Code below.
 [[steps]]
 id = "select_address_suggestion"
-do = "press"
+do = "click"
 effect = "idempotent"
-key = "ArrowDown"
-
-[[steps]]
-id = "accept_address_suggestion"
-do = "press"
-effect = "idempotent"
-key = "Enter"
+target = [".MuiPopper-root button", "the first address suggestion in the autocomplete dropdown"]
 
 [[steps.assert]]
 type = "text"
@@ -363,6 +344,35 @@ do = "fill"
 effect = "idempotent"
 target = ["css:input[type='tel']", "the Phone number field"]
 value = "${inputs.customer_phone}"
+
+# The address suggestion above autofills City/Postal Code in the common case, but there is no
+# conditional fill in the step schema, so both are always (idempotently) re-filled with the
+# known-good values as a no-op-or-fallback. "Continue to shipping" stays disabled until both are
+# non-empty.
+[[steps]]
+id = "fill_city_fallback"
+do = "fill"
+effect = "idempotent"
+target = ["[placeholder=\"Enter city*\"]", "the City field"]
+value = "London"
+
+[[steps]]
+id = "fill_postal_code_fallback"
+do = "fill"
+effect = "idempotent"
+target = ["[placeholder=\"Enter postal code*\"]", "the Postal code field"]
+value = "WC1B 3AU"
+
+[[steps]]
+id = "address_ready"
+do = "assert"
+
+[[steps.assert]]
+type = "state"
+state = "enabled"
+selector = "role:button:Continue to shipping"
+purpose = "precondition"
+timeout_ms = 6000
 
 [[steps]]
 id = "continue_to_shipping"
@@ -402,9 +412,11 @@ purpose = "postcondition"
 timeout_ms = 8000
 
 # --------------------------------------------------------------------------------------------
-# 6. Payment: Adyen Secured Fields (each is a cross-origin iframe; enter/leave per field). The
-#    hidden `#shiftTabField` is always the FIRST input in each iframe, so the real field is
-#    targeted by its `adyen-checkout-encrypted*` id prefix, never a bare `input` selector.
+# 6. Payment: Adyen Secured Fields, each a cross-origin iframe. The hidden `#shiftTabField` is
+#    always the FIRST input in each iframe, so the real field is targeted by its
+#    `adyen-checkout-encrypted*` id prefix, never a bare `input` selector. Fields live in a
+#    cross-origin iframe, so they must be targeted with `css:` selectors while framed via
+#    `switch_frame`.
 # --------------------------------------------------------------------------------------------
 
 [[steps]]
@@ -418,8 +430,18 @@ id = "fill_card_number"
 do = "fill"
 effect = "idempotent"
 secret = true
-target = ["css:input[id^='adyen-checkout-encryptedCardNumber']", "the card number field"]
+target = [
+  "css:input[id^='adyen-checkout-encryptedCardNumber']",
+  "the card number field inside the payment iframe",
+]
 value = "${inputs.card_number}"
+
+[[steps]]
+id = "fill_cardholder_name"
+do = "fill"
+effect = "idempotent"
+target = ["css:#acNmField", "the cardholder name field inside the payment iframe"]
+value = "${inputs.card_holder}"
 
 [[steps]]
 id = "leave_card_number_frame"
@@ -436,7 +458,13 @@ target = ["css:iframe[title='Iframe for expiry date']", "the expiry date payment
 id = "fill_expiry"
 do = "fill"
 effect = "idempotent"
-target = ["css:input[id^='adyen-checkout-encryptedExpiryDate']", "the expiry date field"]
+# Adyen's masked expiry field auto-inserts a "/" separator ("0330" -> "03/30"), so verify="off"
+# skips the value-echo check rather than fighting the formatter.
+verify = "off"
+target = [
+  "css:input[id^='adyen-checkout-encryptedExpiryDate']",
+  "the expiry date field inside the payment iframe",
+]
 value = "${inputs.card_expiry}"
 
 [[steps]]
@@ -455,7 +483,10 @@ id = "fill_cvc"
 do = "fill"
 effect = "idempotent"
 secret = true
-target = ["css:input[id^='adyen-checkout-encryptedSecurityCode']", "the security code field"]
+target = [
+  "css:input[id^='adyen-checkout-encryptedSecurityCode']",
+  "the security code field inside the payment iframe",
+]
 value = "${inputs.card_cvc}"
 
 [[steps]]
@@ -463,12 +494,21 @@ id = "leave_cvc_frame"
 do = "switch_to_main"
 effect = "observe"
 
+[[steps]]
+id = "leave_cvc_frame_settle"
+do = "wait"
+ms = 300
+
+[[steps]]
+id = "payment_ready"
+do = "assert"
+
 [[steps.assert]]
 type = "state"
 state = "enabled"
-selector = "button.adyen-checkout__button--pay"
-purpose = "precondition"
-timeout_ms = 6000
+selector = "css:button.adyen-checkout__button--pay"
+purpose = "postcondition"
+timeout_ms = 30000
 
 # The final at-most-once mutation: submit payment. No self-retry — a click that dispatches must
 # never be re-entered.
@@ -477,11 +517,11 @@ id = "pay"
 do = "click"
 effect = "at_most_once"
 retry = { policy = "never" }
-target = ["button.adyen-checkout__button--pay", "the Pay button"]
+target = ["css:button.adyen-checkout__button--pay", "the Pay button"]
 
 [[steps.assert]]
 type = "text"
-selector = "h2"
+selector = "css:h2"
 text = "Payment Successful!"
 match = "exact"
 purpose = "postcondition"

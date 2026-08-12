@@ -5,6 +5,12 @@
 // overridable per-role via `[ai.models.*]` config. Each role carries `model` + ordered
 // `fallbacks` + `pricing` (USD per 1M tokens). Pricing is what makes cost deterministic + offline-
 // testable (cost = tokens × role pricing) regardless of provider cost reporting.
+//
+// `[ai.models.default]` is a reserved, non-role config key: it seeds every role's fields BEFORE
+// that role's own explicit fields are applied. `resolveRegistry` implements this as two chained
+// `mergeRole` calls per role — `mergeRole(mergeRole(builtin, models.default), models[role])` — so
+// precedence per field is: explicit role field > `default` field > built-in field. `default`
+// itself never appears in `ResolvedRegistry`, `MODEL_ROLES`, cost aggregation, or timeouts.
 
 import type { ModelPricing, ModelRegistry, ModelRole } from "../config/types.ts";
 import type { ModelRoleName } from "../types.ts";
@@ -126,12 +132,17 @@ function mergeRole(base: ResolvedModelRole, over: ModelRole | undefined): Resolv
  * `resolveConfig`) over {@link DEFAULT_MODEL_REGISTRY}, role-by-role and field-by-field. A config
  * that overrides only `resolver.model` keeps the default resolver fallbacks/pricing AND the full
  * default vision/advisor entries.
+ *
+ * `models.default`, when present, is merged as an intermediate layer for EVERY role: builtin <
+ * default < explicit role. So `[ai.models.default]` with only `pricing` set changes every role's
+ * pricing but leaves each role's own `model`/`fallbacks` (explicit or builtin) untouched.
  */
 export function resolveRegistry(config?: { ai?: { models?: ModelRegistry } }): ResolvedRegistry {
   const over = config?.ai?.models;
   const out = {} as ResolvedRegistry;
   for (const role of ROLES) {
-    out[role] = mergeRole(DEFAULT_MODEL_REGISTRY[role], over?.[role]);
+    const withDefault = mergeRole(DEFAULT_MODEL_REGISTRY[role], over?.default);
+    out[role] = mergeRole(withDefault, over?.[role]);
   }
   return out;
 }

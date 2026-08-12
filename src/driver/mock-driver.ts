@@ -51,6 +51,20 @@
 //   d.enqueueEmitError(err)          // next emitCommand() call rejects once (FIFO)
 //   d.onEmit((opts, callIndex) => EmitCommandResult)   // full dynamic control
 //
+// OPT-IN evaluateExpression (`do = "evaluate"` bare escape-hatch steps) — installed lazily —
+// absent until scripted, so missing-capability tests need no setup at all):
+//   d.setEvaluateResult(result)          // default result, installs evaluateExpression()
+//   d.enqueueEvaluateResult(result)      // one-shot result (FIFO before the default)
+//   d.enqueueEvaluateError(err)          // next evaluateExpression() call rejects once (FIFO)
+//   d.onEvaluate((expr, callIndex) => unknown)   // full dynamic control
+//
+// evalInFrame (`do = "eval"` escape-hatch steps) — REQUIRED on the interface, so it works with
+// no setup at all: unscripted calls return `{ ok: true, value: true }`.
+//   d.setEvalResult(result)          // default EvalResult
+//   d.enqueueEvalResult(result)      // one-shot EvalResult (FIFO before the default)
+//   d.enqueueEvalError(err)          // next evalInFrame() call rejects once (FIFO)
+//   d.onEval((opts, callIndex) => EvalResult)   // full dynamic control
+//
 // CALL LOG (assert what happened):
 //   d.calls                       // ordered DriverCall[] of every method invoked
 //   d.callsTo("click")            // filtered to one method
@@ -74,6 +88,8 @@ import type {
   ElementState,
   EmitCommandOptions,
   EmitCommandResult,
+  EvalOptions,
+  EvalResult,
   FillOpts,
   GotoOpts,
   NativeDialogPolicy,
@@ -114,6 +130,8 @@ export interface DriverCall {
     | "elementState"
     | "locateSelectorFrame"
     | "emitCommand"
+    | "evaluateExpression"
+    | "evalInFrame"
     | "click"
     | "fill"
     | "type"
@@ -239,6 +257,20 @@ export class MockDriver implements Driver {
     candidates: [],
   };
 
+  // --- evaluateExpression (opt-in; mirrors browser-pilot's bare page.evaluate) ---
+  /** Whether `evaluateExpression` has been installed on this instance. */
+  private evaluateInstalled = false;
+  private evaluateResultQueue: unknown[] = [];
+  private evaluateErrorQueue: Error[] = [];
+  private evaluateProvider?: (expression: string, callIndex: number) => unknown;
+  private defaultEvaluateResult: unknown = undefined;
+
+  // --- evalInFrame (required; mirrors browser-pilot's Page.evaluate escape hatch) ---
+  private evalResultQueue: EvalResult[] = [];
+  private evalErrorQueue: Error[] = [];
+  private evalProvider?: (opts: EvalOptions, callIndex: number) => EvalResult;
+  private defaultEvalResult: EvalResult = { ok: true, value: true };
+
   // --- navigation state ---
   /** The URL returned by `currentUrl()`; updated by `goto()` and `setCurrentUrl()`. */
   private currentUrlValue = "about:blank";
@@ -252,6 +284,12 @@ export class MockDriver implements Driver {
    * `currentFrame()` to assert the driver was switched into (and back out of) a frame.
    */
   private currentFrameValue: string | null = null;
+  /**
+   * The mock "is the current frame cross-origin (OOPIF)" signal — `undefined` by default (mirrors
+   * `isCrossOriginFrame`'s "unknown" contract), set/cleared alongside `currentFrameValue` via
+   * `setCrossOriginFrame()`. Tests use this to exercise the orchestrator's narrowed bypass gate.
+   */
+  private crossOriginFrameValue: boolean | undefined = undefined;
   private pageStateValue: PageStateObservation = {};
   private newPageResultValue: NewPageResult = { matched: true, targetId: "mock-popup" };
   /** What `switchToFrame()` returns (default `true` = frame entered). Override via `setSwitchFrameOutcome`. */
@@ -497,6 +535,70 @@ export class MockDriver implements Driver {
     };
   }
 
+  /**
+   * Script the default `evaluateExpression()` result. The FIRST call to any of
+   * `setEvaluateResult` / `enqueueEvaluateResult` / `enqueueEvaluateError` / `onEvaluate`
+   * INSTALLS the method on this instance — until then `driver.evaluateExpression` is
+   * `undefined`, so the runner's `evaluateExpression?.(...)` feature-detection treats it as
+   * absent. Once installed, an unscripted call returns `undefined`.
+   */
+  setEvaluateResult(result: unknown): this {
+    this.installEvaluateExpression();
+    this.defaultEvaluateResult = result;
+    return this;
+  }
+  /** Queue one-shot `evaluateExpression()` results (FIFO, consumed before the default). Installs the method. */
+  enqueueEvaluateResult(result: unknown): this {
+    this.installEvaluateExpression();
+    this.evaluateResultQueue.push(result);
+    return this;
+  }
+  /** Queue `evaluateExpression()` to REJECT with `error` once (FIFO, consumed before results). Installs the method. */
+  enqueueEvaluateError(error: Error): this {
+    this.installEvaluateExpression();
+    this.evaluateErrorQueue.push(error);
+    return this;
+  }
+  /** Provide a function that computes the `evaluateExpression()` return per call. Installs the method. */
+  onEvaluate(fn: (expression: string, callIndex: number) => unknown): this {
+    this.installEvaluateExpression();
+    this.evaluateProvider = fn;
+    return this;
+  }
+  private installEvaluateExpression(): void {
+    if (this.evaluateInstalled) return;
+    this.evaluateInstalled = true;
+    (this as Driver).evaluateExpression = async (expression: string): Promise<unknown> => {
+      const callIndex = this.callCounter;
+      this.record("evaluateExpression", [expression]);
+      const err = this.evaluateErrorQueue.shift();
+      if (err) throw err;
+      if (this.evaluateProvider) return this.evaluateProvider(expression, callIndex);
+      return this.evaluateResultQueue.shift() ?? this.defaultEvaluateResult;
+    };
+  }
+
+  /** Script the default `evalInFrame()` result (unscripted default: `{ ok: true, value: true }`). */
+  setEvalResult(result: EvalResult): this {
+    this.defaultEvalResult = result;
+    return this;
+  }
+  /** Queue one-shot `evalInFrame()` results (FIFO, consumed before the default). */
+  enqueueEvalResult(result: EvalResult): this {
+    this.evalResultQueue.push(result);
+    return this;
+  }
+  /** Queue `evalInFrame()` to REJECT with `error` once (FIFO, consumed before results). */
+  enqueueEvalError(error: Error): this {
+    this.evalErrorQueue.push(error);
+    return this;
+  }
+  /** Provide a function that computes the `evalInFrame()` return per call. Highest precedence. */
+  onEval(fn: (opts: EvalOptions, callIndex: number) => EvalResult): this {
+    this.evalProvider = fn;
+    return this;
+  }
+
   /** Force an action's outcome when its selector exactly matches `selector`. */
   setOutcomeForSelector(selector: string, outcome: boolean): this {
     this.outcomeBySelector.set(selector, outcome);
@@ -566,6 +668,12 @@ export class MockDriver implements Driver {
     this.emitResultQueue = [];
     this.emitErrorQueue = [];
     this.emitProvider = undefined;
+    this.evaluateResultQueue = [];
+    this.evaluateErrorQueue = [];
+    this.evaluateProvider = undefined;
+    this.evalResultQueue = [];
+    this.evalErrorQueue = [];
+    this.evalProvider = undefined;
     return this;
   }
 
@@ -592,6 +700,7 @@ export class MockDriver implements Driver {
     this.record("teardown", []);
     this.connected = false;
     this.currentFrameValue = null;
+    this.crossOriginFrameValue = undefined;
   }
 
   setDialogPolicy(policy: NativeDialogPolicy): void {
@@ -629,6 +738,7 @@ export class MockDriver implements Driver {
     // A navigation resets the frame context to the top document (mirrors browser-pilot + the real
     // driver): a target that follows a `goto` resolves against the top document, never a stale frame.
     this.currentFrameValue = null;
+    this.crossOriginFrameValue = undefined;
   }
 
   async currentUrl(): Promise<string> {
@@ -654,11 +764,28 @@ export class MockDriver implements Driver {
   async switchToMain(): Promise<void> {
     this.record("switchToMain", []);
     this.currentFrameValue = null;
+    this.crossOriginFrameValue = undefined;
   }
 
   /** The mock "current frame" selector (`null` on the top document). */
   currentFrame(): string | null {
     return this.currentFrameValue;
+  }
+
+  /** The mock cross-origin-frame signal (`undefined` = unknown, mirrors the real driver's default). */
+  isCrossOriginFrame(): boolean | undefined {
+    return this.crossOriginFrameValue;
+  }
+
+  /**
+   * Set what `isCrossOriginFrame()` reports for the CURRENTLY switched-into frame. Call AFTER
+   * `switchToFrame()` (frame-switch/goto/teardown reset it back to `undefined`, matching the real
+   * driver's "unknown" default). Pass `true` to simulate a genuine OOPIF, `false` to simulate a
+   * same-origin `<iframe>`.
+   */
+  setCrossOriginFrame(value: boolean | undefined): this {
+    this.crossOriginFrameValue = value;
+    return this;
   }
 
   // =========================================================================
@@ -738,6 +865,19 @@ export class MockDriver implements Driver {
   async submit(sel?: string | string[], opts?: SubmitOpts): Promise<boolean> {
     this.record("submit", [sel, opts]);
     return this.actionOutcome("submit", sel);
+  }
+
+  // =========================================================================
+  // Driver — eval (escape-hatch JS execution)
+  // =========================================================================
+
+  async evalInFrame(opts: EvalOptions): Promise<EvalResult> {
+    const callIndex = this.callCounter;
+    this.record("evalInFrame", [opts]);
+    const err = this.evalErrorQueue.shift();
+    if (err) throw err;
+    if (this.evalProvider) return this.evalProvider(opts, callIndex);
+    return this.evalResultQueue.shift() ?? this.defaultEvalResult;
   }
 
   // =========================================================================

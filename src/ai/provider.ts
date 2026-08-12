@@ -59,6 +59,38 @@ function effortProviderOptions(
   }
 }
 
+/**
+ * Family-specific `providerOptions` applied to EVERY call (effort or not). OpenAI's Responses API
+ * defaults to STRICT structured outputs, which reject any JSON schema whose `required` does not
+ * list every property — several of our output schemas (`JudgeSchema`, `L2PickSchema`,
+ * `PlannerPlanSchema`, ...) deliberately carry `.optional()` fields, so strict mode 400s before
+ * the model even runs. `strictJsonSchema: false` keeps schema validation on OUR side (the SDK
+ * still parses/validates via `Output.object({schema})`) while letting the request through.
+ */
+function familyBaseProviderOptions(family: ProviderFamily): Record<string, unknown> {
+  switch (family) {
+    case "openai":
+      return { openai: { strictJsonSchema: false } };
+    default:
+      return {};
+  }
+}
+
+/** Shallow-per-family merge of two `providerOptions` maps (later wins per key within a family). */
+function mergeProviderOptions(
+  base: Record<string, unknown>,
+  over: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [family, opts] of Object.entries(over)) {
+    out[family] = {
+      ...(out[family] as Record<string, unknown> | undefined),
+      ...(opts as Record<string, unknown>),
+    };
+  }
+  return out;
+}
+
 /** Options for {@link createProvider}. */
 export interface CreateProviderOptions {
   apiKey: string;
@@ -189,7 +221,10 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
         // throws, never resolves) can't block indefinitely — the 174s L4 iframe hang this guards
         // against. A fired timeout aborts the in-flight attempt; the `catch` below treats it like any
         // other failure and moves to the next model (which then rejects at once on the same signal).
-        const effortOptions = effortProviderOptions(family, effort);
+        const effortOptions = mergeProviderOptions(
+          familyBaseProviderOptions(family),
+          effortProviderOptions(family, effort),
+        );
         const openrouterOptions =
           family === "openrouter"
             ? {

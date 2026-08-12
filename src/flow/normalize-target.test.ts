@@ -3,7 +3,12 @@
 // `normalizeTarget`/`describeTarget` (the fold into `{ selectors, nl }`).
 
 import { describe, expect, test } from "bun:test";
-import { classifyLocator, describeTarget, normalizeTarget } from "./normalize-target.ts";
+import {
+  classifyLocator,
+  cssOnlyTarget,
+  describeTarget,
+  normalizeTarget,
+} from "./normalize-target.ts";
 
 describe("classifyLocator", () => {
   test("ref: prefix classifies as ref", () => {
@@ -127,5 +132,52 @@ describe("describeTarget", () => {
 
   test("undefined target describes as undefined", () => {
     expect(describeTarget(undefined)).toBeUndefined();
+  });
+});
+
+describe("cssOnlyTarget", () => {
+  test("a single css:-prefixed string target qualifies, prefix stripped", () => {
+    expect(cssOnlyTarget("css:#cardNumber")).toBe("#cardNumber");
+  });
+
+  test("case-insensitive prefix", () => {
+    expect(cssOnlyTarget("CSS:#cardNumber")).toBe("#cardNumber");
+  });
+
+  test("a single-entry array target qualifies the same as a bare string", () => {
+    expect(cssOnlyTarget(["css:#cardNumber"])).toBe("#cardNumber");
+  });
+
+  test("undefined target does not qualify", () => {
+    expect(cssOnlyTarget(undefined)).toBeUndefined();
+  });
+
+  test("a bare (unprefixed) `[attr=val]` selector does NOT qualify", () => {
+    expect(cssOnlyTarget("[data-testid='x']")).toBeUndefined();
+  });
+
+  test("a ref:/role:/text: selector does NOT qualify", () => {
+    expect(cssOnlyTarget("role:button:Next")).toBeUndefined();
+    expect(cssOnlyTarget("text:Submit")).toBeUndefined();
+    expect(cssOnlyTarget("ref:e1")).toBeUndefined();
+  });
+
+  test("natural language does NOT qualify", () => {
+    expect(cssOnlyTarget("the card number field")).toBeUndefined();
+  });
+
+  test("a css: entry plus a trailing NL fallback still qualifies (the normal authoring convention)", () => {
+    expect(cssOnlyTarget(["css:#cardNumber", "the card number field"])).toBe("#cardNumber");
+  });
+
+  test("TWO selector-classed entries do NOT qualify, even if one is css:", () => {
+    expect(cssOnlyTarget(["css:#cardNumber", "css:#other"])).toBeUndefined();
+    expect(cssOnlyTarget(["css:#cardNumber", "[data-testid='x']"])).toBeUndefined();
+    expect(cssOnlyTarget(["css:#cardNumber", "role:button:Next"])).toBeUndefined();
+  });
+
+  test("a css: prefix with nothing after it does NOT qualify", () => {
+    expect(cssOnlyTarget("css:")).toBeUndefined();
+    expect(cssOnlyTarget("css:   ")).toBeUndefined();
   });
 });

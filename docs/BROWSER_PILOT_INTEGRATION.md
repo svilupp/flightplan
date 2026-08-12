@@ -18,7 +18,7 @@ npm install browser-pilot
 ```
 
 Do not use a `file:` path, a workspace reference, or a sibling checkout in a consumer install.
-Flightplan itself pins the released `browser-pilot@0.2.0` package.
+Flightplan itself uses the published `browser-pilot@0.2.1` package.
 
 ## Canonical authoring flow
 
@@ -107,6 +107,17 @@ Flightplan strips its authoring-only `css:` prefix before sending the selector t
 `fingerprint:`, `fp:`, and `structure:` are internal lock identity tokens, not author-facing target
 prefixes. Keep a stable natural-language intent even when a selector is available; the intent is
 used when the recorded selector drifts.
+
+## Fill verification (`verify`) passthrough
+
+A `fill` step's `verify` option (`"exact" | "normalized" | "off"`, default `"normalized"`) is
+forwarded straight into the batch `Step.verify` browser-pilot dispatches (requires
+**browser-pilot >=0.2.1**, which added native `verify` support to `page.fill` and its batch
+executor): `"exact"` maps to browser-pilot's `"exact"`, `"off"` maps to `false`, and
+`"normalized"`/unset maps to `"normalized"`. browser-pilot itself performs the NFKC +
+whitespace-collapse (then whitespace-stripped) comparison and skips the char-by-char retype when
+only formatting differs — Flightplan no longer parses or recovers from a "did not stick" error
+message.
 
 ## `emit` — WebSocket command injection
 

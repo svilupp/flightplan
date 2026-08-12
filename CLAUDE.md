@@ -7,8 +7,8 @@ Bun + TypeScript + AI SDK v6 + browser-pilot. See `README.md` and `docs/` for th
 
 ## Browser-pilot integration boundary
 
-- Consumer guidance must use a released `browser-pilot` package. Flightplan pins the released
-  `browser-pilot@0.2.0`; do not replace it with a sibling checkout in CI or consumer instructions.
+- Flightplan uses `browser-pilot@0.2.1`. Do not replace it with a sibling checkout in CI or
+  consumer instructions.
 - The canonical authoring path is `bp record`, `bp record summary` / `bp record inspect`, `bp record
   derive`, manual TOML translation, `flightplan lint`, an unlocked first run for lock learning, then
   `flightplan run <flow> --frozen` for CI or shared replay. See `docs/BROWSER_PILOT_INTEGRATION.md`.
@@ -22,6 +22,8 @@ Bun + TypeScript + AI SDK v6 + browser-pilot. See `README.md` and `docs/` for th
 - `do = "emit"` delegates to browser-pilot's `page.emitMessage` (requires `browser-pilot>=0.2.0`), is
   always `effect = "at_most_once"`, and never persists socket URLs, socket/target ids, or other
   session-scoped data to lock files.
+- `[config.ai.models.default]` is the standard way to set one model for every AI role at once; see
+  `README.md` and `docs/skills/authoring-flightplan-workflows/SKILL.md` for precedence and footguns.
 
 ## Dev harness — quiet on success
 

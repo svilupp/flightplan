@@ -33,6 +33,13 @@ export const ModelRoleSchema = z
  * The `[ai.models]` registry: one entry per named role. All optional (merged key-by-key).
  * `planner` (cheap) + `planner_capable` (escalation-only, UNPROVEN) back the L5 path-repair planner
  * (PLAN_v003 v003-6); override them via `[ai.models.planner]` / `[ai.models.planner_capable]`.
+ *
+ * `default` is a reserved, non-role key: `[ai.models.default]` sets fallback values applied to
+ * EVERY role (resolver/advisor/vision/planner/planner_capable) before the role's own explicit
+ * fields are applied. Precedence per field is: explicit role field > `default` field > built-in
+ * DEFAULT_MODEL_REGISTRY[role] field (see `resolveRegistry` in src/ai/registry.ts). `default` is
+ * never itself a role — it never appears in `MODEL_ROLES`, `ResolvedRegistry`, cost aggregation,
+ * or timeout lookups.
  */
 export const ModelRegistrySchema = z
   .object({
@@ -41,6 +48,7 @@ export const ModelRegistrySchema = z
     vision: ModelRoleSchema.optional(),
     planner: ModelRoleSchema.optional(),
     planner_capable: ModelRoleSchema.optional(),
+    default: ModelRoleSchema.optional(),
   })
   .strict();
 

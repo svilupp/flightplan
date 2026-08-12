@@ -65,6 +65,7 @@ import type {
   Driver,
   EmitCommandOptions,
   EmitCommandResult,
+  EvalOptions,
   MatchedCondition,
   NativeDialogPolicy,
   NewPageExpectation,
@@ -340,6 +341,8 @@ interface RunServices {
   inputs: Record<string, string>;
   env: Record<string, string | undefined>;
   dialogPolicy: NativeDialogPolicy;
+  /** Run-time warning sink (defaults to stderr). */
+  onWarn: (message: string) => void;
 }
 
 /**
@@ -348,7 +351,14 @@ interface RunServices {
  * `redact_media` fail-closes on ALL of them (B7) — not just `fill` (the earlier gap that left secret
  * `select`/`goto` frames persisted). Kept in sync with the schema's `secret?: boolean` verbs.
  */
-const SECRET_CAPABLE_VERBS = new Set<Step["do"]>(["fill", "select", "goto", "emit"]);
+const SECRET_CAPABLE_VERBS = new Set<Step["do"]>([
+  "fill",
+  "select",
+  "goto",
+  "emit",
+  "eval",
+  "evaluate",
+]);
 
 /** True when this step both CAN carry a secret (schema) AND is flagged `secret === true`. */
 function isSecretStep(step: Step): boolean {
@@ -931,6 +941,110 @@ async function performStepAction(
           dispatchState: "dispatched",
         };
       }
+      return { ok: true };
+    }
+    case "eval": {
+      // Escape-hatch JS execution (browser-pilot's `Page.evaluate`, which pierces a genuine
+      // cross-origin OOPIF when the element verbs cannot). No ladder, no lock, no lock-relevant
+      // selector — a direct driver call, mirroring the emit/switch_frame non-targeted path.
+      const evalOpts: EvalOptions = {
+        script: step.script,
+        ...(step.frame !== undefined ? { frame: step.frame } : {}),
+        ...(step.args !== undefined ? { args: step.args } : {}),
+      };
+      const redactedIntent = services.redactor.redactText(
+        step.frame !== undefined ? `eval in ${step.frame}` : "eval",
+      );
+      const evalBa = (ok: boolean): void => {
+        const ba = { action: "eval", selectorOrIntent: redactedIntent, ok, durationMs: 0 };
+        void writers.trace.emitBrowserAction(ba);
+        span.event(
+          TELEMETRY_EVENTS.browserAction,
+          browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
+        );
+      };
+      let result: Awaited<ReturnType<Driver["evalInFrame"]>>;
+      try {
+        result = await driver.evalInFrame(evalOpts);
+      } catch (err) {
+        evalBa(false);
+        const detail = err instanceof Error ? err.message : String(err);
+        return {
+          ok: false,
+          error: `eval step ${step.id} failed: ${detail}`,
+          dispatchState: "not_dispatched",
+        };
+      }
+      if (!result.ok) {
+        evalBa(false);
+        // A frame that could never be entered means NOTHING ran — cleanly `not_dispatched`. A
+        // thrown script exception means the frame WAS entered and the script started executing
+        // before failing — its side effects (if any) are unknown, so it's `uncertain`, mirroring
+        // the emit case's `dispatched-unconfirmed`. An older driver that hasn't been updated to
+        // report `phase` falls back to `not_dispatched` (the prior, more conservative behavior).
+        const dispatchState: DispatchState =
+          result.phase === "script" ? "uncertain" : "not_dispatched";
+        return {
+          ok: false,
+          error: `eval step ${step.id}: ${result.error ?? "evaluation failed"}`,
+          dispatchState,
+        };
+      }
+      // `expect` gates success and REPLACES the normal fill-verification path: "truthy" (default)
+      // passes when the result is JS-truthy; any other literal string is compared against
+      // `JSON.stringify(result)` for an exact match.
+      const expectOk =
+        step.expect === "truthy"
+          ? Boolean(result.value)
+          : JSON.stringify(result.value) === step.expect;
+      evalBa(expectOk);
+      if (!expectOk) {
+        return {
+          ok: false,
+          error: `eval step ${step.id}: result did not satisfy expect = ${JSON.stringify(step.expect)}`,
+          dispatchState: "dispatched",
+        };
+      }
+      return { ok: true };
+    }
+    case "evaluate": {
+      // Bare escape-hatch JS expression (browser-pilot's `page.evaluate`), which already routes
+      // into whatever OOPIF child session a prior `switch_frame` step entered — no frame
+      // targeting, no args/expect wrapper (see `eval` for the richer variant). No ladder, no
+      // lock, no lock-relevant selector — a direct driver call, mirroring the emit/eval
+      // non-targeted path.
+      if (!driver.evaluateExpression) {
+        return {
+          ok: false,
+          error:
+            `step ${step.id} declares an evaluate step, but the connected driver does not ` +
+            "support evaluateExpression (page.evaluate is not available on the connected driver)",
+          dispatchState: "not_dispatched",
+        };
+      }
+      const redactedIntent = step.secret
+        ? services.redactor.redactText(step.expression)
+        : step.expression;
+      const evaluateBa = (ok: boolean): void => {
+        const ba = { action: "evaluate", selectorOrIntent: redactedIntent, ok, durationMs: 0 };
+        void writers.trace.emitBrowserAction(ba);
+        span.event(
+          TELEMETRY_EVENTS.browserAction,
+          browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
+        );
+      };
+      try {
+        await driver.evaluateExpression(step.expression);
+      } catch (err) {
+        evaluateBa(false);
+        const detail = err instanceof Error ? err.message : String(err);
+        return {
+          ok: false,
+          error: `evaluate step ${step.id} failed: ${detail}`,
+          dispatchState: "not_dispatched",
+        };
+      }
+      evaluateBa(true);
       return { ok: true };
     }
     case "run": {
@@ -2102,10 +2216,12 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
 
   // The bundle of cross-cutting P5 services threaded through the loop + hooks (no-op when disabled).
   const activeSpan: { current: SpanHandle } = { current: runSpan };
+  const onWarn = opts.onWarn ?? ((m: string) => console.error(m));
   const services: RunServices = {
     redactor,
     runSpan,
     activeSpan,
+    onWarn,
     record: opts.config.browser?.record === true,
     redactMedia: opts.config.redaction.redact_media ?? true,
     screenshotsDir: runDir.screenshotsDir,
@@ -2222,7 +2338,6 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   // root step-namespace map binds to the graph-iteration-first module silently (see
   // buildStepNamespaceMap). This does NOT change binding — it just makes the ambiguity observable so
   // a maintainer can disambiguate (a run-time warning, per the brief). `onWarn` defaults to stderr.
-  const onWarn = opts.onWarn ?? ((m: string) => console.error(m));
   for (const c of collectImportStepCollisions(graph)) {
     onWarn(
       `flightplan: import step-id collision on "${c.stepId}": bound to "${c.boundModule}" ` +

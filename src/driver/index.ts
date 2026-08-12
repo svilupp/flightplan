@@ -75,6 +75,8 @@ export type {
   EmitCommandOptions,
   EmitCommandResult,
   EmitReply,
+  EvalOptions,
+  EvalResult,
   FailureReason,
   FillOpts,
   GotoOpts,
