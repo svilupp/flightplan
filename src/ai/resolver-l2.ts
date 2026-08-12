@@ -26,8 +26,13 @@ import { ResolverDecisionSchema } from "./schemas.ts";
 /** Minimum confidence to ACT on a resolver pick; below this we escalate to disambiguate. */
 export const L2_MIN_CONFIDENCE = 0.5;
 
-/** All roles share `maxOutputTokens ≥ 512` (Gemini thinking-token caveat; FINDINGS §3). */
-export const AI_MIN_OUTPUT_TOKENS = 512;
+/**
+ * All roles share this `maxOutputTokens` default. Raised from the original 512 to 4000: reasoning
+ * tokens (native `reasoningEffort`/`thinkingConfig` or OpenRouter `reasoning.effort`) count against
+ * the same cap, and 512 left too little headroom once effort-suffixed models started reasoning
+ * before emitting the schema-conforming output (FINDINGS §3 caveat, extended for reasoning tiers).
+ */
+export const AI_DEFAULT_OUTPUT_TOKENS = 4000;
 
 /**
  * Build the resolver text prompt from the intent + the index-numbered candidate packet. When a
@@ -92,7 +97,7 @@ export async function resolveL2(
       callRole: "resolver",
       purpose: `resolve:${step.id}`,
       schema: ResolverDecisionSchema,
-      maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
+      maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS,
       prompt: buildResolverPrompt(intentText, action, packet, noteIn),
     });
   } catch (err) {

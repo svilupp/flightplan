@@ -21,7 +21,21 @@ bun run flightplan run examples/flows/wizard.toml --frozen --no-lock-write --jso
 The fixture server listens on `http://localhost:3000`. The example flows use the default CDP attach
 at `localhost:9222`, so start Chrome/Chromium with remote debugging enabled first, or add a
 `[config.connect]` block with `mode = "launch"`. Deterministic L0/L1 flows need no API key.
-AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY`.
+AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY` by default. Set
+`[config.ai] provider = "google" | "openai"` to route through `@ai-sdk/google` / `@ai-sdk/openai`
+instead (with `GOOGLE_GENERATIVE_AI_API_KEY` / `OPENAI_API_KEY` as the matching default key env,
+overridable via `api_key_env`); model ids in `[ai.models.*]` are then the provider's OWN ids, not
+OpenRouter slugs. Any model id may carry a `:effort` suffix (`minimal|low|medium|high|xhigh`), e.g.
+`"openai/gpt-5.6-luna:xhigh"`, to set the reasoning effort for that model (Google has no native
+`xhigh`; it maps to `high`). Example — Gemini with high reasoning:
+
+```toml
+[config.ai]
+provider = "google"          # uses GOOGLE_GENERATIVE_AI_API_KEY
+
+[config.ai.models.resolver]
+model = "gemini-3-pro:high"  # native Google model id + reasoning effort suffix
+```
 
 ## Install
 
@@ -109,10 +123,12 @@ purpose = "postcondition"
 | `idempotent` | Safe repeated setup or navigation |
 | `at_most_once` | Create, approve, pay, save, submit, confirm |
 
-Mark action steps explicitly. The linter treats clicks, fills, and selects as mutation-capable, even
-when they only filter a table or change tabs. Do not add `on_fail = { goto = "self" }` to a step that
-may have dispatched. Use `retry = { policy = "never" }` for dangerous steps and let an exact
-postcondition rescue an uncertain result.
+Mark action steps explicitly. The linter treats clicks, fills, selects, and `emit` as
+mutation-capable, even when a click only filters a table or changes tabs. `emit` (WebSocket command
+injection, see [docs/BROWSER_PILOT_INTEGRATION.md](docs/BROWSER_PILOT_INTEGRATION.md#emit--websocket-command-injection))
+is always `at_most_once` - the linter rejects any other value. Do not add `on_fail = { goto = "self" }`
+to a step that may have dispatched. Use `retry = { policy = "never" }` for dangerous steps and let an
+exact postcondition rescue an uncertain result.
 
 ### 2. Resolve before acting
 
@@ -274,6 +290,22 @@ Read the result as a state machine:
 | Stale lock | Flow and learned recipe differ | Review diff, refresh lock intentionally, or run frozen to fail closed |
 
 Artifacts are the source of truth. Exit code alone cannot prove that an action committed once.
+
+## Troubleshooting
+
+**"You are using an unsupported command-line flag: --no-sandbox. Stability and security will
+suffer."** Flightplan launches Chrome with `--no-sandbox` by default so it also works in
+containerized and root environments. In headed mode Chrome shows this as a yellow warning bar; it's
+expected and harmless outside those environments. If you don't need it, override the defaults with
+an explicit `chromeFlags` array in `[config.connect]` (an empty array falls back to the defaults, so
+list the flags you want, and add `"--headless=new"` yourself for headless runs):
+
+```toml
+[config.connect]
+mode = "launch"
+headless = false
+chromeFlags = ["--disable-gpu", "--window-size=1280,720"]
+```
 
 ## AI tiers and planner
 

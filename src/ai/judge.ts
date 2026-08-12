@@ -13,7 +13,7 @@ import type { AiJudgeAssertion } from "../flow/types.ts";
 import { isBudgetExceeded } from "./budget.ts";
 import type { AiCallRuntime } from "./call.ts";
 import { aiCall } from "./call.ts";
-import { AI_MIN_OUTPUT_TOKENS } from "./resolver-l2.ts";
+import { AI_DEFAULT_OUTPUT_TOKENS } from "./resolver-l2.ts";
 import { JudgeSchema, type JudgeVerdict } from "./schemas.ts";
 import type { AiCallFailure, AiMessage } from "./types.ts";
 
@@ -115,7 +115,7 @@ export async function judge(
         callRole: "judge",
         purpose,
         schema: JudgeSchema,
-        maxOutputTokens: AI_MIN_OUTPUT_TOKENS, // ≥512 — Gemini thinking tokens (FINDINGS §3)
+        maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS, // Gemini thinking tokens count against this cap (FINDINGS §3)
         messages,
         fallback: judgeFailSafe, // unparseable judge output → fail closed (see judgeFailSafe)
       });
@@ -127,7 +127,7 @@ export async function judge(
         callRole: "judge",
         purpose,
         schema: JudgeSchema,
-        maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
+        maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS,
         prompt: buildJudgePrompt(assertion.prompt, context),
         fallback: judgeFailSafe, // unparseable judge output → fail closed (see judgeFailSafe)
       });

@@ -9,6 +9,30 @@
 import type { ModelPricing, ModelRegistry, ModelRole } from "../config/types.ts";
 import type { ModelRoleName } from "../types.ts";
 
+/** Recognized reasoning-effort suffix values (`model:effort` syntax — see {@link parseModelId}). */
+export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+function isReasoningEffort(value: string): value is ReasoningEffort {
+  return (REASONING_EFFORTS as readonly string[]).includes(value);
+}
+
+/**
+ * Parse an optional `:effort` suffix off a model id, e.g. `"openai/gpt-5.6-luna:xhigh"` →
+ * `{ model: "openai/gpt-5.6-luna", effort: "xhigh" }`. Splits on the LAST `:` and only treats the
+ * suffix as an effort level when it is one of {@link REASONING_EFFORTS} — otherwise the id is
+ * returned unchanged, since OpenRouter slugs can legitimately contain `:` (e.g.
+ * `"deepseek/deepseek-v3.2:free"`).
+ */
+export function parseModelId(id: string): { model: string; effort?: ReasoningEffort } {
+  const idx = id.lastIndexOf(":");
+  if (idx === -1) return { model: id };
+  const suffix = id.slice(idx + 1);
+  if (!isReasoningEffort(suffix)) return { model: id };
+  return { model: id.slice(0, idx), effort: suffix };
+}
+
 /** A fully-resolved role entry: a model, its ordered fallbacks, and pricing (all present). */
 export interface ResolvedModelRole {
   model: string;

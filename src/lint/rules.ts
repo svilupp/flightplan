@@ -337,6 +337,24 @@ const stepsRequiredFields: Rule = {
         case "switch_frame":
           requireField("target", "an ordered locator identifying the <iframe> element to enter");
           break;
+        case "emit": {
+          requireField("channel", 'the emit channel (currently only "ws")');
+          requireField("payload", "the message payload (a string or an inline table)");
+          const channel = step.channel;
+          if (typeof channel === "string" && channel.length > 0 && channel !== "ws") {
+            out.push(
+              diag(
+                ctx,
+                "steps/required-fields",
+                "error",
+                `Step \`${id}\` (do = "emit") has unsupported \`channel\` ${JSON.stringify(channel)}. ` +
+                  'Only "ws" is supported.',
+                { stepId: id, location: "channel" },
+              ),
+            );
+          }
+          break;
+        }
         case "assert": {
           if (rawAsserts(step).length === 0) {
             out.push(
@@ -1713,6 +1731,29 @@ const effectAiOnlyPostcondition: Rule = {
   },
 };
 
+const emitNoRetry: Rule = {
+  id: "steps/emit-no-retry",
+  severity: "error",
+  description: "emit steps are at-most-once; browser-pilot rejects retries on a dispatched frame.",
+  run(ctx) {
+    return rawSteps(ctx.doc).flatMap((step, i) => {
+      if (step.do !== "emit") return [];
+      const retry = rawRetry(step);
+      if (!retry || Number(retry.max ?? 0) === 0) return [];
+      return [
+        diag(
+          ctx,
+          "steps/emit-no-retry",
+          "error",
+          `Step \`${stepId(step, i)}\` (do = "emit") sets retry.max > 0, but emit is at-most-once — ` +
+            "browser-pilot never retries a dispatched frame. Remove retry.max or set it to 0.",
+          { stepId: stepId(step, i), location: `steps[${i}].retry.max` },
+        ),
+      ];
+    });
+  },
+};
+
 const assertionCriticalBroadMatch: Rule = {
   id: "assert/critical-broad-match",
   severity: "warning",
@@ -1796,6 +1837,7 @@ export const RULES: readonly Rule[] = [
   effectDangerousVerb,
   effectAiOnlyPostcondition,
   assertionCriticalBroadMatch,
+  emitNoRetry,
 ];
 
 /** Rule ids only — for tooling/tests. */

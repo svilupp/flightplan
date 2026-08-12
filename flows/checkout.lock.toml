@@ -1,0 +1,204 @@
+version = 2
+source = "flows/checkout.toml"
+source_hash = "sha256:de6eb975168f72161ba397a7bf1ef689a20db66e9fa1b4ff6c8575c4cc30dd2c"
+description = "Open a product directly, add to cart, and pay on window-shop-dovid-test, asserting Payment Successful"
+
+[[targets]]
+step = "accept_cookies"
+target = "the Accept all button in the cookie consent banner"
+last_seen = "2026-08-12T08:06:20.590Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|lzpk2i;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|6irgx6"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='button-chip']"
+greens = 1
+last_ok = "2026-08-12T08:06:20.590Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-upload-image\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "role_name"
+selector = "role:button:\"Action: Comfortable everyday basics for a relaxed weekend\""
+greens = 0
+
+[[targets]]
+step = "dismiss_welcome_guide"
+target = "the Skip button on the welcome guide overlay"
+last_seen = "2026-08-12T08:06:21.261Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|vvlnvn;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|qfmmdt"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='button-chip']"
+greens = 1
+last_ok = "2026-08-12T08:06:21.261Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "recheck_cookies"
+target = "the Accept all button in the cookie consent banner"
+last_seen = "2026-08-12T08:06:22.849Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|ddcktj;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|cohtg"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='button-chip']"
+greens = 1
+last_ok = "2026-08-12T08:06:22.849Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "recheck_welcome_guide"
+target = "the Skip button on the welcome guide overlay"
+last_seen = "2026-08-12T08:06:23.976Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|1c0wdwx;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|1cmgeqd"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='welcome-guide-dismiss']"
+greens = 1
+last_ok = "2026-08-12T08:06:23.976Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0
+
+[[targets]]
+step = "select_shipping_region"
+target = "the United Kingdom option in the region picker"
+last_seen = "2026-08-12T08:06:21.966Z"
+
+[targets.match]
+url_glob = "https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz*"
+sig = "text:https://uat-ws-pilot-web.api-swap-os.com/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|1no1ipf;struct:/window-shop-dovid-test/chat/products/Z2lkOi8vc2hvcGlmeS9Qcm9kdWN0LzE1NDU4NjIwMjExNTgz|16ic2kf"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid='button-chip']"
+greens = 1
+last_ok = "2026-08-12T08:06:21.966Z"
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-chip\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-close-timeline\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-discover\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-home\"]"
+greens = 0
+
+[[targets.strategies]]
+kind = "testid"
+selector = "[data-testid=\"button-new-session\"]"
+greens = 0

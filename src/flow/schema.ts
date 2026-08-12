@@ -345,6 +345,48 @@ export const RunStepSchema = z
   })
   .strict();
 
+/**
+ * Field-equality map used to correlate an emitted message with its reply — dot paths against the
+ * parsed JSON reply payload (browser-pilot's `AwaitReplyOptions.where`). Values are JSON scalars.
+ */
+export const EmitAwaitReplySchema = z
+  .object({
+    where: z
+      .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+      .optional(),
+    /** Glob matched against the raw reply payload text. */
+    match: z.string().min(1).optional(),
+    timeout_ms: z.number().int().positive().optional(),
+  })
+  .strict();
+
+/**
+ * emit — inject a message on a WebSocket the page itself owns (browser-pilot's `page.emitMessage`,
+ * >=0.2.0). Inherently `at_most_once`: the frame is dispatched at most once and browser-pilot never
+ * retries it, so `effect` is FORCED to `"at_most_once"` here (the field is overridden after the
+ * `stepCommon` spread — a bare `effect` key or an explicit non-`"at_most_once"` value is a schema
+ * error). `channel` is restricted to `"ws"` (the only channel browser-pilot currently supports).
+ * `payload` is a string OR an inline table — a table is JSON-serialized at the driver boundary
+ * (`JSON.stringify`) before it reaches browser-pilot, which only accepts string payloads.
+ */
+export const EmitStepSchema = z
+  .object({
+    ...stepCommon,
+    do: z.literal("emit"),
+    channel: z.literal("ws"),
+    /** URL glob selecting the socket when the page owns more than one; browser-pilot enforces it. */
+    match: z.string().min(1).optional(),
+    payload: z.union([z.string(), z.record(z.string(), z.unknown())]),
+    /** Treat `payload` as base64 and send it as a binary frame. */
+    base64: z.boolean().optional(),
+    await_reply: EmitAwaitReplySchema.optional(),
+    secret: z.boolean().optional(), // secret → the (templated) payload is redacted everywhere
+    // Forced/defaulted: emit is inherently at-most-once (browser-pilot never retries a dispatched
+    // frame). Overrides `stepCommon`'s generic `effect` field for this variant only.
+    effect: z.literal("at_most_once").optional().default("at_most_once"),
+  })
+  .strict();
+
 export const StepSchema = z.discriminatedUnion("do", [
   GotoStepSchema,
   ClickStepSchema,
@@ -357,6 +399,7 @@ export const StepSchema = z.discriminatedUnion("do", [
   RunStepSchema,
   SwitchFrameStepSchema,
   SwitchToMainStepSchema,
+  EmitStepSchema,
 ]);
 
 // ---------------------------------------------------------------------------

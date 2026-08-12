@@ -2,7 +2,16 @@
 
 Semver. Each release gets a short, user-facing note: what changed for someone *using* the platform (operators, API consumers, deployers), not internal refactors. Keep entries minimal - one line where possible, grouped under `Added` / `Changed` / `Fixed` / `Removed` only when needed.
 
-## [Unreleased]
+## [0.0.2] - 2026-08-12
+
+### Added
+
+- **Native Google and OpenAI providers.** `[ai].provider = "google" | "openai"` routes through the native SDKs (provider-matched `api_key_env` defaults); model ids may carry a `:effort` suffix (`minimal|low|medium|high|xhigh`) to set reasoning effort. Default output-token cap raised to 4000 to make room for reasoning tokens.
+- **`emit` step verb.** Send a message on a WebSocket the page already owns (via browser-pilot's `page.emitMessage`), optionally waiting for a correlated reply; always `at_most_once` and never persisted to lock files.
+
+### Changed
+
+- **Browser-pilot 0.1.0 → 0.2.0.** Required for the new `emit` step verb.
 
 ## [0.0.1] - 2026-07-12
 

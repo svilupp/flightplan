@@ -28,6 +28,8 @@ import {
   type AiRuntime,
   type BudgetLimitName,
   createAiRuntime,
+  createGoogleGenerate,
+  createOpenAiGenerate,
   createOpenRouterGenerate,
   isBudgetExceeded,
   type RecentAction,
@@ -61,6 +63,8 @@ import type {
   ActionReceipt,
   DispatchState,
   Driver,
+  EmitCommandOptions,
+  EmitCommandResult,
   MatchedCondition,
   NativeDialogPolicy,
   NewPageExpectation,
@@ -344,7 +348,7 @@ interface RunServices {
  * `redact_media` fail-closes on ALL of them (B7) — not just `fill` (the earlier gap that left secret
  * `select`/`goto` frames persisted). Kept in sync with the schema's `secret?: boolean` verbs.
  */
-const SECRET_CAPABLE_VERBS = new Set<Step["do"]>(["fill", "select", "goto"]);
+const SECRET_CAPABLE_VERBS = new Set<Step["do"]>(["fill", "select", "goto", "emit"]);
 
 /** True when this step both CAN carry a secret (schema) AND is flagged `secret === true`. */
 function isSecretStep(step: Step): boolean {
@@ -833,6 +837,100 @@ async function performStepAction(
         TELEMETRY_EVENTS.browserAction,
         browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
       );
+      return { ok: true };
+    }
+    case "emit": {
+      // emit is inherently at-most-once: no ladder, no lock, no lock-relevant selector — just a
+      // direct WebSocket command injection on the driver, mirroring the `press`/`switch_frame`
+      // non-targeted path. A table payload is JSON-serialized here (the driver boundary only
+      // accepts a string); templating already ran deep over the raw table (`applyTemplatingDeep`).
+      if (!driver.emitCommand) {
+        return {
+          ok: false,
+          error:
+            `step ${step.id} declares an emit step, but the connected driver does not support ` +
+            "emitCommand (browser-pilot >=0.2.0 required for the emit step's page.emitMessage)",
+          // Never attempted a send — a clean, non-dispatched failure. emit owns its OWN
+          // delivery/reply proof (EmitCommandResult) rather than the generic dispatch-receipt
+          // machinery other verbs use, so this is always a normal step failure, never the
+          // uncertain-dispatch → inconclusive path shared by click/fill/etc.
+          dispatchState: "not_dispatched",
+        };
+      }
+      const payload =
+        typeof step.payload === "string" ? step.payload : JSON.stringify(step.payload);
+      const emitOpts: EmitCommandOptions = {
+        channel: step.channel,
+        payload,
+        ...(step.match !== undefined ? { match: step.match } : {}),
+        ...(step.base64 !== undefined ? { base64: step.base64 } : {}),
+        ...(step.await_reply
+          ? {
+              awaitReply: {
+                ...(step.await_reply.where !== undefined ? { where: step.await_reply.where } : {}),
+                ...(step.await_reply.match !== undefined ? { match: step.await_reply.match } : {}),
+                ...(step.await_reply.timeout_ms !== undefined
+                  ? { timeout: step.await_reply.timeout_ms }
+                  : {}),
+              },
+            }
+          : {}),
+      };
+      const redactedPayload = services.redactor.redactText(payload);
+      const emitBa = (ok: boolean): void => {
+        const ba = { action: "emit", selectorOrIntent: redactedPayload, ok, durationMs: 0 };
+        void writers.trace.emitBrowserAction(ba);
+        span.event(
+          TELEMETRY_EVENTS.browserAction,
+          browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
+        );
+      };
+      // A dispatch/delivery failure (bp's `EmitTargetError` for an ambiguous socket, an
+      // `awaitReply` timeout, or any other rejection) is a normal STEP failure — not an infra
+      // error — so it is caught here rather than left to propagate to the run-loop's try/catch
+      // (which maps an uncaught throw to verdict `error`, per the runner's INFRA-vs-step-failure
+      // split). Normal `on_fail`/verdict machinery then applies exactly as for any other verb.
+      let result: EmitCommandResult;
+      try {
+        result = await driver.emitCommand(emitOpts);
+      } catch (err) {
+        emitBa(false);
+        const detail = err instanceof Error ? err.message : String(err);
+        return {
+          ok: false,
+          error: `emit step ${step.id} failed: ${detail}`,
+          dispatchState: "not_dispatched",
+        };
+      }
+      const awaitedReply = step.await_reply !== undefined;
+      const replyMissing = awaitedReply && result.reply === undefined;
+      const ok = result.delivered && !replyMissing;
+      emitBa(ok);
+      if (!ok) {
+        if (!result.delivered) {
+          // `delivered: false` with `reason: "dispatched-unconfirmed"` means the frame was SENT
+          // but bp could not confirm it over the wire (no `Network.webSocketFrameSent` proof) —
+          // an uncertain dispatch, exactly like a click whose input events fired but whose effect
+          // is unconfirmed. Any OTHER `delivered: false` reason (e.g. no matching socket) never
+          // sent a frame at all, so it stays `not_dispatched`.
+          const dispatchState: DispatchState =
+            result.reason === "dispatched-unconfirmed" ? "uncertain" : "not_dispatched";
+          const reason = `not delivered${result.reason ? ` (${result.reason})` : ""}`;
+          return {
+            ok: false,
+            error: `emit step ${step.id}: ${reason}`,
+            dispatchState,
+          };
+        }
+        // `delivered: true` but the awaited reply never arrived: the frame WAS dispatched (and
+        // confirmed) — only the reply-observation failed. That is a confirmed dispatch, not an
+        // unconfirmed one.
+        return {
+          ok: false,
+          error: `emit step ${step.id}: awaited reply was not received before timeout`,
+          dispatchState: "dispatched",
+        };
+      }
       return { ok: true };
     }
     case "run": {
@@ -2349,7 +2447,13 @@ function buildAiRuntime(
   const keyEnv = opts.config.ai?.api_key_env ?? DEFAULT_API_KEY_ENV;
   const apiKey = env[keyEnv];
   if (!apiKey) return undefined;
-  const generate = createOpenRouterGenerate({ apiKey });
+  const provider = opts.config.ai?.provider ?? "openrouter";
+  const generate =
+    provider === "google"
+      ? createGoogleGenerate({ apiKey })
+      : provider === "openai"
+        ? createOpenAiGenerate({ apiKey })
+        : createOpenRouterGenerate({ apiKey });
   return createAiRuntime({
     config: opts.config,
     generate,

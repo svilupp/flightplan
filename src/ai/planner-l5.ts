@@ -28,7 +28,7 @@ import type { AiCallRuntime } from "./call.ts";
 import { aiCall } from "./call.ts";
 import type { CandidatePacketEntry } from "./resolve-common.ts";
 import { buildCandidatePacket, gatherCandidates } from "./resolve-common.ts";
-import { AI_MIN_OUTPUT_TOKENS } from "./resolver-l2.ts";
+import { AI_DEFAULT_OUTPUT_TOKENS } from "./resolver-l2.ts";
 import type { PlannerPlan } from "./schemas.ts";
 import { PLANNER_STEP_DOS, PlannerPlanSchema } from "./schemas.ts";
 
@@ -207,7 +207,7 @@ export async function planRepair(
     callRole: "planner",
     purpose: `replan:${opts.page.divergedStepId}`,
     schema: PlannerPlanSchema,
-    maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
+    maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS,
     prompt,
     cache: { prefix, key: goal },
     deriveOutcome: (p) => ({ outcome: p.decision }),
@@ -238,7 +238,7 @@ export async function planRepairEscalated(
       callRole: "planner",
       purpose: `replan:${opts.page.divergedStepId}:capable`,
       schema: PlannerPlanSchema,
-      maxOutputTokens: AI_MIN_OUTPUT_TOKENS,
+      maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS,
       prompt,
       cache: { prefix, key: goal },
       deriveOutcome: (p) => ({ outcome: p.decision }),

@@ -44,6 +44,13 @@
 //   d.onElementState((selector, callIndex) => ElementState)  // compute per selector per call
 //   A function provider takes precedence over queues and defaults.
 //
+// OPT-IN emitCommand (installed lazily — absent until scripted, so missing-capability tests
+// need no setup at all):
+//   d.setEmitResult(result)          // default EmitCommandResult, installs emitCommand()
+//   d.enqueueEmitResult(result)      // one-shot EmitCommandResult (FIFO before the default)
+//   d.enqueueEmitError(err)          // next emitCommand() call rejects once (FIFO)
+//   d.onEmit((opts, callIndex) => EmitCommandResult)   // full dynamic control
+//
 // CALL LOG (assert what happened):
 //   d.calls                       // ordered DriverCall[] of every method invoked
 //   d.callsTo("click")            // filtered to one method
@@ -65,6 +72,8 @@ import type {
   BatchStep,
   Driver,
   ElementState,
+  EmitCommandOptions,
+  EmitCommandResult,
   FillOpts,
   GotoOpts,
   NativeDialogPolicy,
@@ -104,6 +113,7 @@ export interface DriverCall {
     | "resolveAll"
     | "elementState"
     | "locateSelectorFrame"
+    | "emitCommand"
     | "click"
     | "fill"
     | "type"
@@ -215,6 +225,19 @@ export class MockDriver implements Driver {
   // --- iframe-context probing (locateSelectorFrame) ---
   /** Scripted `locateSelectorFrame` verdicts by selector; presence installs the method (lazily). */
   private selectorFrameMap?: Map<string, "main" | "iframe" | "none">;
+
+  // --- emitCommand (opt-in; mirrors browser-pilot >=0.2.0's page.emitMessage) ---
+  /** Whether `emitCommand` has been installed on this instance (see `installEmitCommand`). */
+  private emitInstalled = false;
+  private emitResultQueue: EmitCommandResult[] = [];
+  private emitErrorQueue: Error[] = [];
+  private emitProvider?: (opts: EmitCommandOptions, callIndex: number) => EmitCommandResult;
+  private defaultEmitResult: EmitCommandResult = {
+    delivered: true,
+    socketUrl: "wss://mock/socket",
+    realm: "main",
+    candidates: [],
+  };
 
   // --- navigation state ---
   /** The URL returned by `currentUrl()`; updated by `goto()` and `setCurrentUrl()`. */
@@ -427,6 +450,53 @@ export class MockDriver implements Driver {
     return this;
   }
 
+  /**
+   * Script the default `emitCommand()` result. The FIRST call to any of `setEmitResult` /
+   * `enqueueEmitResult` / `enqueueEmitError` / `onEmit` INSTALLS the method on this instance —
+   * until then `driver.emitCommand` is `undefined`, so the runner's `emitCommand?.(...)`
+   * feature-detection treats it as absent (exercising the driver-missing-capability path is
+   * simply never calling any of these). Once installed, an unscripted call returns
+   * `{ delivered: true, socketUrl: "wss://mock/socket", realm: "main", candidates: [] }`.
+   */
+  setEmitResult(result: EmitCommandResult): this {
+    this.installEmitCommand();
+    this.defaultEmitResult = result;
+    return this;
+  }
+  /** Queue one-shot `emitCommand()` results (FIFO, consumed before the default). Installs the method. */
+  enqueueEmitResult(result: EmitCommandResult): this {
+    this.installEmitCommand();
+    this.emitResultQueue.push(result);
+    return this;
+  }
+  /**
+   * Queue `emitCommand()` to REJECT with `error` once (FIFO, consumed before results) — simulates
+   * an `EmitTargetError` (ambiguous socket) or an `awaitReply` timeout. Installs the method.
+   */
+  enqueueEmitError(error: Error): this {
+    this.installEmitCommand();
+    this.emitErrorQueue.push(error);
+    return this;
+  }
+  /** Provide a function that computes the `emitCommand()` return per call. Installs the method. */
+  onEmit(fn: (opts: EmitCommandOptions, callIndex: number) => EmitCommandResult): this {
+    this.installEmitCommand();
+    this.emitProvider = fn;
+    return this;
+  }
+  private installEmitCommand(): void {
+    if (this.emitInstalled) return;
+    this.emitInstalled = true;
+    (this as Driver).emitCommand = async (opts: EmitCommandOptions): Promise<EmitCommandResult> => {
+      const callIndex = this.callCounter;
+      this.record("emitCommand", [opts]);
+      const err = this.emitErrorQueue.shift();
+      if (err) throw err;
+      if (this.emitProvider) return this.emitProvider(opts, callIndex);
+      return this.emitResultQueue.shift() ?? this.defaultEmitResult;
+    };
+  }
+
   /** Force an action's outcome when its selector exactly matches `selector`. */
   setOutcomeForSelector(selector: string, outcome: boolean): this {
     this.outcomeBySelector.set(selector, outcome);
@@ -493,6 +563,9 @@ export class MockDriver implements Driver {
     this.resolveAllProvider = undefined;
     this.elementStateProvider = undefined;
     this.recordingDir = undefined;
+    this.emitResultQueue = [];
+    this.emitErrorQueue = [];
+    this.emitProvider = undefined;
     return this;
   }
 

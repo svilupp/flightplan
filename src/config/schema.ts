@@ -48,9 +48,17 @@ export const ModelRegistrySchema = z
 // [ai] — provider, key env, budgets, model registry
 // ---------------------------------------------------------------------------
 
+/**
+ * Supported AI transports (Section 2, PLAN update): `"openrouter"` (default) routes every model
+ * through OpenRouter slugs; `"google"` / `"openai"` route directly to the native `@ai-sdk/google` /
+ * `@ai-sdk/openai` providers, in which case registry model ids are the PROVIDER'S OWN ids (e.g.
+ * `gemini-3-pro`, `gpt-5.6-luna`), not OpenRouter slugs.
+ */
+export const AI_PROVIDERS = ["openrouter", "google", "openai"] as const;
+
 export const AiConfigSchema = z
   .object({
-    provider: z.string().min(1).optional(),
+    provider: z.enum(AI_PROVIDERS).optional(),
     api_key_env: z.string().min(1).optional(),
     // budgets may live under [ai] (global) and/or [run] (flow-local). Both are allowed.
     max_model_calls: z.number().int().nonnegative().optional(),

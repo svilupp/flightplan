@@ -50,6 +50,7 @@ export const STEP_DOS = [
   "run",
   "switch_frame",
   "switch_to_main",
+  "emit",
 ] as const;
 export type StepDo = (typeof STEP_DOS)[number];
 

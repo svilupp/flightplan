@@ -10,6 +10,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 // The single allowed `import ... from 'browser-pilot'` in the whole codebase.
 import {
+  type EmitWsOptions as BpEmitWsOptions,
   type Browser,
   captureStateSignature as bpCaptureStateSignature,
   captureStructureSignature as bpCaptureStructureSignature,
@@ -41,6 +42,8 @@ import type {
   BrowserPilotProvenance,
   Driver,
   ElementState,
+  EmitCommandOptions,
+  EmitCommandResult,
   FillOpts,
   GotoOpts,
   NativeDialogPolicy,
@@ -695,6 +698,29 @@ export class BrowserPilotDriver implements Driver {
     // ambient form via the empty-string selector (browser-pilot resolves the active form).
     const selector = sel === undefined ? "" : normalizeSelectorArg(sel);
     return page.submit(selector, sopts);
+  }
+
+  // --- emit (WebSocket command injection) ---
+
+  /**
+   * Delegate to browser-pilot's `page.emitMessage` (>=0.2.0). Feature-detected: a `Page` from an
+   * older browser-pilot lacks `emitMessage`, and this throws a clear upgrade error rather than
+   * silently misbehaving — the pin's `TODO` marks where this stops being purely defensive. Any bp
+   * throw (ambiguous-socket `EmitTargetError`, an `awaitReply` timeout) propagates as-is; the
+   * runner's `emit` case catches it and maps it to a normal step failure, not an infra error.
+   */
+  async emitCommand(opts: EmitCommandOptions): Promise<EmitCommandResult> {
+    const page = this.requirePage() as Page & {
+      emitMessage?(payload: string, options?: BpEmitWsOptions): Promise<EmitCommandResult>;
+    };
+    if (typeof page.emitMessage !== "function") {
+      throw new Error(
+        "emit step requires browser-pilot >=0.2.0 (page.emitMessage is not available on the " +
+          "connected browser-pilot Page) — upgrade the pinned browser-pilot dependency.",
+      );
+    }
+    const { channel: _channel, payload, ...wsOpts } = opts;
+    return page.emitMessage(payload, wsOpts);
   }
 
   // --- screenshot ---

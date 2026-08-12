@@ -67,7 +67,10 @@ resolve -> veto ambiguity/policy -> validate preconditions -> dispatch once
 
 Mark every action with `effect`. The linter treats clicks, fills, and selects as mutation-capable,
 including filters and tab changes, so give them an explicit effect and a natural-language anchor.
-For dangerous steps, use `retry = { policy = "never" }` when the step must not be re-entered.
+`emit` (WebSocket command injection) is inherently `at_most_once` - the schema forces/defaults it and
+`steps/emit-no-retry` rejects `retry.max > 0` - but it still needs a deterministic postcondition like
+any other action. For dangerous steps, use `retry = { policy = "never" }` when the step must not be
+re-entered.
 
 Do not write `on_fail = { goto = "self" }` for an effect that may have dispatched. Use a deterministic
 postcondition and observation polling instead.
@@ -151,6 +154,21 @@ the matched popup in the run artifact.
 `imports` registers a flow; it does not execute it. Use `do = "run"` to execute the imported flow.
 The entry flow owns `[connect]`, `[run]`, and safety policy. Expanded child steps count toward the
 parent budget, and `on_fail` targets cannot cross a `run` boundary.
+
+### Pick provider, model, and reasoning effort
+
+AI tiers default to OpenRouter (`OPENROUTER_API_KEY`). To route through a native provider, set
+`[config.ai] provider = "google" | "openai"` (key envs: `GOOGLE_GENERATIVE_AI_API_KEY` /
+`OPENAI_API_KEY`) and use that provider's own model ids. Any model id may carry a `:effort`
+suffix (`minimal|low|medium|high|xhigh`) to set reasoning effort:
+
+```toml
+[config.ai]
+provider = "google"
+
+[config.ai.models.resolver]
+model = "gemini-3-pro:high"   # google has no native xhigh; it maps to high
+```
 
 ## Running and proving mutations
 

@@ -23,15 +23,20 @@
 // imported (see the report / `any`-cast notes). No `any` is used to do it.
 
 import type {
+  AwaitReplyOptions as BpAwaitReplyOptions,
   BatchOptions as BpBatchOptions,
   BatchResult as BpBatchResult,
   CandidateStrategy as BpCandidateStrategy,
   ElementState as BpElementState,
+  EmitReply as BpEmitReply,
+  EmitResult as BpEmitResult,
+  EmitWsOptions as BpEmitWsOptions,
   InteractiveElement as BpInteractiveElement,
   MatchedCondition as BpMatchedCondition,
   PageSnapshot as BpPageSnapshot,
   RankedCandidate as BpRankedCandidate,
   SnapshotNode as BpSnapshotNode,
+  SocketCandidate as BpSocketCandidate,
   Step as BpStep,
   StepResult as BpStepResult,
 } from "browser-pilot";
@@ -308,6 +313,44 @@ export interface PressOpts {
 export interface SubmitOpts extends ActionOpts {
   method?: "enter" | "click" | "enter+click";
 }
+
+// ---------------------------------------------------------------------------
+// emit — WebSocket command injection (browser-pilot >=0.2.0 `page.emitMessage`)
+// ---------------------------------------------------------------------------
+
+/** A live WebSocket discovered in the page, re-exported from browser-pilot's `emitMessage` surface. */
+export type SocketCandidate = BpSocketCandidate;
+
+/** A frame received after an emit, matched by `awaitReply`. */
+export type EmitReply = BpEmitReply;
+
+/**
+ * How to match a reply frame, the boundary form of browser-pilot's `AwaitReplyOptions`. `where` is
+ * a dot-path field-equality map against the parsed JSON reply payload; `match` is a glob against
+ * the raw payload text; `timeout` bounds the wait (browser-pilot default 10000ms).
+ */
+export type EmitAwaitReplyOpts = BpAwaitReplyOptions;
+
+/**
+ * Options for `Driver.emitCommand()`. `channel` is restricted to `"ws"` (the only channel
+ * browser-pilot currently supports); `payload` is ALWAYS a string here — an inline-table flow
+ * payload is JSON-serialized by the caller (the runner) before it reaches the driver, since
+ * browser-pilot's `emitMessage` only accepts a string. `match`/`base64`/`awaitReply`/`confirmTimeout`
+ * are the boundary form of browser-pilot's `EmitWsOptions`.
+ */
+export interface EmitCommandOptions extends Omit<BpEmitWsOptions, "awaitReply"> {
+  channel: "ws";
+  payload: string;
+  awaitReply?: EmitAwaitReplyOpts;
+}
+
+/**
+ * The result of `Driver.emitCommand()` — the boundary form of browser-pilot's `EmitResult`.
+ * `delivered` is proven by a `Network.webSocketFrameSent` CDP event, NOT by a normal `send()`
+ * return (a closed-socket `send()` silently discards data). `reply` is populated only when
+ * `awaitReply` was requested AND a correlated reply frame arrived within its timeout.
+ */
+export type EmitCommandResult = BpEmitResult;
 
 /** Options for `Driver.screenshot()`. Returns base64 (FINDINGS §7). */
 export interface ScreenshotOpts {
@@ -633,6 +676,20 @@ export interface Driver {
   press(key: string, opts?: PressOpts): Promise<boolean>;
   /** Submit a form. `sel` optional (submits the focused/ambient form). Navigating → settles. */
   submit(sel?: string | string[], opts?: SubmitOpts): Promise<boolean>;
+
+  // --- emit (WebSocket command injection) ---
+
+  /**
+   * Send a message on a WebSocket the page itself owns, delegating to browser-pilot's
+   * `page.emitMessage` (>=0.2.0). Never retried — a dispatched frame is an irreversible side
+   * effect on the server, so this is inherently `effect = "at_most_once"` at the flow level.
+   * `EmitTargetError`-shaped ambiguous-socket failures and delivery/reply-timeout failures both
+   * surface as a normal rejected promise; the caller (the runner) maps them to a step failure
+   * rather than an infra error. OPTIONAL so a driver built against browser-pilot <0.2.0 degrades
+   * gracefully: callers MUST feature-detect (`driver.emitCommand?.(...)`) and fail the `emit` step
+   * with a clear "browser-pilot >=0.2.0 required" message when absent.
+   */
+  emitCommand?(opts: EmitCommandOptions): Promise<EmitCommandResult>;
 
   // --- screenshot ---
 

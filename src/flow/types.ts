@@ -14,6 +14,8 @@ import type {
   ClickStepSchema,
   CountAssertionSchema,
   DeterministicAssertionSchema,
+  EmitAwaitReplySchema,
+  EmitStepSchema,
   FillStepSchema,
   FlowFileSchema,
   GotoStepSchema,
@@ -66,6 +68,8 @@ export type AiPickStep = z.infer<typeof AiPickStepSchema>;
 export type RunStep = z.infer<typeof RunStepSchema>;
 export type SwitchFrameStep = z.infer<typeof SwitchFrameStepSchema>;
 export type SwitchToMainStep = z.infer<typeof SwitchToMainStepSchema>;
+export type EmitAwaitReply = z.infer<typeof EmitAwaitReplySchema>;
+export type EmitStep = z.infer<typeof EmitStepSchema>;
 export type Step = z.infer<typeof StepSchema>;
 
 // ---- Imports ----
