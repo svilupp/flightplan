@@ -8,7 +8,7 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Fixed
 
-## [0.0.3] - 2026-08-19
+## [0.0.3] - 2026-08-21
 
 ### Added
 
