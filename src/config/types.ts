@@ -11,13 +11,17 @@ import type {
   AiConfigSchema,
   ArtifactsConfigSchema,
   AssertionsConfigSchema,
+  AuthConfigSchema,
+  AuthCookieConfigSchema,
   BrowserConfigSchema,
   CacheConfigSchema,
+  CfAccessConfigSchema,
   ConfigFileSchema,
   ConfigSchema,
   ConnectAttachSchema,
   ConnectConfigSchema,
   ConnectLaunchSchema,
+  ExtraHeadersConfigSchema,
   LogfireConfigSchema,
   ModelPricingSchema,
   ModelRegistrySchema,
@@ -48,6 +52,12 @@ export type CacheConfig = z.infer<typeof CacheConfigSchema>;
 export type PlanConfig = z.infer<typeof PlanConfigSchema>;
 export type TimeoutsConfig = z.infer<typeof TimeoutsConfigSchema>;
 export type ResolveConfig = z.infer<typeof ResolveConfigSchema>;
+
+// ---- [config.auth] (Cloudflare Access auth wiring; browser-pilot proposal Slice 6) ----
+export type CfAccessConfig = z.infer<typeof CfAccessConfigSchema>;
+export type ExtraHeadersConfig = z.infer<typeof ExtraHeadersConfigSchema>;
+export type AuthCookieConfig = z.infer<typeof AuthCookieConfigSchema>;
+export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 
 // ---- Connect config (discriminated union, PLAN.md §3) ----
 export type ConnectAttachConfig = z.infer<typeof ConnectAttachSchema>;

@@ -2371,6 +2371,15 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
 
   try {
     if (!state.aborted) await driver.connect(connectCfg);
+    // --- (3.1) apply [config.auth] (Cloudflare Access wiring) BEFORE the setup hook / first goto ---
+    // Feature-detected: a driver built against a browser-pilot release predating
+    // `setExtraHTTPHeaders`/`mintCfAccessJwt` simply skips this (no `[config.auth]` support). An
+    // unset `*_env` name or a rejected mint throws, which is caught below and folded into
+    // `state.runError` (verdict `error`, matching connect()'s own failure handling) — auth must be
+    // in place, or the run must fail, before any navigation.
+    if (!state.aborted && opts.config.auth && driver.applyAuth) {
+      await driver.applyAuth(opts.config.auth, env);
+    }
     if (!state.aborted && driver.pageState) {
       try {
         const initialPage = await driver.pageState();

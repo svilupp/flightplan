@@ -334,6 +334,82 @@ export const TimeoutsConfigSchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
+// [config.auth] — Cloudflare Access auth wiring (downstream of browser-pilot's
+// `cloudflare-access-auth` proposal, Slice 6). Secrets are expressed as env var NAMES only
+// (never values), matching the existing `api_key_env` / `token_env` convention. See the
+// proposal's "Flightplan config format" example for the canonical TOML shape.
+// ---------------------------------------------------------------------------
+
+/**
+ * `[config.auth.cf_access]` — sugar for the common case (Method B): out-of-band
+ * service-token exchange against `url` via browser-pilot's exported `mintCfAccessJwt`,
+ * then apply the minted `CF_Authorization` cookie (mode `"cookie"`, the default) or send
+ * the raw client id/secret as headers on every request (mode `"headers"`, Method A).
+ */
+export const CfAccessConfigSchema = z
+  .object({
+    /** Origin to mint against (Method B) / to scope headers to conceptually (Method A). */
+    url: z.string().min(1),
+    /** Env var NAME (never a value) holding the CF Access service-token client id. */
+    client_id_env: z.string().min(1),
+    /** Env var NAME (never a value) holding the CF Access service-token client secret. */
+    client_secret_env: z.string().min(1),
+    /** `"cookie"` (default, Method B) | `"headers"` (Method A). */
+    mode: z.enum(["cookie", "headers"]).default("cookie"),
+  })
+  .strict();
+
+/**
+ * `[config.auth.extra_headers]` — generic escape hatch: header name -> env var NAME map,
+ * applied verbatim via `Page.setExtraHTTPHeaders()`. Usable standalone, without `cf_access`.
+ */
+export const ExtraHeadersConfigSchema = z
+  .object({
+    /** header name -> env var NAME (never a literal header value). */
+    from_env: z.record(z.string().min(1), z.string().min(1)).optional(),
+  })
+  .strict();
+
+/**
+ * `[[config.auth.cookies]]` — maps 1:1 onto browser-pilot's `SetCookieOptions`. Exactly one
+ * of `value` (a literal — discouraged, but allowed for non-secret cookies) or `value_from_env`
+ * (an env var NAME) must be set; carrying both is rejected (mirrors the mutual exclusion in
+ * browser-pilot's `EnvSettings.auth` cookie shape).
+ */
+export const AuthCookieConfigSchema = z
+  .object({
+    name: z.string().min(1),
+    /** A literal cookie value. Mutually exclusive with `value_from_env`. */
+    value: z.string().optional(),
+    /** Env var NAME (never a value) holding the cookie value. Mutually exclusive with `value`. */
+    value_from_env: z.string().min(1).optional(),
+    domain: z.string().min(1).optional(),
+    path: z.string().min(1).optional(),
+    /** Expiration as a Unix epoch timestamp (seconds). */
+    expires: z.number().optional(),
+    http_only: z.boolean().optional(),
+    secure: z.boolean().optional(),
+    same_site: z.enum(["Strict", "Lax", "None"]).optional(),
+    /** URL to associate the cookie with (alternative to domain+path). */
+    url: z.string().min(1).optional(),
+  })
+  .strict()
+  .refine((c) => (c.value === undefined) !== (c.value_from_env === undefined), {
+    message:
+      "exactly one of `value` or `value_from_env` must be set on a [[config.auth.cookies]] entry",
+    path: ["value"],
+  });
+
+export const AuthConfigSchema = z
+  .object({
+    cf_access: CfAccessConfigSchema.optional(),
+    extra_headers: ExtraHeadersConfigSchema.optional(),
+    /** Array — replaced wholesale by a later config layer (arrays are never concatenated). */
+    cookies: z.array(AuthCookieConfigSchema).optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
 // The full Config object (all sections optional; built-in defaults fill the gaps).
 // ---------------------------------------------------------------------------
 
@@ -351,6 +427,7 @@ export const ConfigSchema = z
     plan: PlanConfigSchema.optional(),
     timeouts: TimeoutsConfigSchema.optional(),
     resolve: ResolveConfigSchema.optional(),
+    auth: AuthConfigSchema.optional(),
   })
   .strict();
 

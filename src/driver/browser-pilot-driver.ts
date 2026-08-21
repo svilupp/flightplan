@@ -19,18 +19,25 @@ import {
   type ExpectNewPageOptions,
   getBrowserWebSocketUrl,
   getBuildProvenance,
+  // `mintCfAccessJwt` is a newer browser-pilot export (the `cloudflare-access-auth` proposal's
+  // Slice 6 requirement). Imported normally since the pinned browser-pilot build carries it, but
+  // `applyAuth` still feature-detects it at the call site (`typeof mintCfAccessJwt === "function"`)
+  // so a driver built against an older browser-pilot that predates this export degrades to a clear
+  // error instead of a hard import-time crash.
+  mintCfAccessJwt,
   type Page,
   type PageSnapshot,
   type Step,
   TargetNotFoundError,
 } from "browser-pilot";
 import * as ChromeLauncher from "chrome-launcher";
-import type { ConnectConfig } from "../config/types.ts";
+import type { AuthConfig, ConnectConfig } from "../config/types.ts";
 import {
   buildAttachConnectArgs,
   buildLaunchPlan,
   normalizeBrowserUrl,
   type ResolvedAttachConnectArgs,
+  resolveAuthPlan,
 } from "./connect-resolution.ts";
 import { normalizeBatchResult } from "./dispatch-metadata.ts";
 import { clickStep, pressStep, submitOptions } from "./navigation.ts";
@@ -167,6 +174,13 @@ export class BrowserPilotDriver implements Driver {
    * {@link switchToMain}, {@link goto} (navigation resets frame state) and {@link teardown}.
    */
   private frameSelector: string | string[] | undefined;
+  /**
+   * The extra HTTP headers most recently applied by {@link applyAuth}, if any. Headers are
+   * per-CDP-session (unlike cookies, which are browser-wide), so a new page/popup target
+   * (`expectNewPage`) does not inherit them — this cache lets the driver reapply them onto the
+   * newly-switched-to page automatically, without the caller re-invoking `applyAuth`.
+   */
+  private lastAuthHeaders: Record<string, string> | undefined;
 
   constructor(options: BrowserPilotDriverOptions = {}) {
     this.dialogPolicy = options.dialogPolicy ?? "dismiss";
@@ -262,6 +276,45 @@ export class BrowserPilotDriver implements Driver {
     this.dialogFailure = undefined;
   }
 
+  /**
+   * Apply `[config.auth]` (Cloudflare Access wiring — `cloudflare-access-auth` proposal, Slice 6)
+   * to the active page. Resolves every `*_env` name against `env` via the pure
+   * {@link resolveAuthPlan} (throws {@link AuthEnvVarMissingError} naming the var, never a value,
+   * on an unset one), then applies the result: `page.setExtraHTTPHeaders()` for any literal/
+   * `cf_access` headers-mode headers, and `page.setCookie()` for any literal cookies plus — for
+   * `cf_access` in the default `"cookie"` mode — the cookie minted by browser-pilot's
+   * `mintCfAccessJwt`. A rejected mint surfaces its error unchanged (it already omits secret
+   * values). Applying an empty/undefined `auth` is a no-op (no CDP calls at all).
+   */
+  async applyAuth(
+    auth: AuthConfig | undefined,
+    env: Record<string, string | undefined>,
+  ): Promise<void> {
+    if (!auth) return;
+    const page = this.requirePage();
+    const plan = resolveAuthPlan(auth, env);
+
+    if (plan.cfAccessMint) {
+      if (typeof mintCfAccessJwt !== "function") {
+        throw new Error(
+          '[config.auth.cf_access] mode "cookie" requires browser-pilot\'s mintCfAccessJwt export, ' +
+            "which the connected browser-pilot build does not provide. Upgrade browser-pilot, or set " +
+            '`mode = "headers"` to use the header-only path instead.',
+        );
+      }
+      const { cookie } = await mintCfAccessJwt(plan.cfAccessMint);
+      plan.cookies.push(cookie);
+    }
+
+    if (Object.keys(plan.headers).length > 0) {
+      await page.setExtraHTTPHeaders(plan.headers);
+      this.lastAuthHeaders = plan.headers;
+    }
+    for (const cookie of plan.cookies) {
+      await page.setCookie(cookie);
+    }
+  }
+
   async expectNewPage(
     expectation: NewPageExpectation,
     action: () => Promise<unknown>,
@@ -299,7 +352,7 @@ export class BrowserPilotDriver implements Driver {
           ...(targetProvenance.title !== undefined ? { title: targetProvenance.title } : {}),
           reason:
             `new page ${JSON.stringify(popup.targetId)} did not match targetId ` +
-            `${JSON.stringify(expectation.targetId)}`,
+            JSON.stringify(expectation.targetId),
         };
       }
 
@@ -308,6 +361,17 @@ export class BrowserPilotDriver implements Driver {
       // session remains intact inside browser-pilot.
       this.activePage = popup;
       await this.installDialogHandler();
+      // Headers are per-CDP-session: the popup's fresh page session does not inherit the opener's
+      // `Network.setExtraHTTPHeaders`, so reapply the last-applied auth headers here (cookies are
+      // browser-wide and need no reapplication). Best-effort: an auth-header reapply failure must
+      // not turn an otherwise-successful popup observation into a hard error.
+      if (this.lastAuthHeaders) {
+        try {
+          await popup.setExtraHTTPHeaders(this.lastAuthHeaders);
+        } catch {
+          // non-fatal — the popup is still usable without the reapplied headers.
+        }
+      }
       const matchedOpener = targetProvenance.openerTargetId ?? openerTargetId;
       return {
         matched: true,
@@ -416,6 +480,7 @@ export class BrowserPilotDriver implements Driver {
       this.activePage = undefined;
       this.connection = undefined;
       this.frameSelector = undefined;
+      this.lastAuthHeaders = undefined;
     }
   }
 

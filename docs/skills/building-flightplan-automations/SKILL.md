@@ -92,6 +92,12 @@ headless = true
 [config.plan]
 enabled = false
 
+# Only when the target sits behind Cloudflare Access:
+# [config.auth.cf_access]
+# url = "https://app.example.com"
+# client_id_env = "CF_ACCESS_CLIENT_ID"
+# client_secret_env = "CF_ACCESS_CLIENT_SECRET"
+
 [run]
 max_steps = 20
 assertions = "eager"
@@ -180,7 +186,9 @@ Do not run scheduled live mutations until deterministic fixtures pass repeatedly
 requires:
 
 - exact tenant and store allowlists;
-- authenticated session checks;
+- authenticated session checks — for targets behind Cloudflare Access, wire `[config.auth]`
+  (`cf_access`, or the `extra_headers`/`[[cookies]]` escape hatches) with env var **names** only,
+  never literal secrets;
 - seeded disposable resource;
 - mutation budget, normally one per logical effect;
 - precondition and exact postcondition;
