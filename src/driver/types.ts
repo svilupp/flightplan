@@ -40,7 +40,7 @@ import type {
   Step as BpStep,
   StepResult as BpStepResult,
 } from "browser-pilot";
-import type { ConnectConfig } from "../config/types.ts";
+import type { AuthConfig, ConnectConfig } from "../config/types.ts";
 import type { Strategy } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -565,6 +565,24 @@ export interface Driver {
 
   /** Change the native-dialog policy for the next logical step, when supported. */
   setDialogPolicy?(policy: NativeDialogPolicy): void | Promise<void>;
+
+  /**
+   * Apply `[config.auth]` (Cloudflare Access wiring — browser-pilot `cloudflare-access-auth`
+   * proposal, Slice 6) to the current page: resolve every `*_env` name against `env`, then call
+   * `Page.setExtraHTTPHeaders()` / `Page.setCookie()`; for `cf_access` in `"cookie"` mode (the
+   * default), first exchange the service token via browser-pilot's exported `mintCfAccessJwt`.
+   * Called once per run, immediately after `connect()` and before the setup hook / first `goto`.
+   * Headers are per-CDP-session, so the runner also re-invokes this (or re-applies just the
+   * headers) after `expectNewPage`/`newPage`; cookies are browser-wide and only need one
+   * application. Throws on an unset `*_env` name (naming the var, never a value) or a rejected
+   * mint — both are config/auth errors that must fail the run before any navigation.
+   *
+   * OPTIONAL so a driver built against a browser-pilot release that predates
+   * `setExtraHTTPHeaders`/`mintCfAccessJwt` degrades gracefully: callers MUST feature-detect
+   * (`driver.applyAuth?.(...)`) and skip auth application (or fail loudly, per the caller's
+   * policy) when it is undefined. `undefined`/empty `auth` is always a no-op.
+   */
+  applyAuth?(auth: AuthConfig | undefined, env: Record<string, string | undefined>): Promise<void>;
 
   /** Runtime browser-pilot package/source/build identity for run artifacts. */
   provenance?(): BrowserPilotProvenance | undefined;

@@ -1,14 +1,16 @@
 // Tests for the Chrome-free connect-config interpretation logic.
 
 import { describe, expect, test } from "bun:test";
-import type { ConnectConfig } from "../config/types.ts";
+import type { AuthConfig, ConnectConfig } from "../config/types.ts";
 import {
+  AuthEnvVarMissingError,
   attachWsResolutionSource,
   buildAttachConnectArgs,
   buildLaunchPlan,
   connectMode,
   DEFAULT_CHROME_FLAGS,
   normalizeBrowserUrl,
+  resolveAuthPlan,
 } from "./connect-resolution.ts";
 import { clickStep, pressStep, resolveWaitForNavigation, submitOptions } from "./navigation.ts";
 
@@ -146,5 +148,159 @@ describe("ConnectConfig shape (shared with config module)", () => {
     const launch: ConnectConfig = { mode: "launch", headless: true };
     expect(attach.mode).toBe("attach");
     expect(launch.mode).toBe("launch");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveAuthPlan — [config.auth] resolution (browser-pilot cloudflare-access-auth
+// proposal, Slice 6). Chrome-free/network-free: no fetch, no CDP.
+// ---------------------------------------------------------------------------
+
+describe("resolveAuthPlan", () => {
+  const env = {
+    CF_ACCESS_CLIENT_ID: "id-123.access",
+    CF_ACCESS_CLIENT_SECRET: "secret-abc",
+    CF_ACCESS_JWT: "jwt-value",
+    MY_API_KEY: "key-value",
+  };
+
+  test("undefined auth resolves to an empty, no-op plan", () => {
+    const plan = resolveAuthPlan(undefined, env);
+    expect(plan.headers).toEqual({});
+    expect(plan.cookies).toEqual([]);
+    expect(plan.cfAccessMint).toBeUndefined();
+  });
+
+  test("cf_access mode 'cookie' (default) resolves a mint request, not headers", () => {
+    const auth: AuthConfig = {
+      cf_access: {
+        url: "https://prodej.wikov.app",
+        client_id_env: "CF_ACCESS_CLIENT_ID",
+        client_secret_env: "CF_ACCESS_CLIENT_SECRET",
+        mode: "cookie",
+      },
+    };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.cfAccessMint).toEqual({
+      url: "https://prodej.wikov.app",
+      clientId: "id-123.access",
+      clientSecret: "secret-abc",
+    });
+    expect(plan.headers).toEqual({});
+    expect(plan.cookies).toEqual([]);
+  });
+
+  test("cf_access mode 'headers' resolves literal CF-Access-* headers, no mint", () => {
+    const auth: AuthConfig = {
+      cf_access: {
+        url: "https://prodej.wikov.app",
+        client_id_env: "CF_ACCESS_CLIENT_ID",
+        client_secret_env: "CF_ACCESS_CLIENT_SECRET",
+        mode: "headers",
+      },
+    };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.cfAccessMint).toBeUndefined();
+    expect(plan.headers).toEqual({
+      "CF-Access-Client-Id": "id-123.access",
+      "CF-Access-Client-Secret": "secret-abc",
+    });
+  });
+
+  test("extra_headers.from_env resolves each header name -> env var value", () => {
+    const auth: AuthConfig = {
+      extra_headers: { from_env: { "X-Api-Key": "MY_API_KEY" } },
+    };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.headers).toEqual({ "X-Api-Key": "key-value" });
+  });
+
+  test("cookies[] resolves value_from_env and passes through literal fields", () => {
+    const auth: AuthConfig = {
+      cookies: [
+        {
+          name: "CF_Authorization",
+          value_from_env: "CF_ACCESS_JWT",
+          domain: "prodej.wikov.app",
+          path: "/",
+          secure: true,
+        },
+      ],
+    };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.cookies).toEqual([
+      {
+        name: "CF_Authorization",
+        value: "jwt-value",
+        domain: "prodej.wikov.app",
+        path: "/",
+        secure: true,
+      },
+    ]);
+  });
+
+  test("cookies[] resolves a literal value verbatim (no env lookup)", () => {
+    const auth: AuthConfig = { cookies: [{ name: "session", value: "literal-value" }] };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.cookies).toEqual([{ name: "session", value: "literal-value" }]);
+  });
+
+  test("an unset *_env name throws AuthEnvVarMissingError naming the var, never a value", () => {
+    const auth: AuthConfig = {
+      extra_headers: { from_env: { "X-Api-Key": "UNSET_ENV_VAR" } },
+    };
+    expect(() => resolveAuthPlan(auth, env)).toThrow(AuthEnvVarMissingError);
+    try {
+      resolveAuthPlan(auth, env);
+      throw new Error("expected resolveAuthPlan to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AuthEnvVarMissingError);
+      expect((err as AuthEnvVarMissingError).envVarName).toBe("UNSET_ENV_VAR");
+      expect((err as Error).message).toContain("UNSET_ENV_VAR");
+      // never leaks any env value into the error message.
+      for (const v of Object.values(env)) {
+        expect((err as Error).message).not.toContain(v);
+      }
+    }
+  });
+
+  test("an unset cf_access client_id_env/client_secret_env throws before any headers/cookies apply", () => {
+    const auth: AuthConfig = {
+      cf_access: {
+        url: "https://x.test",
+        client_id_env: "UNSET_ID_ENV",
+        client_secret_env: "CF_ACCESS_CLIENT_SECRET",
+        mode: "cookie",
+      },
+      cookies: [{ name: "unrelated", value: "x" }],
+    };
+    expect(() => resolveAuthPlan(auth, env)).toThrow(AuthEnvVarMissingError);
+  });
+
+  test("an unset cookies[].value_from_env throws naming the var", () => {
+    const auth: AuthConfig = {
+      cookies: [{ name: "session", value_from_env: "UNSET_SESSION_ENV" }],
+    };
+    expect(() => resolveAuthPlan(auth, env)).toThrow(AuthEnvVarMissingError);
+  });
+
+  test("cf_access + extra_headers + cookies combine into one plan", () => {
+    const auth: AuthConfig = {
+      cf_access: {
+        url: "https://x.test",
+        client_id_env: "CF_ACCESS_CLIENT_ID",
+        client_secret_env: "CF_ACCESS_CLIENT_SECRET",
+        mode: "headers",
+      },
+      extra_headers: { from_env: { "X-Api-Key": "MY_API_KEY" } },
+      cookies: [{ name: "session", value: "literal" }],
+    };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.headers).toEqual({
+      "CF-Access-Client-Id": "id-123.access",
+      "CF-Access-Client-Secret": "secret-abc",
+      "X-Api-Key": "key-value",
+    });
+    expect(plan.cookies).toEqual([{ name: "session", value: "literal" }]);
   });
 });

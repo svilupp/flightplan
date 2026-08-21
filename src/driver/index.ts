@@ -18,6 +18,7 @@ export {
 } from "./browser-pilot-driver.ts";
 // --- connect-resolution helpers (pure, unit-testable) ---
 export {
+  AuthEnvVarMissingError,
   attachWsResolutionSource,
   buildAttachConnectArgs,
   buildLaunchPlan,
@@ -25,7 +26,10 @@ export {
   DEFAULT_CHROME_FLAGS,
   normalizeBrowserUrl,
   type ResolvedAttachConnectArgs,
+  type ResolvedAuthCookie,
+  type ResolvedAuthPlan,
   type ResolvedLaunchPlan,
+  resolveAuthPlan,
 } from "./connect-resolution.ts";
 export { normalizeBatchResult } from "./dispatch-metadata.ts";
 // --- the mock testing seam ---

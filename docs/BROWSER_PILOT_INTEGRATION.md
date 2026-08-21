@@ -162,6 +162,26 @@ the never-persist-`ref:eN` rule extends trivially here — an `emit` step carrie
 session-scoped browser-pilot identifiers (socket ids, target ids) into any artifact; only the
 templated payload (redacted per `secret`) and the delivery outcome are traced.
 
+## `[config.auth]` — Cloudflare Access wiring
+
+`[config.auth]` is a driver capability, not a step verb: `driver.applyAuth` runs once, right after
+`connect()` and before the setup hook / first `goto`, and again on any popup so a newly opened tab
+inherits the same headers. It is feature-detected against the connected browser-pilot build:
+
+- `cf_access` (Method B, default `mode = "cookie"`) calls browser-pilot's `mintCfAccessJwt` to run
+  the out-of-band service-token exchange, then applies the resulting `CF_Authorization` JWT via
+  `Page.setCookie`. `mode = "headers"` (Method A) instead sends the raw client id/secret via
+  `Page.setExtraHTTPHeaders` on every request.
+- `extra_headers.from_env` maps header name -> env var name and is applied verbatim via
+  `Page.setExtraHTTPHeaders`, usable standalone without `cf_access`.
+- `[[cookies]]` entries map 1:1 onto browser-pilot's `SetCookieOptions` via `Page.setCookie`.
+
+Requires a browser-pilot build newer than **0.2.1** that exports `mintCfAccessJwt` and
+`Page.setExtraHTTPHeaders`; against an older browser-pilot the driver leaves `[config.auth]`
+parsed but un-applied rather than failing the run. An unset `*_env` name or a rejected service
+token fails the run before any navigation happens. See `README.md`'s "Cloudflare Access auth"
+section and `src/config/schema.ts` for the full field reference.
+
 ## API-key conditions
 
 No key is needed when a run resolves at L0/L1 and performs no AI-backed assertion or step. A warm

@@ -8,6 +8,17 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Fixed
 
+## [0.0.3] - 2026-08-19
+
+### Added
+
+- `[config.auth]` block for Cloudflare Access-protected targets (service token, extra headers, cookies — env var names only)
+- Driver `applyAuth()` — applies auth after connect, before the first step (headers reapplied on popups)
+
+### Changed
+
+- Requires browser-pilot ^0.3.0 (Cloudflare Access APIs)
+
 ## [0.0.2] - 2026-08-12
 
 ### Added

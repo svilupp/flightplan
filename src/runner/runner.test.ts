@@ -1731,3 +1731,83 @@ describe("defaultDriverFactory — [timeouts] threading", () => {
     expect(bp.navTimeoutMs).toBe(777);
   });
 });
+
+// ---------------------------------------------------------------------------
+// [config.auth] — runner applies auth right after connect, before the first goto
+// (browser-pilot cloudflare-access-auth proposal, Slice 6).
+// ---------------------------------------------------------------------------
+
+describe("runFlow — [config.auth] application ordering", () => {
+  const AUTH_FLOW = `
+version = 1
+kind = "flow"
+id = "test.auth"
+description = "auth"
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "https://example.test/orders"
+`;
+
+  test("applyAuth is called once, after connect and before the first goto", async () => {
+    const { flowPath, outDir } = await writeFlow(AUTH_FLOW);
+    const driver = new MockDriver();
+
+    const config = resolveConfigWithDefaults([
+      {
+        auth: {
+          extra_headers: { from_env: { "X-Api-Key": "MY_API_KEY" } },
+          cookies: [{ name: "session", value_from_env: "SESSION_ENV" }],
+        },
+      },
+    ]);
+
+    const result = await runFlow(
+      optsFor(flowPath, outDir, driver, config, {
+        env: { MY_API_KEY: "resolved-key", SESSION_ENV: "resolved-session" },
+      }),
+    );
+
+    expect(result.summary.verdict).toBe("passed");
+    expect(driver.callsTo("applyAuth")).toHaveLength(1);
+    const [auth, env] = driver.callsTo("applyAuth")[0]?.args ?? [];
+    expect(auth).toEqual(config.auth);
+    expect(env).toEqual({ MY_API_KEY: "resolved-key", SESSION_ENV: "resolved-session" });
+
+    // ordering: connect (index 0) → applyAuth → goto, all before any step_end.
+    const connectIndex = driver.callsTo("connect")[0]?.index ?? -1;
+    const applyAuthIndex = driver.callsTo("applyAuth")[0]?.index ?? -1;
+    const gotoIndex = driver.callsTo("goto")[0]?.index ?? -1;
+    expect(connectIndex).toBeLessThan(applyAuthIndex);
+    expect(applyAuthIndex).toBeLessThan(gotoIndex);
+  });
+
+  test("no [config.auth] block → applyAuth is never called", async () => {
+    const { flowPath, outDir } = await writeFlow(AUTH_FLOW);
+    const driver = new MockDriver();
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+
+    expect(result.summary.verdict).toBe("passed");
+    expect(driver.callsTo("applyAuth")).toHaveLength(0);
+  });
+
+  test("an unset *_env name fails the run (verdict error) before any navigation", async () => {
+    const { flowPath, outDir } = await writeFlow(AUTH_FLOW);
+    const driver = new MockDriver();
+
+    const config = resolveConfigWithDefaults([
+      { auth: { extra_headers: { from_env: { "X-Api-Key": "UNSET_ENV_VAR" } } } },
+    ]);
+
+    const result = await runFlow(optsFor(flowPath, outDir, driver, config, { env: {} }));
+
+    expect(result.summary.verdict).toBe("error");
+    // the run never navigated — applyAuth's throw happened before the first goto.
+    expect(driver.callsTo("goto")).toHaveLength(0);
+    const runEvents = await readJsonl(join(result.runDir, "run.jsonl"));
+    const runEnd = runEvents[runEvents.length - 1];
+    expect(String(runEnd?.error)).toContain("UNSET_ENV_VAR");
+  });
+});

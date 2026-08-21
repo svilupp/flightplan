@@ -199,6 +199,30 @@ provider = "google"
 model = "gemini-3-pro:high"   # google has no native xhigh; it maps to high
 ```
 
+### Authenticate through Cloudflare Access (`[config.auth]`)
+
+Use `[config.auth]` only when the target origin sits behind Cloudflare Access. It is a
+`[config.*]` block, so it layers like every other one (defaults → global `flightplan.toml` →
+entry flow → CLI) — set `cf_access` once in a global `flightplan.toml` and every flow inherits it.
+Secrets are always env var **names**, never literal values:
+
+```toml
+[config.auth.cf_access]
+url = "https://app.example.com"
+client_id_env = "CF_ACCESS_CLIENT_ID"
+client_secret_env = "CF_ACCESS_CLIENT_SECRET"
+mode = "cookie"                        # "cookie" (default) | "headers"
+```
+
+`mode = "cookie"` mints a `CF_Authorization` JWT out-of-band and sets it as a cookie; `mode =
+"headers"` sends the raw client id/secret headers on every request the tab makes, so prefer
+cookie mode unless policy requires headers. Generic escape hatches
+(`[config.auth.extra_headers.from_env]`, `[[config.auth.cookies]]` with `value_from_env`) work
+standalone without `cf_access`. Auth is applied once, right after `connect()` and before the
+first `goto`; never put a literal secret in a flow — only the env var **name**. See
+`README.md`'s "Cloudflare Access auth" section and `src/config/schema.ts` for the full field
+reference.
+
 ## Running and proving mutations
 
 For local admin fixtures:
