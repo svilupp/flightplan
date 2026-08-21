@@ -384,6 +384,44 @@ For an AI experiment, enable it only with a bounded `max_replans`, a clear flow 
 run directory. `tier_hint = "vision"` is for icon-only or unlabeled controls after deterministic
 resolution has failed. Consecutive vision targets can batch into one request.
 
+## Cloudflare Access auth (`[config.auth]`)
+
+Flows behind Cloudflare Access can authenticate via `[config.auth]`, layered like every other
+`[config.*]` block (built-in defaults → global `flightplan.toml` → entry flow → CLI), so an org can
+set the `cf_access` block once in a global `flightplan.toml` and have every flow inherit it.
+Secrets are always expressed as env var **names**, never values — the same convention as
+`[config.ai] api_key_env` / `[config.telemetry.logfire] token_env`:
+
+```toml
+# --- sugar for the common case: out-of-band service-token exchange, then a CF_Authorization cookie ---
+[config.auth.cf_access]
+url = "https://prodej.wikov.app"                # origin to mint against
+client_id_env = "CF_ACCESS_CLIENT_ID"           # env var NAME, never a value
+client_secret_env = "CF_ACCESS_CLIENT_SECRET"
+mode = "cookie"                                 # "cookie" (default) | "headers"
+
+# --- generic escape hatches, each usable standalone without cf_access ---
+[config.auth.extra_headers.from_env]            # header name -> env var NAME
+"CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID"
+"CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET"
+
+[[config.auth.cookies]]                         # maps 1:1 onto browser-pilot's SetCookieOptions
+name = "CF_Authorization"
+value_from_env = "CF_ACCESS_JWT"
+domain = "prodej.wikov.app"
+```
+
+`mode = "cookie"` (the default, Method B) mints a `CF_Authorization` JWT via an out-of-band
+service-token exchange and applies it as a cookie; `mode = "headers"` (Method A) instead sends the
+raw `CF-Access-Client-Id`/`CF-Access-Client-Secret` on every request — broader blast radius (every
+origin the tab visits gets the headers, not just the Access-protected one), so prefer cookie mode
+unless your policy specifically requires headers. `[[config.auth.cookies]]` entries take either a
+literal `value` or a `value_from_env` env var name (never both). Auth is applied once, right after
+`connect()` and before the setup hook / first `goto`; an unset `*_env` name or a rejected service
+token fails the run before any navigation happens. Requires a browser-pilot build that exports
+`Page.setExtraHTTPHeaders` and `mintCfAccessJwt`; an older browser-pilot leaves `[config.auth]`
+parsed but un-applied (the driver feature-detects the capability).
+
 ## Development reference
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.

@@ -78,7 +78,8 @@
 // Helper FIXTURE FACTORIES (convenience for building canned data) live in
 // `./mock-fixtures.ts`.
 
-import type { ConnectConfig } from "../config/types.ts";
+import type { AuthConfig, ConnectConfig } from "../config/types.ts";
+import { resolveAuthPlan } from "./connect-resolution.ts";
 import type {
   ActionOpts,
   BatchOptions,
@@ -117,6 +118,7 @@ export interface DriverCall {
     | "page"
     | "teardown"
     | "setDialogPolicy"
+    | "applyAuth"
     | "expectNewPage"
     | "pageState"
     | "clearBrowserState"
@@ -705,6 +707,22 @@ export class MockDriver implements Driver {
 
   setDialogPolicy(policy: NativeDialogPolicy): void {
     this.record("setDialogPolicy", [policy]);
+  }
+
+  /**
+   * Logs the call (args included, for a test to assert `applyAuth` was invoked with the
+   * resolved `[config.auth]` + env), then runs the SAME pure {@link resolveAuthPlan} the real
+   * driver uses — so a runner-level test can exercise the unset-`*_env`-throws-before-navigation
+   * contract hermetically, without any real page/CDP session. Never performs the `cf_access`
+   * mint itself (no network in the mock); a `cf_access` in `"cookie"` mode therefore only
+   * validates its `*_env` names here, matching the pure resolver's scope.
+   */
+  async applyAuth(
+    auth: AuthConfig | undefined,
+    env: Record<string, string | undefined>,
+  ): Promise<void> {
+    this.record("applyAuth", [auth, env]);
+    resolveAuthPlan(auth, env);
   }
 
   async expectNewPage(

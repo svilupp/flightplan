@@ -1,11 +1,14 @@
 # Examples
 
-Runnable examples for flightplan: nine example flow definitions and the demo HTTP server
+Runnable examples for flightplan: ten example flow definitions and the demo HTTP server
 they run against.
 
-- [`flows/`](flows/) — nine `*.toml` example flow definitions, one per fixture scenario
+- [`flows/`](flows/) — ten `*.toml` example flow definitions, one per fixture scenario
   (`wizard` · `async` · `rerender` · `overlays` · `contexts` · `gauntlet` · `drift` ·
-  `signature` · `vision`). Each flow maps 1:1 to a fixture page.
+  `signature` · `vision` · `cf-access-example`). Each of the nine fixture-scenario flows maps
+  1:1 to a fixture page; `cf-access-example.toml` reuses the `wizard` fixture page to
+  demonstrate `[config.auth]` (Cloudflare Access) wiring without needing a real
+  Access-protected origin.
 - [`fixtures/`](fixtures/) — a self-contained, **zero-dependency** Bun HTTP server that serves
   nine deterministic HTML pages, one per flow. See [`fixtures/README.md`](fixtures/README.md)
   for the full route → tier → expected-state contract.
@@ -27,6 +30,13 @@ L2-L5, or `ai_pick`/AI assertion steps that invoke a model, need `OPENROUTER_API
 ```sh
 bun run flightplan run examples/flows/wizard.toml
 ```
+
+`examples/flows/cf-access-example.toml` lints and runs against the fixture server like any other
+example; its `[config.auth.cf_access]` block is a documentation placeholder — replace `url` and
+the commented `[[config.auth.cookies]]` `domain` with your real Access-protected origin, and
+export the referenced env vars (`CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`, ...) before
+pointing it at one; against the fixture server it is a no-op because that origin has no Access
+policy.
 
 To lint all checked-in examples, pass the directory. Flightplan expands this form to the flow
 files and excludes committed `*.lock.toml` sidecars:

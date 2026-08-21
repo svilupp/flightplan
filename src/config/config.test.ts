@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { Config } from "./index.ts";
 import {
   BUILTIN_DEFAULTS,
+  ConfigSchema,
   ConfigValidationError,
   loadConfigFile,
   mergeConfigLayer,
@@ -467,5 +468,119 @@ describe("[ai].provider enum + provider-dependent api_key_env default", () => {
       { ai: { provider: "google", api_key_env: "MY_CUSTOM_KEY" } },
     ]);
     expect(resolved.ai?.api_key_env).toBe("MY_CUSTOM_KEY");
+  });
+});
+
+describe("[config.auth] \u2014 Cloudflare Access wiring (browser-pilot cloudflare-access-auth Slice 6)", () => {
+  test("accepts a full [config.auth] block (cf_access + extra_headers + cookies)", async () => {
+    const p = writeTmp(
+      "auth-valid.toml",
+      `version = 1
+kind = "config"
+id = "auth"
+description = "d"
+
+[auth.cf_access]
+url = "https://prodej.wikov.app"
+client_id_env = "CF_ACCESS_CLIENT_ID"
+client_secret_env = "CF_ACCESS_CLIENT_SECRET"
+mode = "cookie"
+
+[auth.extra_headers.from_env]
+"CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID"
+"CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET"
+
+[[auth.cookies]]
+name = "CF_Authorization"
+value_from_env = "CF_ACCESS_JWT"
+domain = "prodej.wikov.app"
+`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.auth?.cf_access?.url).toBe("https://prodej.wikov.app");
+    expect(config.auth?.cf_access?.client_id_env).toBe("CF_ACCESS_CLIENT_ID");
+    expect(config.auth?.cf_access?.mode).toBe("cookie");
+    expect(config.auth?.extra_headers?.from_env?.["CF-Access-Client-Id"]).toBe(
+      "CF_ACCESS_CLIENT_ID",
+    );
+    expect(config.auth?.cookies?.[0]?.name).toBe("CF_Authorization");
+    expect(config.auth?.cookies?.[0]?.value_from_env).toBe("CF_ACCESS_JWT");
+  });
+
+  test('[config.auth.cf_access] mode defaults to "cookie"', async () => {
+    const p = writeTmp(
+      "auth-default-mode.toml",
+      `version = 1\nkind = "config"\nid = "x"\ndescription = "d"\n[auth.cf_access]\nurl = "https://x.test"\nclient_id_env = "ID"\nclient_secret_env = "SECRET"\n`,
+    );
+    const { config } = await loadConfigFile(p);
+    expect(config.auth?.cf_access?.mode).toBe("cookie");
+  });
+
+  test("rejects a [[config.auth.cookies]] entry carrying BOTH value and value_from_env", () => {
+    const bad: Config = {
+      auth: {
+        cookies: [{ name: "CF_Authorization", value: "literal", value_from_env: "CF_ACCESS_JWT" }],
+      },
+    };
+    expect(() => ConfigSchema.parse(bad)).toThrow();
+  });
+
+  test("rejects a [[config.auth.cookies]] entry carrying NEITHER value nor value_from_env", () => {
+    const bad: Config = { auth: { cookies: [{ name: "CF_Authorization" }] } };
+    expect(() => ConfigSchema.parse(bad)).toThrow();
+  });
+
+  test("accepts a [[config.auth.cookies]] entry with a literal value (no cf_access)", () => {
+    const ok: Config = { auth: { cookies: [{ name: "session", value: "abc" }] } };
+    expect(() => ConfigSchema.parse(ok)).not.toThrow();
+  });
+
+  test("[config.auth.extra_headers] usable standalone, without cf_access", () => {
+    const ok: Config = {
+      auth: { extra_headers: { from_env: { "X-Api-Key": "MY_API_KEY" } } },
+    };
+    const parsed = ConfigSchema.parse(ok);
+    expect(parsed.auth?.extra_headers?.from_env?.["X-Api-Key"]).toBe("MY_API_KEY");
+  });
+
+  test("rejects an unknown key under [config.auth.cf_access] (strict schema)", () => {
+    const bad = {
+      auth: {
+        cf_access: {
+          url: "https://x.test",
+          client_id_env: "ID",
+          client_secret_env: "SECRET",
+          bogus: true,
+        },
+      },
+    };
+    expect(() => ConfigSchema.parse(bad)).toThrow();
+  });
+
+  test("[config.auth] merges key-by-key across layers; cookies array replaces wholesale", () => {
+    const base: Config = {
+      auth: {
+        cf_access: {
+          url: "https://x.test",
+          client_id_env: "ID",
+          client_secret_env: "SECRET",
+          mode: "cookie",
+        },
+        cookies: [{ name: "old", value_from_env: "OLD_ENV" }],
+      },
+    };
+    const over: Config = {
+      auth: {
+        extra_headers: { from_env: { "X-New": "NEW_ENV" } },
+        cookies: [{ name: "new", value_from_env: "NEW_COOKIE_ENV" }],
+      },
+    };
+    const merged = mergeConfigLayer(base, over);
+    // cf_access survives (over-layer did not set it) — key-by-key merge, like `browser`.
+    expect(merged.auth?.cf_access?.url).toBe("https://x.test");
+    // extra_headers added by the over-layer.
+    expect(merged.auth?.extra_headers?.from_env?.["X-New"]).toBe("NEW_ENV");
+    // cookies REPLACED wholesale — the base-layer "old" cookie must NOT survive.
+    expect(merged.auth?.cookies).toEqual([{ name: "new", value_from_env: "NEW_COOKIE_ENV" }]);
   });
 });

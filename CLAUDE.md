@@ -24,6 +24,9 @@ Bun + TypeScript + AI SDK v6 + browser-pilot. See `README.md` and `docs/` for th
   session-scoped data to lock files.
 - `[config.ai.models.default]` is the standard way to set one model for every AI role at once; see
   `README.md` and `docs/skills/authoring-flightplan-workflows/SKILL.md` for precedence and footguns.
+- `[config.auth]` wires Cloudflare Access auth (`cf_access`, `extra_headers.from_env`,
+  `[[cookies]]`) for flows behind Access; secrets are always env var names, never values. See
+  `README.md`'s "Cloudflare Access auth" section and `src/config/schema.ts`.
 
 ## Dev harness — quiet on success
 
