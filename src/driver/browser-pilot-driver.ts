@@ -491,12 +491,10 @@ export class BrowserPilotDriver implements Driver {
   async goto(url: string, opts?: GotoOpts): Promise<void> {
     const page = this.requirePage();
     // browser-pilot's `goto` accepts only ActionOptions (timeout/optional); it awaits the load
-    // event internally. Pass the timeout through when given.
-    if (opts?.timeout !== undefined) {
-      await page.goto(url, { timeout: opts.timeout });
-    } else {
-      await page.goto(url);
-    }
+    // event internally. Always pass the driver's navigation ceiling so the raw CDP
+    // Page.navigate command is bounded by `[timeouts].nav_ms` even when the runner calls
+    // driver.goto(url) without per-step options.
+    await page.goto(url, { timeout: opts?.timeout ?? this.navTimeoutMs });
     // DRIVER DEFAULT (PLAN §3): settle any follow-on client-side navigation so the page is
     // quiescent for the next snapshot/assertion. `optional:true` → never throws if nothing
     // navigates (the common case: bp's goto already settled the top-level load).
