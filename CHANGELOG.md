@@ -8,6 +8,12 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Fixed
 
+## [0.0.4] - 2026-08-23
+
+### Fixed
+
+- Propagate configured navigation timeouts through browser-pilot `goto` calls.
+
 ## [0.0.3] - 2026-08-21
 
 ### Added
