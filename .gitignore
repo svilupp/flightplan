@@ -162,3 +162,6 @@ spikes/
 
 # Private data
 .private/
+
+# Local flow definitions
+flows/
