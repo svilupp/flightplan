@@ -65,15 +65,19 @@ model = "gemini-3-pro:high"  # native Google model id + reasoning effort suffix
 
 ## Install
 
-Install the public package with Bun or npm:
+Install the public package with npm or Bun. The CLI and library run on Node.js 18+ (Bun is also
+supported for development and tests):
 
 ```sh
-bun add @svilupp/flightplan
-# or
 npm install @svilupp/flightplan
+# or
+bun add @svilupp/flightplan
 ```
 
 The executable remains `flightplan`.
+
+The library is published as ESM with TypeScript declarations; import it from a Node.js ESM project
+or use the `flightplan` executable for command-line workflows.
 
 ## Why the tiered resolver
 
@@ -160,6 +164,11 @@ exact postcondition rescue an uncertain result.
 
 Flightplan uses browser-pilot's WebMCP bridge through the `webmcp_call` step. It invokes one exact
 page-provided tool with structured input and can assert or capture a typed result:
+
+WebMCP is experimental and page-scoped. The target must satisfy the browser's secure-context,
+origin-isolation, and Permissions Policy requirements. Chrome's origin trial starts at version 149;
+for local testing, enable `chrome://flags/#enable-webmcp-testing` and use browser-pilot's
+`bp webmcp status` to diagnose availability before running a flow.
 
 ```toml
 [[steps]]
@@ -456,9 +465,8 @@ parsed but un-applied (the driver feature-detects the capability).
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.
-- [`docs/research/PERFORMANCE.md`](docs/research/PERFORMANCE.md) - cost and resolution guidance.
-- [`docs/research/KNOWN_ISSUES.md`](docs/research/KNOWN_ISSUES.md) - current limits and workarounds.
-- [`docs/plans/`](docs/plans) - design and phased plans.
+- [`docs/BENCHMARK.md`](docs/BENCHMARK.md) - cost, resolution, and validation methodology.
+- [`docs/BROWSER_PILOT_INTEGRATION.md`](docs/BROWSER_PILOT_INTEGRATION.md) - browser integration contract.
 
 ## Skills
 

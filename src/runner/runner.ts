@@ -106,6 +106,7 @@ import {
   type SessionImport,
 } from "../lock/index.ts";
 import { createRedactor, gatherSecretValues, REDACTED, type Redactor } from "../redaction/index.ts";
+import { writeTextFile } from "../runtime.ts";
 import {
   aiCallEventAttrs,
   artifactCreatedAttrs,
@@ -2883,8 +2884,8 @@ async function processAdvisoryVerdicts(
           summary: adv.verdict.summary,
           proposed_patch_path: adv.verdict.proposed_patch_path,
         };
-        await Bun.write(jsonPath, `${JSON.stringify(body, null, 2)}\n`);
-        await Bun.write(patchPath, intentChangedPatchBody(adv.step, adv.verdict));
+        await writeTextFile(jsonPath, `${JSON.stringify(body, null, 2)}\n`);
+        await writeTextFile(patchPath, intentChangedPatchBody(adv.step, adv.verdict));
         if (state.proposedPatchPath === null) state.proposedPatchPath = patchPath;
       }
       // `bug` / `flake`: never write (PLAN.md §5 Phase 4 / PROPOSAL "Advisory verdict").

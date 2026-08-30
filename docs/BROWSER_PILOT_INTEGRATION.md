@@ -166,6 +166,12 @@ templated payload (redacted per `secret`) and the delivery outcome are traced.
 Browser-pilot exposes the page's WebMCP tools. Flightplan maps that capability to an exact,
 structured step; it does not send the call through the selector ladder or persist a selector lock:
 
+WebMCP is experimental and page-scoped. Use a recent Chrome build that exposes WebMCP (the current
+origin-trial milestone is Chrome 149), enable the local testing flag at
+`chrome://flags/#enable-webmcp-testing` when needed, and verify the browser-pilot boundary with
+`bp webmcp status` before authoring a flow. Flightplan delegates discovery, invocation, and browser
+compatibility to browser-pilot; it does not provide a second WebMCP transport.
+
 ```toml
 [[steps]]
 id = "lookup_order"

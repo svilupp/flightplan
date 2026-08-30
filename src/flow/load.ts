@@ -6,6 +6,7 @@
 // (LockFile.source_hash) and §5 (Phase 1).
 
 import { formatIssues, parseToml } from "../config/parse.ts";
+import { readTextFile, sha256Text } from "../runtime.ts";
 import { expandForEachInDoc, ForEachError } from "./normalize.ts";
 import { FlowFileSchema } from "./schema.ts";
 import type { FlowFile } from "./types.ts";
@@ -35,13 +36,10 @@ export interface LoadedFlow {
 
 /**
  * Compute the stable `source_hash` of a flow's TOML source. Format: `sha256:<hex>`, matching
- * the lock-file `source_hash` shape in PLAN.md §4 / PROPOSAL "Locks". Uses Bun's
- * CryptoHasher so it is deterministic across runs and platforms.
+ * the lock-file `source_hash` shape in PLAN.md §4 / PROPOSAL "Locks".
  */
 export function computeSourceHash(sourceText: string): string {
-  const hasher = new Bun.CryptoHasher("sha256");
-  hasher.update(sourceText);
-  return `sha256:${hasher.digest("hex")}`;
+  return `sha256:${sha256Text(sourceText)}`;
 }
 
 /**
@@ -88,7 +86,6 @@ export function parseFlowFile(sourceText: string, path: string): LoadedFlow {
  * including a wrong `kind`).
  */
 export async function loadFlowFile(path: string): Promise<LoadedFlow> {
-  const file = Bun.file(path);
-  const sourceText = await file.text();
+  const sourceText = await readTextFile(path);
   return parseFlowFile(sourceText, path);
 }

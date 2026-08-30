@@ -68,4 +68,4 @@ The complete translation table and lock-promotion rules are in
 The model-tier flows (`gauntlet`, `vision`, `drift`, `signature`) need an OpenRouter key when
 they invoke their AI tier or an AI assertion. A warm replay can be keyless only when it stays at
 L0 and executes no AI-backed step or assertion. See
-[`../docs/plans/RUNNING.md`](../docs/plans/RUNNING.md) for the validation-campaign runbook.
+[`../docs/BENCHMARK.md`](../docs/BENCHMARK.md) for the validation methodology.

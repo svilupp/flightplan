@@ -21,6 +21,13 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 ### Changed
 
 - Requires browser-pilot ^0.4.1.
+- The published package now supports Node.js 18+, includes declarations, and builds automatically during `npm pack`.
+- Published files include the operator documentation and examples needed to start a consumer project.
+
+### Fixed
+
+- Command-specific flags and positional arguments are rejected instead of being silently ignored.
+- Updated the AI SDK dependency chain to remove the known vulnerable undici version from the release lockfile.
 
 ## [0.0.4] - 2026-08-23
 

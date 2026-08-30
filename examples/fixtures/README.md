@@ -2,7 +2,7 @@
 
 A self-contained, **zero-dependency** Bun HTTP server that serves 9 deterministic HTML
 fixture pages. Each page is purpose-built to exercise one resolution scenario in Flightplan's
-ladder, so the validation campaign (see [`../../docs/plans/P6_RESULTS.md`](../../docs/plans/P6_RESULTS.md))
+ladder, so the validation campaign (see [`../../docs/BENCHMARK.md`](../../docs/BENCHMARK.md))
 can measure lock stability
 reproducibly.
 
