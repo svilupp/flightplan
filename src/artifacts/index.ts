@@ -33,6 +33,7 @@ export type {
   StepSummary,
   // trace.jsonl
   TraceEvent,
+  WebMcpEvidence,
 } from "./events.ts";
 // ---- Event schemas + run-summary type (the cross-agent contract) ----
 export { AI_CALL_ROLES, LADDER_TIERS } from "./events.ts";

@@ -51,6 +51,7 @@ export const STEP_DOS = [
   "switch_frame",
   "switch_to_main",
   "emit",
+  "webmcp_call",
   "eval",
   "evaluate",
 ] as const;
@@ -60,7 +61,7 @@ export type StepDo = (typeof STEP_DOS)[number];
 // Assertion types — PLAN.md §4 (AssertType) / PROPOSAL "Assertion vocabulary"
 // ---------------------------------------------------------------------------
 
-/** The v0 assertion types. `ai_judge` is the only AI-backed (non-deterministic) one. */
+/** The v0.1 assertion types. `ai_judge` is the only AI-backed (non-deterministic) one. */
 export const ASSERT_TYPES = [
   "visible",
   "hidden",
@@ -70,6 +71,7 @@ export const ASSERT_TYPES = [
   "count",
   "state",
   "transition",
+  "result",
   "ai_judge",
 ] as const;
 export type AssertType = (typeof ASSERT_TYPES)[number];
@@ -84,6 +86,7 @@ export const DETERMINISTIC_ASSERT_TYPES = [
   "count",
   "state",
   "transition",
+  "result",
 ] as const;
 export type DeterministicAssertType = (typeof DETERMINISTIC_ASSERT_TYPES)[number];
 

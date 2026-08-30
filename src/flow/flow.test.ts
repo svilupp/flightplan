@@ -111,6 +111,59 @@ describe("loadFlowFile / parseFlowFile", () => {
 });
 
 describe("flow validation rejects malformed input", () => {
+  test("loads a WebMCP call with result assertions and captures", () => {
+    const flow = parseFlowFile(
+      `
+version = 1
+kind = "flow"
+id = "webmcp"
+description = "call a page tool"
+[[steps]]
+id = "lookup"
+do = "webmcp_call"
+tool = "orders.lookup"
+input = { order_id = "42" }
+effect = "observe"
+
+[[steps.assert]]
+type = "result"
+path = "order.status"
+equals = "ready"
+
+[[steps.capture]]
+name = "order_id"
+type = "result"
+path = "order.id"
+secret = true
+`,
+      "webmcp.toml",
+    ).flow;
+    expect(flow.steps[0]?.do).toBe("webmcp_call");
+    if (flow.steps[0]?.do === "webmcp_call") {
+      expect(flow.steps[0].input).toEqual({ order_id: "42" });
+      expect(flow.steps[0].effect).toBe("observe");
+      expect(flow.steps[0].assert?.[0]?.type).toBe("result");
+    }
+  });
+
+  test("rejects a result assertion without a predicate", () => {
+    const bad = `
+version = 1
+kind = "flow"
+id = "x"
+description = "d"
+[[steps]]
+id = "call"
+do = "webmcp_call"
+tool = "orders.lookup"
+
+[[steps.assert]]
+type = "result"
+path = "order.id"
+`;
+    expect(() => parseFlowFile(bad, "bad-result.toml")).toThrow(FlowValidationError);
+  });
+
   test("rejects an unsupported `do`", () => {
     const bad = `
 version = 1

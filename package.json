@@ -1,6 +1,6 @@
 {
   "name": "@svilupp/flightplan",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "description": "TOML-defined browser workflows with deterministic assertions, effect-aware retry policy, selector locks, and a layered resolver backed by browser-pilot.",
   "license": "MIT",
   "repository": {
@@ -30,6 +30,7 @@
     "flightplan": "bun run src/cli/index.ts",
     "fixtures": "bun run examples/fixtures/server.ts",
     "check": "bun run scripts/check.ts",
+    "run-quiet": "sh scripts/run-quiet",
     "lint": "bun run scripts/check.ts lint",
     "lint:fix": "biome check --write . && oxlint --type-aware --fix",
     "format": "biome format --write .",
@@ -41,7 +42,7 @@
     "@ai-sdk/openai": "3.0.86",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "ai": "^6.0.0",
-    "browser-pilot": "^0.3.1",
+    "browser-pilot": "^0.4.1",
     "smol-toml": "^1.4.2",
     "zod": "4.4.3"
   },

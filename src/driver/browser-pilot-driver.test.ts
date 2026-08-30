@@ -122,6 +122,121 @@ describe("BrowserPilotDriver popup integration", () => {
   });
 });
 
+describe("BrowserPilotDriver WebMCP integration", () => {
+  function webmcpPage(evaluate: (expression: string) => Promise<unknown>): Page {
+    return { evaluate } as unknown as Page;
+  }
+
+  test("discovers and invokes an exact read-only tool through browser-pilot", async () => {
+    const evaluations: string[] = [];
+    const page = webmcpPage(async (expression) => {
+      evaluations.push(expression);
+      if (expression.includes("rawResult")) {
+        return {
+          rawResult: { order: { status: "ready" } },
+          tool: {
+            name: "orders.lookup",
+            origin: "https://shop.example",
+            annotations: { readOnlyHint: true },
+          },
+        };
+      }
+      return {
+        status: {
+          available: true,
+          url: "https://shop.example/orders",
+          secureContext: true,
+          originAgentCluster: true,
+          crossOriginIsolated: false,
+          toolsPolicy: true,
+        },
+        tools: [
+          {
+            name: "orders.lookup",
+            origin: "https://shop.example",
+            annotations: { readOnlyHint: true },
+          },
+        ],
+      };
+    });
+    const driver = new BrowserPilotDriver();
+    seedDriver(driver, {}, page);
+    const result = await driver.webmcpCall({
+      tool: "orders.lookup",
+      input: { order_id: "42" },
+      origin: "https://shop.example",
+      allowMutation: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.result).toEqual({ order: { status: "ready" } });
+    expect(result.dispatchState).toBe("dispatched");
+    // Driver preflight plus browser-pilot's own race-safe re-discovery and invocation.
+    expect(evaluations.length).toBe(3);
+  });
+
+  test("rejects an unavailable page or mutating tool before invocation", async () => {
+    let evaluations = 0;
+    const page = webmcpPage(async (expression) => {
+      evaluations += 1;
+      if (expression.includes("rawResult")) throw new Error("must not invoke");
+      return {
+        status: {
+          available: false,
+          url: "http://insecure.example",
+          secureContext: false,
+          originAgentCluster: null,
+          crossOriginIsolated: false,
+          toolsPolicy: null,
+          reason: "WebMCP requires HTTPS",
+        },
+        tools: [],
+      };
+    });
+    const driver = new BrowserPilotDriver();
+    seedDriver(driver, {}, page);
+    const result = await driver.webmcpCall({
+      tool: "orders.create",
+      input: {},
+      allowMutation: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.phase).toBe("preflight");
+    expect(result.dispatchState).toBe("not_dispatched");
+    expect(result.error).toContain("HTTPS");
+    expect(evaluations).toBe(1);
+  });
+
+  test("requires an explicit mutation acknowledgement for non-read-only tools", async () => {
+    let invocationEvaluations = 0;
+    const page = webmcpPage(async (expression) => {
+      if (expression.includes("rawResult")) invocationEvaluations += 1;
+      return {
+        status: {
+          available: true,
+          url: "https://shop.example/orders",
+          secureContext: true,
+          originAgentCluster: true,
+          crossOriginIsolated: false,
+          toolsPolicy: true,
+        },
+        tools: [{ name: "orders.create", annotations: { readOnlyHint: false } }],
+      };
+    });
+    const driver = new BrowserPilotDriver();
+    seedDriver(driver, {}, page);
+    const result = await driver.webmcpCall({
+      tool: "orders.create",
+      input: {},
+      allowMutation: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.phase).toBe("preflight");
+    expect(result.dispatchState).toBe("not_dispatched");
+    expect(result.error).toContain("at_most_once");
+    expect(invocationEvaluations).toBe(0);
+  });
+});
+
 describe("browser-pilot provenance", () => {
   test("exposes the runtime package/source/build identity", () => {
     expect(getBrowserPilotProvenance()).toEqual({

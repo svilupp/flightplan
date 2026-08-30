@@ -39,6 +39,9 @@ import type {
   SocketCandidate as BpSocketCandidate,
   Step as BpStep,
   StepResult as BpStepResult,
+  WebMCPListResult as BpWebMCPListResult,
+  WebMCPStatus as BpWebMCPStatus,
+  WebMCPToolDescriptor as BpWebMCPToolDescriptor,
 } from "browser-pilot";
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
 import type { Strategy } from "../types.ts";
@@ -353,6 +356,42 @@ export interface EmitCommandOptions extends Omit<BpEmitWsOptions, "awaitReply"> 
  * `awaitReply` was requested AND a correlated reply frame arrived within its timeout.
  */
 export type EmitCommandResult = BpEmitResult;
+
+// ---------------------------------------------------------------------------
+// WebMCP tool invocation (browser-pilot >=0.4.0; Flightplan pins >=0.4.1)
+// ---------------------------------------------------------------------------
+
+export type WebMcpToolDescriptor = BpWebMCPToolDescriptor;
+export type WebMcpStatus = BpWebMCPStatus;
+export type WebMcpListResult = BpWebMCPListResult;
+
+/** Boundary options for a named WebMCP tool call. */
+export interface WebMcpCallOptions {
+  tool: string;
+  input: Record<string, unknown>;
+  origin?: string;
+  fromOrigins?: string[];
+  /** Derived from the flow effect: false for observe, true otherwise. */
+  allowMutation: boolean;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Structured result for a WebMCP call. Preflight failures prove that no tool invocation started;
+ * failures after invocation begins are conservatively uncertain because WebMCP has no dispatch
+ * receipt. Successful calls include the tool descriptor and raw result for assertions/captures.
+ */
+export interface WebMcpCallResult {
+  ok: boolean;
+  phase: "preflight" | "invoke";
+  dispatchState: DispatchState;
+  retrySafe: boolean;
+  status?: WebMcpStatus;
+  tool?: WebMcpToolDescriptor;
+  result?: unknown;
+  error?: string;
+}
 
 // ---------------------------------------------------------------------------------------
 // eval — escape-hatch JS execution (browser-pilot `Page.evaluate`)
@@ -768,6 +807,14 @@ export interface Driver {
    * with a clear "browser-pilot >=0.2.0 required" message when absent.
    */
   emitCommand?(opts: EmitCommandOptions): Promise<EmitCommandResult>;
+
+  /**
+   * Discover and invoke one exact WebMCP tool on the active page. This is optional so custom
+   * drivers can remain source-compatible; the real BrowserPilotDriver requires browser-pilot
+   * >=0.4.1. Implementations must classify preflight failures as not_dispatched and invocation
+   * failures as uncertain.
+   */
+  webmcpCall?(opts: WebMcpCallOptions): Promise<WebMcpCallResult>;
 
   // --- eval (escape-hatch JS execution) ---
 

@@ -6,7 +6,21 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Added
 
+- Quiet check wrappers retain per-leg logs, report their paths on success, and print diagnostics on failure.
+
 ### Fixed
+
+## [0.1.0] - 2026-08-29
+
+### Added
+
+- `webmcp_call` steps for invoking exact page-provided WebMCP tools through browser-pilot 0.4.1.
+- Typed WebMCP result assertions and runtime captures, including secret-aware artifact redaction.
+- Effect-aware WebMCP dispatch safety: read-only preflight by default, explicit mutation acknowledgement, and conservative uncertain outcomes.
+
+### Changed
+
+- Requires browser-pilot ^0.4.1.
 
 ## [0.0.4] - 2026-08-23
 

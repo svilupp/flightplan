@@ -72,13 +72,18 @@ including filters and tab changes, so give them an explicit effect and a natural
 any other action. For dangerous steps, use `retry = { policy = "never" }` when the step must not be
 re-entered.
 
+`webmcp_call` invokes an exact tool exposed by the page through browser-pilot. Keep the
+default `effect = "observe"` for tools advertising `readOnlyHint`; acknowledge mutation explicitly
+with `idempotent` or `at_most_once`. Assert the structured result with `type = "result"` and a dot
+`path`, and mark sensitive result captures `secret = true` so raw values never enter artifacts.
+
 Do not write `on_fail = { goto = "self" }` for an effect that may have dispatched. Use a deterministic
 postcondition and observation polling instead.
 
 ### Fill verification (`verify`)
 
 A `fill` step accepts `verify = "exact" | "normalized" | "off"` (default `"normalized"`), forwarded
-to browser-pilot's native fill verification (requires browser-pilot >=0.2.1). Some fields
+to browser-pilot's native fill verification. Some fields
 auto-format as you type — a phone field re-spacing `+447881122333` into `+44 7881 122333`, a card
 field inserting spaces — which trips a strict post-fill readback compare with
 `Fill value did not stick. Expected "..." but got "...".`. The default `"normalized"` tolerates

@@ -26,6 +26,7 @@ import type {
   OnFailSchema,
   PopupExpectationSchema,
   PressStepSchema,
+  ResultAssertionSchema,
   RunStepSchema,
   SelectStepSchema,
   StateAssertionSchema,
@@ -38,6 +39,7 @@ import type {
   ValueAssertionSchema,
   VisibleAssertionSchema,
   WaitStepSchema,
+  WebMcpCallStepSchema,
 } from "./schema.ts";
 
 // ---- Assertions ----
@@ -49,6 +51,7 @@ export type ValueAssertion = z.infer<typeof ValueAssertionSchema>;
 export type CountAssertion = z.infer<typeof CountAssertionSchema>;
 export type StateAssertion = z.infer<typeof StateAssertionSchema>;
 export type TransitionAssertion = z.infer<typeof TransitionAssertionSchema>;
+export type ResultAssertion = z.infer<typeof ResultAssertionSchema>;
 export type AiJudgeAssertion = z.infer<typeof AiJudgeAssertionSchema>;
 export type DeterministicAssertion = z.infer<typeof DeterministicAssertionSchema>;
 export type Assertion = z.infer<typeof AssertionSchema>;
@@ -74,6 +77,7 @@ export type EmitAwaitReply = z.infer<typeof EmitAwaitReplySchema>;
 export type EmitStep = z.infer<typeof EmitStepSchema>;
 export type EvalStep = z.infer<typeof EvalStepSchema>;
 export type EvaluateStep = z.infer<typeof EvaluateStepSchema>;
+export type WebMcpCallStep = z.infer<typeof WebMcpCallStepSchema>;
 export type Step = z.infer<typeof StepSchema>;
 
 // ---- Imports ----

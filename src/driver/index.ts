@@ -104,4 +104,9 @@ export type {
   StepResult,
   SubmitOpts,
   TypeOpts,
+  WebMcpCallOptions,
+  WebMcpCallResult,
+  WebMcpListResult,
+  WebMcpStatus,
+  WebMcpToolDescriptor,
 } from "./types.ts";

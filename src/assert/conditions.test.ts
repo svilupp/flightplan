@@ -16,6 +16,7 @@ import {
   evaluateDeterministic,
   hidden,
   pageState,
+  result,
   state,
   text,
   transition,
@@ -495,5 +496,37 @@ describe("silent-ignore bug: visible/hidden honor BOTH selector and text (regres
     };
     const r = await evaluateDeterministic(assertion, o);
     expect(r.pass).toBe(true);
+  });
+});
+
+describe("result", () => {
+  test("matches a typed nested value", async () => {
+    const { opts: o } = opts(new MockDriver());
+    const r = await result("order.id", 42, undefined, {
+      ...o,
+      actionResult: { order: { id: 42 } },
+    });
+    expect(r.pass).toBe(true);
+    expect(r.type).toBe("result");
+  });
+
+  test("supports root and existence predicates", async () => {
+    const { opts: o } = opts(new MockDriver());
+    expect((await result(".", undefined, true, { ...o, actionResult: { ok: true } })).pass).toBe(
+      true,
+    );
+    expect(
+      (await result("missing", undefined, false, { ...o, actionResult: { ok: true } })).pass,
+    ).toBe(true);
+  });
+
+  test("does not expose observed values in failure messages", async () => {
+    const { opts: o } = opts(new MockDriver());
+    const r = await result("token", "expected", undefined, {
+      ...o,
+      actionResult: { token: "super-secret" },
+    });
+    expect(r.pass).toBe(false);
+    expect(r.message).not.toContain("super-secret");
   });
 });

@@ -54,9 +54,11 @@ From the Flightplan checkout:
 bun install
 ```
 
-Record the resolved package version and lockfile state in the run notes. The `emit` step verb
-requires browser-pilot >= 0.2.0 (`page.emitMessage`); confirm the installed version before authoring
-a flow that emits WebSocket commands.
+Use the package-resolved browser-pilot capabilities. The `emit` step delegates to the page's
+`page.emitMessage` WebSocket bridge. For page-provided WebMCP tools, use Flightplan's
+`webmcp_call` step. Discover the exact tool name/origin first, keep `effect = "observe"` for
+read-only tools, and add deterministic `result` assertions before promoting a mutation-capable
+flow. Never persist raw tool inputs or results; use secret result captures for sensitive values.
 
 ### 3. Discover the application, then express it in Flightplan
 

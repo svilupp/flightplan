@@ -51,6 +51,10 @@
 //   d.enqueueEmitError(err)          // next emitCommand() call rejects once (FIFO)
 //   d.onEmit((opts, callIndex) => EmitCommandResult)   // full dynamic control
 //
+// OPT-IN webmcpCall (installed lazily; mirrors browser-pilot 0.4.1):
+//   d.setWebmcpResult(result) / d.enqueueWebmcpResult(result)
+//   d.enqueueWebmcpError(err) / d.onWebmcp((opts, callIndex) => result)
+//
 // OPT-IN evaluateExpression (`do = "evaluate"` bare escape-hatch steps) — installed lazily —
 // absent until scripted, so missing-capability tests need no setup at all):
 //   d.setEvaluateResult(result)          // default result, installs evaluateExpression()
@@ -108,6 +112,8 @@ import type {
   SnapshotOpts,
   SubmitOpts,
   TypeOpts,
+  WebMcpCallOptions,
+  WebMcpCallResult,
 } from "./types.ts";
 
 /** A single recorded driver method invocation. */
@@ -132,6 +138,7 @@ export interface DriverCall {
     | "elementState"
     | "locateSelectorFrame"
     | "emitCommand"
+    | "webmcpCall"
     | "evaluateExpression"
     | "evalInFrame"
     | "click"
@@ -257,6 +264,20 @@ export class MockDriver implements Driver {
     socketUrl: "wss://mock/socket",
     realm: "main",
     candidates: [],
+  };
+
+  // --- webmcpCall (opt-in; mirrors browser-pilot >=0.4.1) ---
+  private webmcpInstalled = false;
+  private webmcpResultQueue: WebMcpCallResult[] = [];
+  private webmcpErrorQueue: Error[] = [];
+  private webmcpProvider?: (opts: WebMcpCallOptions, callIndex: number) => WebMcpCallResult;
+  private defaultWebmcpResult: WebMcpCallResult = {
+    ok: true,
+    phase: "invoke",
+    dispatchState: "dispatched",
+    retrySafe: false,
+    tool: { name: "mock.tool", annotations: { readOnlyHint: true } },
+    result: {},
   };
 
   // --- evaluateExpression (opt-in; mirrors browser-pilot's bare page.evaluate) ---
@@ -503,6 +524,43 @@ export class MockDriver implements Driver {
     this.defaultEmitResult = result;
     return this;
   }
+
+  /** Script the default webmcpCall result and install the optional capability. */
+  setWebmcpResult(result: WebMcpCallResult): this {
+    this.installWebmcpCall();
+    this.defaultWebmcpResult = result;
+    return this;
+  }
+  /** Queue one-shot webmcpCall results (FIFO). Installs the optional capability. */
+  enqueueWebmcpResult(result: WebMcpCallResult): this {
+    this.installWebmcpCall();
+    this.webmcpResultQueue.push(result);
+    return this;
+  }
+  /** Queue webmcpCall to reject once. Installs the optional capability. */
+  enqueueWebmcpError(error: Error): this {
+    this.installWebmcpCall();
+    this.webmcpErrorQueue.push(error);
+    return this;
+  }
+  /** Provide a dynamic webmcpCall result. Installs the optional capability. */
+  onWebmcp(fn: (opts: WebMcpCallOptions, callIndex: number) => WebMcpCallResult): this {
+    this.installWebmcpCall();
+    this.webmcpProvider = fn;
+    return this;
+  }
+  private installWebmcpCall(): void {
+    if (this.webmcpInstalled) return;
+    this.webmcpInstalled = true;
+    (this as Driver).webmcpCall = async (opts: WebMcpCallOptions): Promise<WebMcpCallResult> => {
+      const callIndex = this.callCounter;
+      this.record("webmcpCall", [opts]);
+      const err = this.webmcpErrorQueue.shift();
+      if (err) throw err;
+      if (this.webmcpProvider) return this.webmcpProvider(opts, callIndex);
+      return this.webmcpResultQueue.shift() ?? this.defaultWebmcpResult;
+    };
+  }
   /** Queue one-shot `emitCommand()` results (FIFO, consumed before the default). Installs the method. */
   enqueueEmitResult(result: EmitCommandResult): this {
     this.installEmitCommand();
@@ -670,6 +728,9 @@ export class MockDriver implements Driver {
     this.emitResultQueue = [];
     this.emitErrorQueue = [];
     this.emitProvider = undefined;
+    this.webmcpResultQueue = [];
+    this.webmcpErrorQueue = [];
+    this.webmcpProvider = undefined;
     this.evaluateResultQueue = [];
     this.evaluateErrorQueue = [];
     this.evaluateProvider = undefined;

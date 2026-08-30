@@ -55,6 +55,12 @@ function rawAsserts(step: Record<string, unknown>): Record<string, unknown>[] {
   return asArray(step.assert).filter(isRecord);
 }
 
+/** The `capture` field on a raw step (single table shorthand or array). */
+function rawCaptures(step: Record<string, unknown>): Record<string, unknown>[] {
+  if (isRecord(step.capture)) return [step.capture];
+  return asArray(step.capture).filter(isRecord);
+}
+
 /** Best-effort step id for diagnostics (raw, may be absent). */
 function stepId(step: Record<string, unknown>, index: number): string {
   const id = step.id;
@@ -339,6 +345,9 @@ const stepsRequiredFields: Rule = {
           break;
         case "eval":
           requireField("script", "the JavaScript to evaluate");
+          break;
+        case "webmcp_call":
+          requireField("tool", "the exact WebMCP tool name");
           break;
         case "emit": {
           requireField("channel", 'the emit channel (currently only "ws")');
@@ -775,6 +784,44 @@ const assertRequiredFields: Rule = {
           }
           break;
         }
+        case "result": {
+          const path = a.path;
+          if (path !== undefined && (typeof path !== "string" || path.length === 0)) {
+            out.push(
+              diag(
+                ctx,
+                "assert/required-fields",
+                "error",
+                `\`result\` assertion in step \`${sid}\` has an empty \`path\`; use "." for the root result.`,
+                { stepId: sid, location: `${loc}.path` },
+              ),
+            );
+          }
+          const hasEquals = a.equals !== undefined;
+          const hasExists = a.exists !== undefined;
+          if (!hasEquals && !hasExists) {
+            out.push(
+              diag(
+                ctx,
+                "assert/required-fields",
+                "error",
+                `\`result\` assertion in step \`${sid}\` requires either \`equals\` or \`exists\`.`,
+                { stepId: sid, location: loc },
+              ),
+            );
+          } else if (hasEquals && hasExists) {
+            out.push(
+              diag(
+                ctx,
+                "assert/required-fields",
+                "error",
+                `\`result\` assertion in step \`${sid}\` cannot set both \`equals\` and \`exists\`.`,
+                { stepId: sid, location: loc },
+              ),
+            );
+          }
+          break;
+        }
         // visible / hidden: text + selector are both optional.
         // ai_judge: handled by assert/ai-judge-shape.
         default:
@@ -782,6 +829,65 @@ const assertRequiredFields: Rule = {
       }
     });
     return out;
+  },
+};
+
+const resultAssertionScope: Rule = {
+  id: "assert/result-scope",
+  severity: "error",
+  description: "A result assertion must be attached to a webmcp_call step.",
+  run(ctx) {
+    const out: Diagnostic[] = [];
+    rawSteps(ctx.doc).forEach((step, i) => {
+      const resultAssertions = rawAsserts(step).filter((a) => a.type === "result");
+      if (resultAssertions.length === 0 || step.do === "webmcp_call") return;
+      out.push(
+        diag(
+          ctx,
+          "assert/result-scope",
+          "error",
+          `Step \`${stepId(step, i)}\` uses a \`result\` assertion, but only \`webmcp_call\` produces a structured result.`,
+          { stepId: stepId(step, i), location: `steps[${i}].assert` },
+        ),
+      );
+    });
+    rawSteps(ctx.doc).forEach((step, i) => {
+      if (step.do !== "webmcp_call") return;
+      rawAsserts(step).forEach((assertion) => {
+        if (assertion.type !== "result" || assertion.when !== "before") return;
+        out.push(
+          diag(
+            ctx,
+            "assert/result-scope",
+            "error",
+            `\`result\` assertions run after a \`webmcp_call\`; step \`${stepId(step, i)}\` cannot use when = "before".`,
+            { stepId: stepId(step, i), location: `steps[${i}].assert` },
+          ),
+        );
+      });
+    });
+    return out;
+  },
+};
+
+const resultCaptureScope: Rule = {
+  id: "capture/result-scope",
+  severity: "error",
+  description: "A result capture must be declared on a webmcp_call step.",
+  run(ctx) {
+    return rawSteps(ctx.doc).flatMap((step, i) => {
+      if (step.do === "webmcp_call") return [];
+      if (!rawCaptures(step).some((capture) => capture.type === "result")) return [];
+      return [
+        diag(
+          ctx,
+          "capture/result-scope",
+          "error",
+          `Step \`${stepId(step, i)}\` uses a result capture, but only \`webmcp_call\` produces a structured result.`,
+          { stepId: stepId(step, i), location: `steps[${i}].capture` },
+        ),
+      ];
+    });
   },
 };
 
@@ -1268,7 +1374,7 @@ const assertCriticalNotAiOnly: Rule = {
             "assert/critical-not-ai-only",
             "warning",
             `Step \`${stepId(step, i)}\` is guarded only by \`ai_judge\` assertion(s). ` +
-              `Add at least one deterministic assertion (visible/text/url/value/count) — ` +
+              `Add at least one deterministic assertion (visible/text/url/value/count/result) — ` +
               `ai_judge is non-deterministic and never heals.`,
             { stepId: stepId(step, i), location: `steps[${i}].assert` },
           ),
@@ -1306,7 +1412,15 @@ const lockStaleSourceHash: Rule = {
 // ---------------------------------------------------------------------------
 
 /** Verbs that change page/app state (so their outcome is worth asserting). */
-const STATE_CHANGING_DOS = new Set(["goto", "click", "fill", "select", "press", "ai_pick"]);
+const STATE_CHANGING_DOS = new Set([
+  "goto",
+  "click",
+  "fill",
+  "select",
+  "press",
+  "ai_pick",
+  "webmcp_call",
+]);
 
 /** Secret-suggesting env-var name pattern (PLAN_v002 §4 `security/unmarked-secret`). */
 const SECRET_ENV_RE = /pass|secret|token|key|otp/i;
@@ -1500,7 +1614,7 @@ const lockOrphanedTarget: Rule = {
 };
 
 /**
- * A `fill`/`select`/`goto` step whose value/url interpolates a secret-looking env var
+ * A `fill`/`select`/`goto`/`webmcp_call` step whose payload interpolates a secret-looking env var
  * (`${env.X}` where X matches /pass|secret|token|key|otp/i) but does not carry `secret = true`
  * leaks that value into artifacts/logs unredacted. Warn so the author marks it (PLAN_v002 §4).
  */
@@ -1508,36 +1622,41 @@ const securityUnmarkedSecret: Rule = {
   id: "security/unmarked-secret",
   severity: "warning",
   description:
-    "A fill/select/goto value referencing a secret-looking env var (/pass|secret|token|key|otp/i) should set `secret = true`.",
+    "A fill/select/goto/webmcp_call payload referencing a secret-looking env var (/pass|secret|token|key|otp/i) should set `secret = true`.",
   run(ctx) {
     const out: Diagnostic[] = [];
     const reported = new Set<string>();
     rawSteps(ctx.doc).forEach((step, i) => {
       const verb = step.do;
-      if (verb !== "fill" && verb !== "select" && verb !== "goto") return;
+      if (verb !== "fill" && verb !== "select" && verb !== "goto" && verb !== "webmcp_call") return;
       if (step.secret === true) return; // already marked — nothing to warn
-      // The value field carrying the interpolation: `value` for fill/select, `url` for goto.
-      const field = verb === "goto" ? "url" : "value";
-      const raw = step[field];
-      if (typeof raw !== "string") return;
+      // The payload field carrying the interpolation: `value`/`url`, or nested WebMCP `input`.
+      const field = verb === "goto" ? "url" : verb === "webmcp_call" ? "input" : "value";
+      const leaves: Array<{ path: string; value: string }> = [];
+      if (verb === "webmcp_call") collectStrings(step[field], field, leaves);
+      else if (typeof step[field] === "string")
+        leaves.push({ path: field, value: step[field] as string });
+      else return;
       const sid = stepId(step, i);
-      for (const ref of collectRefs(raw)) {
-        if (ref.source !== "env") continue;
-        if (!SECRET_ENV_RE.test(ref.name)) continue;
-        const key = `${sid}@${field}@${ref.name}`;
-        if (reported.has(key)) continue;
-        reported.add(key);
-        out.push(
-          diag(
-            ctx,
-            "security/unmarked-secret",
-            "warning",
-            `Step \`${sid}\` (do = "${verb}") interpolates a secret-looking env var \`${ref.raw}\` ` +
-              `into \`${field}\` but is not marked \`secret = true\`, so the value will not be ` +
-              `redacted in logs/artifacts. Add \`secret = true\` to this step.`,
-            { stepId: sid, location: `steps[${i}].${field}` },
-          ),
-        );
+      for (const leaf of leaves) {
+        for (const ref of collectRefs(leaf.value)) {
+          if (ref.source !== "env") continue;
+          if (!SECRET_ENV_RE.test(ref.name)) continue;
+          const key = `${sid}@${leaf.path}@${ref.name}`;
+          if (reported.has(key)) continue;
+          reported.add(key);
+          out.push(
+            diag(
+              ctx,
+              "security/unmarked-secret",
+              "warning",
+              `Step \`${sid}\` (do = "${verb}") interpolates a secret-looking env var \`${ref.raw}\` ` +
+                `into \`${leaf.path}\` but is not marked \`secret = true\`, so the value will not be ` +
+                `redacted in logs/artifacts. Add \`secret = true\` to this step.`,
+              { stepId: sid, location: `steps[${i}].${leaf.path}` },
+            ),
+          );
+        }
       }
     });
     return out;
@@ -1670,7 +1789,7 @@ const effectUnspecified: Rule = {
   description: "Effectful action steps should declare observe, idempotent, or at_most_once.",
   run(ctx) {
     return rawSteps(ctx.doc).flatMap((step, i) =>
-      ["click", "fill", "select", "press", "ai_pick"].includes(String(step.do)) &&
+      ["click", "fill", "select", "press", "ai_pick", "webmcp_call"].includes(String(step.do)) &&
       step.effect === undefined
         ? [
             diag(
@@ -1880,6 +1999,8 @@ export const RULES: readonly Rule[] = [
   stepsTextHintUnscoped,
   assertSupportedType,
   assertRequiredFields,
+  resultAssertionScope,
+  resultCaptureScope,
   assertAiJudgeShape,
   assertStepNeedsAssertion,
   templatingUndeclaredInput,

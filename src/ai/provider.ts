@@ -152,6 +152,41 @@ function extractRawUsage(result: {
  */
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
+function timeoutError(timeoutMs: number): Error {
+  const error = new Error(`The operation timed out after ${timeoutMs}ms`);
+  error.name = "TimeoutError";
+  return error;
+}
+
+/**
+ * Bound an SDK call even when a custom language model does not settle its promise after the abort
+ * signal fires. The signal still reaches the SDK/provider, while this race enforces the same
+ * deadline at our boundary and prevents a hung model from blocking fallback or teardown forever.
+ */
+async function withDeadline<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted) throw signal.reason ?? timeoutError(timeoutMs);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    const rejectTimeout = () => reject(signal.reason ?? timeoutError(timeoutMs));
+    onAbort = rejectTimeout;
+    signal.addEventListener("abort", rejectTimeout, { once: true });
+    timer = setTimeout(rejectTimeout, Math.max(0, timeoutMs));
+  });
+
+  try {
+    return await Promise.race([operation(), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 /** Options for {@link defaultGenerate}. `resolveModel` is injectable for isolated SDK tests. */
 export interface DefaultGenerateOptions {
   /** Map a (suffix-stripped) model id → a `LanguageModel`. Real = `provider(id)`; tests inject a
@@ -210,11 +245,14 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
     // A fail-FAST model (throws immediately, e.g. a rotated id) still falls through to the next model
     // within budget — the shared signal only bites a genuinely SLOW/HUNG chain.
     const abortSignal = AbortSignal.timeout(timeoutMs);
+    const deadline = Date.now() + timeoutMs;
     const family = opts.family ?? "openrouter";
     let lastErr: unknown;
     for (const rawModelId of req.models) {
       const { model: modelId, effort } = parseModelId(rawModelId);
       try {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) throw abortSignal.reason ?? timeoutError(timeoutMs);
         // Build the call with EXACTLY one of `messages` / `prompt` (the SDK `Prompt` is a strict
         // XOR — a spread of an optional union widens it and fails typecheck), so branch here.
         // The shared `abortSignal` bounds the whole logical call so a hung provider call (never
@@ -247,16 +285,31 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
         //   2. a prompt-cached text call (PLAN_v003 v003-6) — the stable prefix is marked cacheable
         //      via a two-part user message (`cachedPromptMessages`);
         //   3. a plain text `prompt` (resolver/advisor/uncached planner).
+        const messages = req.messages;
+        const cache = req.cache;
         let result: Awaited<ReturnType<typeof generateText>>;
-        if (req.messages !== undefined) {
-          result = await generateText({ ...common, messages: req.messages });
-        } else if (req.cache !== undefined) {
-          result = await generateText({
-            ...common,
-            messages: cachedPromptMessages(req.prompt ?? "", req.cache.prefix),
-          });
+        if (messages !== undefined) {
+          result = await withDeadline(
+            () => generateText({ ...common, messages }),
+            remainingMs,
+            abortSignal,
+          );
+        } else if (cache !== undefined) {
+          result = await withDeadline(
+            () =>
+              generateText({
+                ...common,
+                messages: cachedPromptMessages(req.prompt ?? "", cache.prefix),
+              }),
+            remainingMs,
+            abortSignal,
+          );
         } else {
-          result = await generateText({ ...common, prompt: req.prompt ?? "" });
+          result = await withDeadline(
+            () => generateText({ ...common, prompt: req.prompt ?? "" }),
+            remainingMs,
+            abortSignal,
+          );
         }
         return { output: result.output, model: rawModelId, usage: extractRawUsage(result) };
       } catch (err) {
