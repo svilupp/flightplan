@@ -117,6 +117,36 @@ export const TransitionAssertionSchema = z
   })
   .strict();
 
+/** Deterministic assertion against the structured result of a webmcp_call step. */
+export const ResultAssertionSchema = z
+  .object({
+    type: z.literal("result"),
+    ...assertionCommon,
+    /** Dot-path into the tool result; omitted addresses the result root. */
+    path: z.string().min(1).optional(),
+    /** Exact typed equality. TOML callers can use strings, numbers, booleans, or null. */
+    equals: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+    /** Assert that the path is present (or absent) without comparing its value. */
+    exists: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.equals === undefined && value.exists === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["equals"],
+        message: "result assertion requires equals or exists",
+      });
+    }
+    if (value.equals !== undefined && value.exists !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["equals"],
+        message: "result assertion cannot set both equals and exists",
+      });
+    }
+  });
+
 /**
  * ai_judge — boolean judge. A SINGLE `prompt`, a list of `inputs` modalities, and NO
  * `threshold` (PROPOSAL "AI judge"; PLAN.md §4). `.strict()` makes an unknown key such as
@@ -140,6 +170,7 @@ export const DeterministicAssertionSchema = z.discriminatedUnion("type", [
   CountAssertionSchema,
   StateAssertionSchema,
   TransitionAssertionSchema,
+  ResultAssertionSchema,
 ]);
 
 export const AssertionSchema = z.discriminatedUnion("type", [
@@ -151,6 +182,7 @@ export const AssertionSchema = z.discriminatedUnion("type", [
   CountAssertionSchema,
   StateAssertionSchema,
   TransitionAssertionSchema,
+  ResultAssertionSchema,
   AiJudgeAssertionSchema,
 ]);
 
@@ -158,11 +190,24 @@ export const AssertionSchema = z.discriminatedUnion("type", [
 export const CaptureSchema = z
   .object({
     name: z.string().min(1),
-    type: z.enum(["url", "text", "value", "state"]),
+    type: z.enum(["url", "text", "value", "state", "result"]),
     selector: z.string().optional(),
     state: z.enum(STATE_ASSERTIONS).optional(),
+    /** Dot-path into the current webmcp_call result; required for type = result. */
+    path: z.string().min(1).optional(),
+    /** Mask this runtime capture in persisted artifacts while retaining it in memory. */
+    secret: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.type === "result" && value.path === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["path"],
+        message: "result captures require a path (use . for the root result)",
+      });
+    }
+  });
 
 /** Declarative popup/new-page expectation attached to the triggering step. */
 export const PopupExpectationSchema = z
@@ -394,6 +439,29 @@ export const EmitStepSchema = z
   .strict();
 
 /**
+ * webmcp_call — invoke a named tool exposed by the current page's WebMCP model context.
+ *
+ * This is deliberately a direct, exact-name operation: WebMCP discovery is a page capability,
+ * not a selector-resolution problem, so the step never enters the ladder or lock. The effect
+ * annotation is also the mutation acknowledgement: observe (the default) requires the tool's
+ * readOnlyHint, while idempotent/at_most_once allow a mutating tool.
+ */
+export const WebMcpCallStepSchema = z
+  .object({
+    ...stepCommon,
+    do: z.literal("webmcp_call"),
+    tool: z.string().min(1),
+    input: z.record(z.string(), z.unknown()).optional().default({}),
+    /** Exact tool origin; also opts that origin into WebMCP cross-origin discovery. */
+    origin: z.string().min(1).optional(),
+    /** Additional origins explicitly allowed during discovery. */
+    from_origins: z.array(z.string().min(1)).optional(),
+    secret: z.boolean().optional(),
+    effect: z.enum(EFFECTS).optional().default("observe"),
+  })
+  .strict();
+
+/**
  * eval — an escape-hatch verb that runs raw JavaScript in the page (or, when `frame` is given, in
  * a same-origin `<iframe>`/genuine cross-origin OOPIF) via browser-pilot's `Page.evaluate`, which
  * pierces cross-origin child sessions (unlike the element verbs, which only route
@@ -469,6 +537,7 @@ export const StepSchema = z.discriminatedUnion("do", [
   SwitchFrameStepSchema,
   SwitchToMainStepSchema,
   EmitStepSchema,
+  WebMcpCallStepSchema,
   EvalStepSchema,
   EvaluateStepSchema,
 ]);

@@ -10,6 +10,10 @@ Use this skill for Flightplan flow files, fixture runs, lock recipes, and safety
 Read [references/benchmark-learnings.md](references/benchmark-learnings.md) when the task involves
 Shopify/Swap-style admin SPAs, mutations, popups, cached browser-pilot dependencies, or proof artifacts.
 
+Assume the `flightplan` command is already available. Examples use `flightplan ...`; use
+`npx flightplan ...` or `bunx flightplan ...` when invoking from a package-managed project, and
+`bun run flightplan ...` from this checkout.
+
 ## Operating contract
 
 Keep this lifecycle intact:
@@ -29,31 +33,25 @@ resolve -> veto ambiguity/policy -> validate preconditions -> dispatch once
 
 1. Inspect the target application and fixture contract. Identify hydration delays, repeated controls,
    popups, mutation endpoints, seeded resources, and cleanup behavior.
-2. Install the locked dependencies before debugging a flow:
-
-   ```sh
-   bun install
-   ```
-
-3. Write the flow with stable selectors, natural-language anchors, explicit effects, and deterministic
+2. Write the flow with stable selectors, natural-language anchors, explicit effects, and deterministic
    assertions.
-4. Lint before connecting to Chrome:
+3. Lint before connecting to Chrome:
 
    ```sh
-   bun run flightplan lint path/to/flow.toml
-   bun run flightplan migrate-effects path/to/flow.toml
+   flightplan lint path/to/flow.toml
+   flightplan migrate-effects path/to/flow.toml
    ```
 
-5. Run deterministic flows with lock writes disabled while proving behavior:
+4. Run deterministic flows with lock writes disabled while proving behavior:
 
    ```sh
-   bun run flightplan run path/to/flow.toml \
+   flightplan run path/to/flow.toml \
      --frozen --no-lock-write --json -o /tmp/flightplan-run
    ```
 
-6. Inspect `summary.json`, `run.jsonl`, and `trace.jsonl`. Confirm dispatch state, retry safety,
+5. Inspect `summary.json`, `run.jsonl`, and `trace.jsonl`. Confirm dispatch state, retry safety,
    matched postconditions, target provenance, mutation counts, and artifact associations.
-7. Repeat from a clean fixture reset. A single green run is not proof for an at-most-once workflow.
+6. Repeat from a clean fixture reset. A single green run is not proof for an at-most-once workflow.
 
 ## Authoring rules
 
@@ -72,13 +70,23 @@ including filters and tab changes, so give them an explicit effect and a natural
 any other action. For dangerous steps, use `retry = { policy = "never" }` when the step must not be
 re-entered.
 
+`webmcp_call` invokes an exact tool exposed by the page through browser-pilot. Keep the
+default `effect = "observe"` for tools advertising `readOnlyHint`; acknowledge mutation explicitly
+with `idempotent` or `at_most_once`. Assert the structured result with `type = "result"` and a dot
+`path`, and mark sensitive result captures `secret = true` so raw values never enter artifacts.
+
+WebMCP is experimental and page-scoped. Use Chrome 149+ with the required origin-trial/testing
+configuration, a secure context, origin isolation, and the page's Permissions Policy. Run
+`bp webmcp status` before authoring a flow. Discovery, invocation, and browser compatibility remain
+browser-pilot's responsibility; Flightplan does not add a second WebMCP transport.
+
 Do not write `on_fail = { goto = "self" }` for an effect that may have dispatched. Use a deterministic
 postcondition and observation polling instead.
 
 ### Fill verification (`verify`)
 
 A `fill` step accepts `verify = "exact" | "normalized" | "off"` (default `"normalized"`), forwarded
-to browser-pilot's native fill verification (requires browser-pilot >=0.2.1). Some fields
+to browser-pilot's native fill verification. Some fields
 auto-format as you type — a phone field re-spacing `+447881122333` into `+44 7881 122333`, a card
 field inserting spaces — which trips a strict post-fill readback compare with
 `Fill value did not stick. Expected "..." but got "...".`. The default `"normalized"` tolerates
@@ -235,7 +243,7 @@ cd "$BROWSER_PILOT_TESTING_ROOT"
 PORT=3000 bun run start
 
 cd "$FLIGHTPLAN_ROOT"
-ALLOW_MUTATIONS=1 bun run flightplan run \
+ALLOW_MUTATIONS=1 flightplan run \
   "$BROWSER_PILOT_TESTING_ROOT/automations/flightplan/swap-return-approve.toml" \
   --frozen --no-lock-write --json -o /tmp/flightplan-proof
 ```
@@ -256,8 +264,8 @@ and store allowlist, a seeded disposable resource, a mutation budget, and cleanu
 Use the artifacts before changing selectors:
 
 ```sh
-bun run flightplan explain /tmp/flightplan-proof/<run-id>
-bun run flightplan report /tmp/flightplan-proof
+flightplan explain /tmp/flightplan-proof/<run-id>
+flightplan report /tmp/flightplan-proof
 ```
 
 Classify the failure:

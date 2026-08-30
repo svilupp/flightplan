@@ -13,6 +13,7 @@
 // redacted by the caller before reaching `emitAiCall` (see events.ts REDACTION CONTRACT and
 // PLAN.md §5 Phase 5).
 
+import { writeTextFile } from "../runtime.ts";
 import type {
   AiCallEvent,
   AiEvent,
@@ -203,5 +204,5 @@ export function openArtifactWriters(runDir: RunDir, now: Clock = Date.now): Arti
  * existing summary (a run writes it exactly once at the end).
  */
 export async function writeSummary(runDir: RunDir, summary: RunSummary): Promise<void> {
-  await Bun.write(runDir.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
+  await writeTextFile(runDir.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
 }

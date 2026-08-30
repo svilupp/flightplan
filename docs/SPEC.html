@@ -162,7 +162,7 @@
 </div>
 
 <h3>Dev harness</h3>
-<p>One runner drives every check: <span class="fileref">scripts/check.ts</span>. Success is silence — each leg prints a single <code>&lt;Label&gt;: OK</code>; on failure it prints <code>&lt;Label&gt;: FAIL</code>, dumps the tool's full output, and exits non-zero. Legs: <strong>lint</strong> (biome check + oxlint <code>--type-aware</code>), <strong>typecheck</strong> (<code>tsc --noEmit</code>), <strong>test</strong> (<code>bun test</code>, all against <code>MockDriver</code>). It runs every requested leg even if an earlier one fails, so one command surfaces all failures at once.</p>
+<p>One runner drives every check: <span class="fileref">scripts/check.ts</span>, delegating each leg to <span class="fileref">scripts/run-quiet</span>. Each leg captures complete combined output in a retained temporary log, prints a bounded start/status block on success, and prints the captured diagnostics on failure before exiting non-zero. Legs: <strong>lint</strong> (biome check + oxlint <code>--type-aware</code>), <strong>typecheck</strong> (<code>tsc --noEmit</code>), <strong>test</strong> (<code>bun test</code>, all against <code>MockDriver</code>). It runs every requested leg even if an earlier one fails, so one command surfaces all failures at once.</p>
 
 <h3>docs/ and examples/</h3>
 <ul>
@@ -302,6 +302,7 @@ The L5 planner is <strong>DISABLED by default</strong> (opt-in). This is authori
 <tr><td><code>switch_frame</code></td><td><code>target</code> (selector string or array, req)</td><td><span class="fileref">:315</span></td></tr>
 <tr><td><code>switch_to_main</code></td><td>no additional fields</td><td><span class="fileref">:329</span></td></tr>
 <tr><td><code>emit</code></td><td><code>channel</code> (<code>"ws"</code>, req), <code>payload</code> (string or table, req), <code>match?</code> (URL glob), <code>base64?</code>, <code>await_reply?</code> (<code>{where, match?, timeout_ms}</code>), <code>secret</code></td><td></td></tr>
+<tr><td><code>webmcp_call</code></td><td><code>tool</code> (exact name, req), <code>input?</code> (object), <code>origin?</code>, <code>from_origins?</code>, <code>effect?</code>, <code>secret?</code>; inline <code>result</code> assertions/captures</td><td><span class="fileref">:449</span></td></tr>
 </tbody>
 </table>
 </div>
@@ -313,7 +314,7 @@ id = "name"
 do = "fill"
 target = ["[data-testid='wizard-name']", "the full name field"]
 value = "${inputs.full_name}"</code></pre>
-<p><code>css:</code> is a Flightplan authoring prefix and is stripped at the driver boundary. Browser-pilot 0.2.0 accepts both <code>role:button:Next</code> and <code>role:button[name="Next"]</code>. <code>fingerprint:</code>/<code>fp:</code>/<code>structure:</code> are internal lock identity tokens, not executable target selectors; <code>label:</code> is not part of the target contract.</p>
+<p><code>css:</code> is a Flightplan authoring prefix and is stripped at the driver boundary. Browser-pilot accepts both <code>role:button:Next</code> and <code>role:button[name="Next"]</code>. <code>fingerprint:</code>/<code>fp:</code>/<code>structure:</code> are internal lock identity tokens, not executable target selectors; <code>label:</code> is not part of the target contract.</p>
 <p>Pure prose targets route straight to vision when hinted, e.g. <code>vision.toml</code>:</p>
 <pre><code>target = "the trash-can / delete icon in the toolbar to delete the item"
 tier_hint = "vision"</code></pre>
@@ -528,7 +529,7 @@ count    = 5</code></pre>
 <ul>
   <li><code>goto</code> / <code>currentUrl</code>, <code>snapshot(opts)</code>, <code>batch</code>, <code>resolveAll</code> (native ranking).</li>
   <li>Single actions returning <code>boolean</code>: <code>click</code>, <code>fill</code>, <code>type</code>, <code>select</code>, <code>check</code>, <code>hover</code>, <code>press</code>, and <code>submit</code>; <code>screenshot()</code> → base64.</li>
-  <li>Optional: <code>provenance</code>, <code>expectNewPage</code>, <code>pageState</code>, <code>elementState</code>, <code>locateSelectorFrame</code>, <code>startRecording</code>, <code>stopRecording</code>, and <code>saveScreenshot</code>.</li>
+  <li>Optional: <code>provenance</code>, <code>expectNewPage</code>, <code>pageState</code>, <code>elementState</code>, <code>locateSelectorFrame</code>, <code>startRecording</code>, <code>stopRecording</code>, <code>saveScreenshot</code>, and <code>webmcpCall</code>.</li>
   <li><code>switchToFrame</code>, <code>switchToMain</code>, and <code>currentFrame</code> for stateful frame context; <code>clearBrowserState</code> for isolation.</li>
   <li><code>exportRefMap</code> / <code>importRefMap</code> (refs valid for exactly one cycle).</li>
   <li><code>captureStateSignature({mode:"text"|"structure"})</code>.</li>

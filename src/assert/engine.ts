@@ -72,6 +72,7 @@ function resolveConditionOpts(assertion: Assertion, ctx: AssertContext): Conditi
     pollIntervalMs: ctx.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     clock: ctx.clock ?? systemClock,
     ...(ctx.captures ? { captures: ctx.captures } : {}),
+    ...(ctx.actionResult !== undefined ? { actionResult: ctx.actionResult } : {}),
     ...(ctx.beforeState ? { beforeState: ctx.beforeState } : {}),
   };
 }

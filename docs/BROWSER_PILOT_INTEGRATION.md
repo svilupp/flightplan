@@ -8,17 +8,17 @@ learned lock.
 
 ### Consumers
 
-Install a released `browser-pilot` package in the consumer project and pin the resolved version in
-that project's lockfile:
+Install the released Flightplan package in the consumer project and keep the lockfile committed:
 
 ```sh
-bun add browser-pilot
-# or
-npm install browser-pilot
+npm install @svilupp/flightplan browser-pilot
+# In a Flightplan checkout, use `bun install` instead.
 ```
 
-Do not use a `file:` path, a workspace reference, or a sibling checkout in a consumer install.
-Flightplan itself uses the published `browser-pilot@0.2.1` package.
+The direct `browser-pilot` install exposes the `bp` discovery CLI used below; Flightplan also
+declares the same package as its runtime driver dependency. Do not use a `file:` path, a workspace
+reference, or a sibling checkout in a consumer install. Flightplan uses the package-resolved
+browser-pilot capabilities and feature-detects optional driver APIs at runtime.
 
 ## Canonical authoring flow
 
@@ -75,10 +75,13 @@ text = "Order created"
 Then lint, learn locally, and replay against the reviewed lock. Replace the clearly marked example
 path below with the flow you authored:
 
+The examples use `flightplan` on `PATH`; `npx flightplan` and `bunx flightplan` are equivalent
+package runners, and a checkout can use `bun run flightplan`.
+
 ```sh
-bun run flightplan lint path/to/your-flow.toml
-bun run flightplan run path/to/your-flow.toml
-bun run flightplan run path/to/your-flow.toml --frozen
+flightplan lint path/to/your-flow.toml
+flightplan run path/to/your-flow.toml
+flightplan run path/to/your-flow.toml --frozen
 ```
 
 The first unlocked run can create or update the collocated `<your-flow>.lock.toml`. Inspect the run
@@ -111,9 +114,8 @@ used when the recorded selector drifts.
 ## Fill verification (`verify`) passthrough
 
 A `fill` step's `verify` option (`"exact" | "normalized" | "off"`, default `"normalized"`) is
-forwarded straight into the batch `Step.verify` browser-pilot dispatches (requires
-**browser-pilot >=0.2.1**, which added native `verify` support to `page.fill` and its batch
-executor): `"exact"` maps to browser-pilot's `"exact"`, `"off"` maps to `false`, and
+forwarded straight into the batch `Step.verify` browser-pilot dispatches: `"exact"` maps to
+browser-pilot's `"exact"`, `"off"` maps to `false`, and
 `"normalized"`/unset maps to `"normalized"`. browser-pilot itself performs the NFKC +
 whitespace-collapse (then whitespace-stripped) comparison and skips the char-by-char retype when
 only formatting differs — Flightplan no longer parses or recovers from a "did not stick" error
@@ -122,7 +124,7 @@ message.
 ## `emit` — WebSocket command injection
 
 `do = "emit"` sends a message on a WebSocket the page itself already owns, delegating to
-browser-pilot's `page.emitMessage` (requires **browser-pilot >=0.2.0**). It travels the app's real
+browser-pilot's `page.emitMessage`. It travels the app's real
 connection with its real headers/cookies/session token, so it is the mechanism for driving a
 client's own realtime protocol (e.g. a chat app's `client.response.text` command) without faking a
 server:
@@ -162,6 +164,51 @@ the never-persist-`ref:eN` rule extends trivially here — an `emit` step carrie
 session-scoped browser-pilot identifiers (socket ids, target ids) into any artifact; only the
 templated payload (redacted per `secret`) and the delivery outcome are traced.
 
+## `webmcp_call` — page-provided tools
+
+Browser-pilot exposes the page's WebMCP tools. Flightplan maps that capability to an exact,
+structured step; it does not send the call through the selector ladder or persist a selector lock:
+
+WebMCP is experimental and page-scoped. Use a recent Chrome build that exposes WebMCP (the current
+origin-trial milestone is Chrome 149), enable the local testing flag at
+`chrome://flags/#enable-webmcp-testing` when needed, and verify the browser-pilot boundary with
+`bp webmcp status` before authoring a flow. Flightplan delegates discovery, invocation, and browser
+compatibility to browser-pilot; it does not provide a second WebMCP transport.
+
+```toml
+[[steps]]
+id = "lookup_order"
+do = "webmcp_call"
+tool = "orders.lookup"
+input = { order_id = "${inputs.order_id}" }
+origin = "https://shop.example"       # optional exact origin disambiguation
+effect = "observe"                    # default; requires readOnlyHint = true
+
+[[steps.assert]]
+type = "result"
+path = "order.status"
+equals = "ready"
+
+[[steps.capture]]
+name = "order_id"
+type = "result"
+path = "order.id"
+```
+
+`tool` is matched exactly. `origin` selects one tool when several allowed origins expose the same
+name; `from_origins` can opt additional origins into discovery. The default `effect = "observe"`
+is fail-closed: the tool must advertise `annotations.readOnlyHint = true`. Use `effect =
+"idempotent"` or `"at_most_once"` only after reviewing the tool's mutation behavior. A failure
+before invocation is `not_dispatched` and retry-safe; once invocation begins, a rejection is
+reported as `uncertain` and Flightplan never automatically redispatches it. An at-most-once call
+with an unconfirmed result therefore becomes `inconclusive` unless a deterministic postcondition
+proves the outcome.
+
+Result assertions support a dot path plus either typed `equals` (string, number, boolean, or null) or
+`exists = true|false`. Result captures retain the structured value in memory for later templating,
+while `secret = true` masks the capture in `run.jsonl` and `summary.json`. Raw WebMCP inputs and
+results are never written to artifacts; only safe tool/effect/dispatch metadata is recorded.
+
 ## `[config.auth]` — Cloudflare Access wiring
 
 `[config.auth]` is a driver capability, not a step verb: `driver.applyAuth` runs once, right after
@@ -176,11 +223,10 @@ inherits the same headers. It is feature-detected against the connected browser-
   `Page.setExtraHTTPHeaders`, usable standalone without `cf_access`.
 - `[[cookies]]` entries map 1:1 onto browser-pilot's `SetCookieOptions` via `Page.setCookie`.
 
-Requires a browser-pilot build newer than **0.2.1** that exports `mintCfAccessJwt` and
-`Page.setExtraHTTPHeaders`; against an older browser-pilot the driver leaves `[config.auth]`
-parsed but un-applied rather than failing the run. An unset `*_env` name or a rejected service
-token fails the run before any navigation happens. See `README.md`'s "Cloudflare Access auth"
-section and `src/config/schema.ts` for the full field reference.
+These capabilities are feature-detected; when an optional API is unavailable the driver leaves
+`[config.auth]` parsed but un-applied rather than failing the run. An unset `*_env` name or a
+rejected service token fails the run before any navigation happens. See `README.md`'s "Cloudflare
+Access auth" section and `src/config/schema.ts` for the full field reference.
 
 ## API-key conditions
 
@@ -190,7 +236,7 @@ invoke L2 resolver, L3 vision, L4 advisor, L5 planner, `ai_pick`, or `ai_judge`:
 
 ```sh
 export OPENROUTER_API_KEY=...
-bun run flightplan run path/to/your-flow.toml
+flightplan run path/to/your-flow.toml
 ```
 
 `--frozen` controls lock writes, not model availability. A frozen run still needs the key if the

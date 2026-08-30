@@ -29,6 +29,10 @@ fixture or application
 Read [references/automation-quality.md](references/automation-quality.md) for benchmark-derived failure
 patterns and the release checklist. For TOML syntax, read the `authoring-flightplan-workflows` skill.
 
+Assume the `flightplan` command is already available. Examples use `flightplan ...`; use
+`npx flightplan ...` or `bunx flightplan ...` when invoking from a package-managed project, and
+`bun run flightplan ...` from this checkout.
+
 ## Build lifecycle
 
 ### 1. Define the contract before touching the browser
@@ -46,19 +50,18 @@ Write down:
 If the effect cannot be observed deterministically, stop and add an oracle or fixture contract before
 authoring the flow.
 
-### 2. Install the released driver dependency
+Use the package-resolved browser-pilot capabilities. The `emit` step delegates to the page's
+`page.emitMessage` WebSocket bridge. For page-provided WebMCP tools, use Flightplan's
+`webmcp_call` step. Discover the exact tool name/origin first, keep `effect = "observe"` for
+read-only tools, and add deterministic `result` assertions before promoting a mutation-capable
+flow. Never persist raw tool inputs or results; use secret result captures for sensitive values.
 
-From the Flightplan checkout:
+WebMCP is experimental and page-scoped. Use Chrome 149+ with the required origin-trial/testing
+configuration, a secure context, origin isolation, and the page's Permissions Policy. Verify the
+browser-pilot boundary with `bp webmcp status` before authoring a flow; discovery, invocation, and
+browser compatibility remain browser-pilot's responsibility.
 
-```sh
-bun install
-```
-
-Record the resolved package version and lockfile state in the run notes. The `emit` step verb
-requires browser-pilot >= 0.2.0 (`page.emitMessage`); confirm the installed version before authoring
-a flow that emits WebSocket commands.
-
-### 3. Discover the application, then express it in Flightplan
+### 2. Discover the application, then express it in Flightplan
 
 Use browser-pilot inspection for reconnaissance:
 
@@ -74,7 +77,7 @@ After discovery, close the browser-pilot session and write the behavior as TOML.
 selectors, landmarks, readiness conditions, and popup identity in the flow. Do not make the discovery
 session the automation.
 
-### 4. Author the flow as a state machine
+### 3. Author the flow as a state machine
 
 Every flow should include:
 
@@ -107,7 +110,7 @@ assert_timeout_ms = 6000
 Use ordered targets with stable selectors first and one concise natural-language anchor last. Mark
 every action with `effect`. Add a semantic readiness assertion after navigation or delayed hydration.
 
-### 5. Harden each effect
+### 4. Harden each effect
 
 For `at_most_once` steps:
 
@@ -125,7 +128,7 @@ open WebSocket, or the emit fails before anything is sent.
 
 For read-only flows, prove non-mutation with both unchanged business state and a zero-entry ledger.
 
-### 6. Model SPA and popup behavior
+### 5. Model SPA and popup behavior
 
 Do not use URL change as the only readiness signal. Assert a hydrated heading, row, form field, status,
 or loading-overlay removal. For a popup, attach `[steps.popup]` to the triggering step with URL, title,
@@ -134,21 +137,21 @@ type, and timeout. Flightplan must arm observation before the click, filter by o
 
 Never choose a popup by tab index, first target, or active-tab side effect.
 
-### 7. Run in layers
+### 6. Run in layers
 
 Run in this order:
 
 ```sh
-bun run flightplan lint path/to/flow.toml
-bun run flightplan migrate-effects path/to/flow.toml
-bun run flightplan run path/to/flow.toml \
+flightplan lint path/to/flow.toml
+flightplan migrate-effects path/to/flow.toml
+flightplan run path/to/flow.toml \
   --frozen --no-lock-write --json -o /tmp/flightplan-run
 ```
 
 Then run the flow from a clean fixture reset. For local seeded mutations, set `ALLOW_MUTATIONS=1`
 only for the specific mutation flow. Never use that local gate as proof of live authorization.
 
-### 8. Prove, do not infer
+### 7. Prove, do not infer
 
 A flow passes only when all relevant evidence agrees:
 

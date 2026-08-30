@@ -6,7 +6,28 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Added
 
+- Quiet check wrappers retain per-leg logs, report their paths on success, and print diagnostics on failure.
+
 ### Fixed
+
+## [0.1.0] - 2026-08-29
+
+### Added
+
+- `webmcp_call` steps for invoking exact page-provided WebMCP tools through browser-pilot 0.4.1.
+- Typed WebMCP result assertions and runtime captures, including secret-aware artifact redaction.
+- Effect-aware WebMCP dispatch safety: read-only preflight by default, explicit mutation acknowledgement, and conservative uncertain outcomes.
+
+### Changed
+
+- Requires browser-pilot ^0.4.1.
+- The published package now supports Node.js 18+, includes declarations, and builds automatically during `npm pack`.
+- Published files include the operator documentation and examples needed to start a consumer project.
+
+### Fixed
+
+- Command-specific flags and positional arguments are rejected instead of being silently ignored.
+- Updated the AI SDK dependency chain to remove the known vulnerable undici version from the release lockfile.
 
 ## [0.0.4] - 2026-08-23
 

@@ -31,12 +31,14 @@ exchange bonuses look alike. Declare popup URL/title/type and verify opener prov
 
 ## Proof commands
 
+Assume `flightplan` is available on `PATH`. The same commands can be launched as
+`npx flightplan ...` or `bunx flightplan ...`; from this checkout use `bun run flightplan ...`.
+
 ```sh
-bun install
-bun run flightplan lint path/to/flow.toml
-bun run flightplan migrate-effects path/to/flow.toml
-bun run flightplan run path/to/flow.toml --frozen --no-lock-write --json -o /tmp/flightplan-proof
-bun run flightplan explain /tmp/flightplan-proof/<run-id>
+flightplan lint path/to/flow.toml
+flightplan migrate-effects path/to/flow.toml
+flightplan run path/to/flow.toml --frozen --no-lock-write --json -o /tmp/flightplan-proof
+flightplan explain /tmp/flightplan-proof/<run-id>
 ```
 
 For local fixtures, reset state before each lane and compare state/ledger before and after. Store all

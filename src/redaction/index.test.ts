@@ -193,4 +193,19 @@ describe("gatherSecretValues", () => {
     ];
     expect(gatherSecretValues(steps, {}).size).toBe(0);
   });
+
+  test("collects every string leaf from a secret WebMCP input", () => {
+    const steps: Step[] = [
+      {
+        id: "call",
+        do: "webmcp_call",
+        tool: "orders.create",
+        input: { customer: { email: "person@example.com" }, token: "secret-token" },
+        secret: true,
+      } as unknown as Step,
+    ];
+    const got = gatherSecretValues(steps, {});
+    expect(got.has("person@example.com")).toBe(true);
+    expect(got.has("secret-token")).toBe(true);
+  });
 });

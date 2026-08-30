@@ -15,6 +15,10 @@ they run against.
 
 ## Run
 
+The fixture server and Bun commands below are for this repository checkout. In a published
+consumer project, use `flightplan ...`, `npx flightplan ...`, or `bunx flightplan ...` (see the root
+README quick start).
+
 From the repo root, start Chrome/Chromium with remote debugging enabled at `localhost:9222`, or
 add a `[config.connect]` block with `mode = "launch"` to the flow. Then start the fixture server
 in terminal 1:
@@ -68,4 +72,4 @@ The complete translation table and lock-promotion rules are in
 The model-tier flows (`gauntlet`, `vision`, `drift`, `signature`) need an OpenRouter key when
 they invoke their AI tier or an AI assertion. A warm replay can be keyless only when it stays at
 L0 and executes no AI-backed step or assertion. See
-[`../docs/plans/RUNNING.md`](../docs/plans/RUNNING.md) for the validation-campaign runbook.
+[`../docs/BENCHMARK.md`](../docs/BENCHMARK.md) for the validation methodology.

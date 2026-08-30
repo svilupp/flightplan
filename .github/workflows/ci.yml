@@ -27,3 +27,25 @@ jobs:
 
       - name: Run checks
         run: bun run check
+
+      - name: Build and validate the Node release package
+        shell: bash
+        run: |
+          npm run build
+          npm pack --dry-run --json > /tmp/flightplan-pack.json
+          node --input-type=commonjs -e '
+            const fs = require("node:fs");
+            const pack = JSON.parse(fs.readFileSync("/tmp/flightplan-pack.json", "utf8"))[0];
+            const files = new Set(pack.files.map(({ path }) => path));
+            for (const required of [
+              "dist/index.js",
+              "dist/index.d.ts",
+              "dist/cli/index.js",
+              "docs/BROWSER_PILOT_INTEGRATION.md",
+              "examples/flows/wizard.toml",
+            ]) {
+              if (!files.has(required)) throw new Error(`Missing ${required} from npm pack`);
+            }
+          '
+          node dist/cli/index.js --version
+          node --input-type=module -e 'import("./dist/index.js").then((m) => console.log(`Node import exports: ${Object.keys(m).length}`))'

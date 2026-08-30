@@ -1,6 +1,6 @@
 {
   "name": "@svilupp/flightplan",
-  "version": "0.0.4",
+  "version": "0.1.0",
   "description": "TOML-defined browser workflows with deterministic assertions, effect-aware retry policy, selector locks, and a layered resolver backed by browser-pilot.",
   "license": "MIT",
   "repository": {
@@ -14,22 +14,38 @@
   "publishConfig": {
     "access": "public"
   },
-  "module": "dist/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
   "type": "module",
   "files": [
     "dist",
+    "docs",
+    "examples",
     "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],
   "bin": {
-    "flightplan": "dist/flightplan.js"
+    "flightplan": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "bun run scripts/build.ts",
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build",
     "flightplan": "bun run src/cli/index.ts",
     "fixtures": "bun run examples/fixtures/server.ts",
     "check": "bun run scripts/check.ts",
+    "run-quiet": "sh scripts/run-quiet",
     "lint": "bun run scripts/check.ts lint",
     "lint:fix": "biome check --write . && oxlint --type-aware --fix",
     "format": "biome format --write .",
@@ -37,18 +53,19 @@
     "test": "bun run scripts/check.ts test"
   },
   "dependencies": {
-    "@ai-sdk/google": "^3.0.86",
+    "@ai-sdk/google": "^3.0.119",
     "@ai-sdk/openai": "3.0.86",
     "@openrouter/ai-sdk-provider": "^2.10.0",
-    "ai": "^6.0.0",
-    "browser-pilot": "^0.3.1",
+    "ai": "^6.0.272",
+    "browser-pilot": "^0.4.1",
+    "chrome-launcher": "1.2.1",
     "smol-toml": "^1.4.2",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
     "@types/bun": "latest",
-    "chrome-launcher": "1.2.1",
+    "@types/node": "^26.0.0",
     "oxlint": "^1.72.0",
     "oxlint-tsgolint": "^0.24.0",
     "typescript": "^5"

@@ -16,6 +16,8 @@
 //   click|fill|select|press|ai_pick → ladder.resolveStep(...) (resolution+action coupled at L1);
 //     emit one browser_action + one resolution_attempt per ladder attempt. ai_pick has no AI hook
 //     in P2 → fails with a clear Phase-4 message.
+//   webmcp_call → exact page-provided WebMCP tool through the driver boundary; result assertions
+//     and captures consume the structured return without entering the selector ladder.
 //   assert (a `do:'assert'` step) + per-step `assert[]` → runAssertions(..., 'after').
 //   Plus `when:'before'`/`when:'after'` assertions around every step.
 //
@@ -45,6 +47,7 @@ import {
   openArtifactWriters,
   type RunSummary,
   type StepSummary,
+  type WebMcpEvidence,
   writeSummary,
 } from "../artifacts/index.ts";
 import {
@@ -70,6 +73,7 @@ import type {
   NativeDialogPolicy,
   NewPageExpectation,
   NewPageResult,
+  WebMcpCallResult,
 } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { type ImportGraph, resolveImports } from "../flow/imports.ts";
@@ -101,7 +105,8 @@ import {
   resolveLockWriteMode,
   type SessionImport,
 } from "../lock/index.ts";
-import { createRedactor, gatherSecretValues, type Redactor } from "../redaction/index.ts";
+import { createRedactor, gatherSecretValues, REDACTED, type Redactor } from "../redaction/index.ts";
+import { writeTextFile } from "../runtime.ts";
 import {
   aiCallEventAttrs,
   artifactCreatedAttrs,
@@ -241,6 +246,7 @@ interface RunState {
   replanCount: number;
   repairedSteps: string[];
   captures: Record<string, string>;
+  secretCaptures: Set<string>;
   pages: Array<{
     targetId?: string;
     type?: string;
@@ -270,6 +276,7 @@ function freshRunState(): RunState {
     replanCount: 0,
     repairedSteps: [],
     captures: {},
+    secretCaptures: new Set(),
     pages: [],
     inconclusiveReason: null,
   };
@@ -358,6 +365,7 @@ const SECRET_CAPABLE_VERBS = new Set<Step["do"]>([
   "emit",
   "eval",
   "evaluate",
+  "webmcp_call",
 ]);
 
 /** True when this step both CAN carry a secret (schema) AND is flagged `secret === true`. */
@@ -418,7 +426,7 @@ function templateFlow(
   inputs: Record<string, string>,
   env: Record<string, string | undefined>,
 ): { steps: Step[]; inputs: Record<string, string> } {
-  const ctx: TemplateContext = { inputs, env };
+  const ctx: TemplateContext = { inputs, env, deferCaptures: true };
   // Template the step list (deep — covers urls, values, hints, assertion text/selectors).
   const steps = flow.steps.map((s) => applyTemplatingDeep(s, ctx));
   return { steps, inputs };
@@ -671,12 +679,42 @@ async function captureBeforeState(
   return out;
 }
 
-async function captureStepValues(driver: Driver, step: Step): Promise<Record<string, string>> {
+function readResultPath(root: unknown, path: string): { found: boolean; value: unknown } {
+  if (path === ".") return { found: root !== undefined, value: root };
+  const parts = path.split(".").filter((part) => part.length > 0);
+  let value: unknown = root;
+  for (const part of parts) {
+    if (value === null || value === undefined || typeof value !== "object") {
+      return { found: false, value: undefined };
+    }
+    if (!(part in (value as object))) return { found: false, value: undefined };
+    value = (value as Record<string, unknown>)[part];
+  }
+  return { found: value !== undefined, value };
+}
+
+function stringifyCaptureValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined) return "";
+  const serialized = JSON.stringify(value);
+  return serialized ?? "";
+}
+
+async function captureStepValues(
+  driver: Driver,
+  step: Step,
+  actionResult?: unknown,
+): Promise<Record<string, string>> {
   const specs = capturesForStep(step);
   if (specs.length === 0) return {};
   const out: Record<string, string> = {};
   let snapshot: Awaited<ReturnType<Driver["snapshot"]>> | undefined;
   for (const spec of specs) {
+    if (spec.type === "result") {
+      const resolved = readResultPath(actionResult, spec.path ?? ".");
+      if (resolved.found) out[spec.name] = stringifyCaptureValue(resolved.value);
+      continue;
+    }
     if (spec.type === "url") {
       out[spec.name] = await driver.currentUrl();
       continue;
@@ -709,6 +747,24 @@ async function captureStepValues(driver: Driver, step: Step): Promise<Record<str
       out[spec.name] = String(snapshot.interactiveElements.length > 0);
   }
   return out;
+}
+
+/** Redact captures for persistence while retaining raw values in the in-memory template scope. */
+function redactCapturedValues(
+  step: Step,
+  captured: Record<string, string>,
+  redactor: Redactor,
+): Record<string, string> {
+  const specs = capturesForStep(step);
+  const secretNames = new Set(
+    specs.filter((spec) => spec.secret === true).map((spec) => spec.name),
+  );
+  return Object.fromEntries(
+    Object.entries(captured).map(([name, value]) => [
+      name,
+      secretNames.has(name) ? REDACTED : redactor.redactValue(value),
+    ]),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -757,6 +813,8 @@ interface StepActionOutcome {
   transportAmbiguous?: boolean;
   popup?: NewPageResult;
   captures?: Record<string, string>;
+  actionResult?: unknown;
+  webmcp?: WebMcpEvidence;
 }
 
 /**
@@ -942,6 +1000,108 @@ async function performStepAction(
         };
       }
       return { ok: true };
+    }
+    case "webmcp_call": {
+      if (!driver.webmcpCall) {
+        return {
+          ok: false,
+          error:
+            "step " +
+            step.id +
+            " declares a webmcp_call step, but the connected driver does not " +
+            "support WebMCP (browser-pilot >=0.4.1 required)",
+          dispatchState: "not_dispatched",
+          retrySafe: true,
+        };
+      }
+      const effect = step.effect ?? "observe";
+      const allowMutation = effect !== "observe";
+      const opts = {
+        tool: step.tool,
+        input: step.input,
+        ...(step.origin !== undefined ? { origin: step.origin } : {}),
+        ...(step.from_origins !== undefined ? { fromOrigins: step.from_origins } : {}),
+        allowMutation,
+        ...(step.timeout_ms !== undefined ? { timeoutMs: step.timeout_ms } : {}),
+      };
+      const actionLabel = step.origin ? `${step.tool}@${step.origin}` : step.tool;
+      const evidence = (result: WebMcpCallResult): WebMcpEvidence => ({
+        tool: result.tool?.name ?? step.tool,
+        ...((result.tool?.origin ?? step.origin)
+          ? { origin: result.tool?.origin ?? step.origin }
+          : {}),
+        phase: result.phase,
+        dispatchState: result.dispatchState,
+        retrySafe: result.retrySafe,
+        ...(result.tool?.annotations?.readOnlyHint !== undefined
+          ? { readOnlyHint: result.tool.annotations.readOnlyHint }
+          : {}),
+        ...(result.tool?.annotations?.untrustedContentHint !== undefined
+          ? { untrustedContentHint: result.tool.annotations.untrustedContentHint }
+          : {}),
+      });
+      const emitTrace = (ok: boolean, result: WebMcpCallResult | undefined): void => {
+        const ba = {
+          action: "webmcp_call",
+          selectorOrIntent: services.redactor.redactText(actionLabel),
+          ok,
+          durationMs: 0,
+          ...(result?.dispatchState !== undefined ? { dispatchState: result.dispatchState } : {}),
+          ...(result?.retrySafe !== undefined ? { retrySafe: result.retrySafe } : {}),
+        };
+        void writers.trace.emitBrowserAction(ba);
+        span.event(
+          TELEMETRY_EVENTS.browserAction,
+          browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
+        );
+      };
+      let result: WebMcpCallResult;
+      try {
+        result = await driver.webmcpCall(opts);
+      } catch (err) {
+        emitTrace(false, undefined);
+        return {
+          ok: false,
+          error:
+            "webmcp_call step " +
+            step.id +
+            " failed: " +
+            services.redactor.redactText(err instanceof Error ? err.message : String(err)),
+          dispatchState: "uncertain",
+          retrySafe: false,
+          effect,
+          webmcp: {
+            tool: step.tool,
+            ...(step.origin !== undefined ? { origin: step.origin } : {}),
+            phase: "invoke",
+            dispatchState: "uncertain",
+            retrySafe: false,
+          },
+        };
+      }
+      emitTrace(result.ok, result);
+      if (!result.ok) {
+        return {
+          ok: false,
+          error:
+            "webmcp_call step " +
+            step.id +
+            " failed: " +
+            services.redactor.redactText(result.error ?? "tool invocation failed"),
+          dispatchState: result.dispatchState,
+          retrySafe: result.retrySafe,
+          effect,
+          webmcp: evidence(result),
+        };
+      }
+      return {
+        ok: true,
+        actionResult: result.result,
+        dispatchState: result.dispatchState,
+        retrySafe: result.retrySafe,
+        effect,
+        webmcp: evidence(result),
+      };
     }
     case "eval": {
       // Escape-hatch JS execution (browser-pilot's `Page.evaluate`, which pierces a genuine
@@ -1480,6 +1640,7 @@ async function executeSteps(
       }
 
       assertCtx.captures = state.captures;
+      assertCtx.actionResult = undefined;
       assertCtx.beforeState = await captureBeforeState(driver, step);
       // (1) before-phase assertions (e.g. preconditions).
       const beforeAssertions = "assert" in step && step.assert ? step.assert : [];
@@ -1595,6 +1756,7 @@ async function executeSteps(
       // (3) after-phase assertions (validation). A dispatched/uncertain action is observable even
       // when transport reported `ok=false`; deterministic postconditions may prove the effect and
       // rescue the logical step without redispatching it.
+      assertCtx.actionResult = action.actionResult;
       let afterFailed = false;
       let afterDeterministicCount = 0;
       let afterDeterministicFailed = 0;
@@ -1617,8 +1779,12 @@ async function executeSteps(
         afterDeterministicFailed = after.deterministicFailed;
       }
 
-      const captured = await captureStepValues(driver, step);
+      const captured = await captureStepValues(driver, step, action.actionResult);
       Object.assign(state.captures, captured);
+      for (const spec of capturesForStep(step)) {
+        if (spec.secret === true) state.secretCaptures.add(spec.name);
+      }
+      const persistedCaptured = redactCapturedValues(step, captured, services.redactor);
       assertCtx.captures = state.captures;
       if (action.popup) {
         state.pages.push({
@@ -1719,13 +1885,14 @@ async function executeSteps(
               anchor: step.anchor ?? ("target" in step ? describeTarget(step.target) : undefined),
             }),
         ...(transportAmbiguous ? { transportAmbiguous: true } : {}),
-        ...(Object.keys(captured).length > 0 ? { captures: captured } : {}),
+        ...(Object.keys(persistedCaptured).length > 0 ? { captures: persistedCaptured } : {}),
         ...(action.popup ? { popup: action.popup } : {}),
+        ...(action.webmcp ? { webmcp: action.webmcp } : {}),
       });
       recordStepSummary(state, step, stepOk, action.tier, action.error, healed, {
         ...action,
         ...(transportAmbiguous ? { transportAmbiguous: true } : {}),
-        ...(Object.keys(captured).length > 0 ? { captures: captured } : {}),
+        ...(Object.keys(persistedCaptured).length > 0 ? { captures: persistedCaptured } : {}),
       });
       endStep(stepOk, durationMs, healed, action.tier);
 
@@ -1998,6 +2165,7 @@ function emitStepEnd(
     receipt?: ActionReceipt;
     transportAmbiguous?: boolean;
     captures?: Record<string, string>;
+    webmcp?: WebMcpEvidence;
     popup?: NewPageResult;
     effect?: "observe" | "idempotent" | "at_most_once";
     anchor?: string;
@@ -2021,6 +2189,7 @@ function emitStepEnd(
   if (extra.receipt !== undefined) payload.receipt = extra.receipt;
   if (extra.transportAmbiguous !== undefined) payload.transportAmbiguous = extra.transportAmbiguous;
   if (extra.captures !== undefined) payload.captures = extra.captures;
+  if (extra.webmcp !== undefined) payload.webmcp = extra.webmcp;
   if (extra.popup !== undefined) payload.popup = extra.popup;
   if (extra.effect !== undefined) payload.effect = extra.effect;
   if (extra.anchor !== undefined) payload.anchor = extra.anchor;
@@ -2055,6 +2224,7 @@ function recordStepSummary(
   if (metadata?.transportAmbiguous !== undefined)
     row.transportAmbiguous = metadata.transportAmbiguous;
   if (metadata?.captures !== undefined) row.captures = metadata.captures;
+  if (metadata?.webmcp !== undefined) row.webmcp = metadata.webmcp;
   if (metadata?.popup !== undefined) row.popup = metadata.popup;
   state.stepSummaries.push(row);
 }
@@ -2522,6 +2692,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     services.screenshotPaths,
     videoPath,
     artifactProvenance,
+    services.redactor,
   );
 
   await writers.run.emitRunEnd({
@@ -2713,8 +2884,8 @@ async function processAdvisoryVerdicts(
           summary: adv.verdict.summary,
           proposed_patch_path: adv.verdict.proposed_patch_path,
         };
-        await Bun.write(jsonPath, `${JSON.stringify(body, null, 2)}\n`);
-        await Bun.write(patchPath, intentChangedPatchBody(adv.step, adv.verdict));
+        await writeTextFile(jsonPath, `${JSON.stringify(body, null, 2)}\n`);
+        await writeTextFile(patchPath, intentChangedPatchBody(adv.step, adv.verdict));
         if (state.proposedPatchPath === null) state.proposedPatchPath = patchPath;
       }
       // `bug` / `flake`: never write (PLAN.md §5 Phase 4 / PROPOSAL "Advisory verdict").
@@ -2864,7 +3035,14 @@ function buildSummary(
   screenshotPaths: string[],
   videoPath: string | null,
   provenance: ArtifactProvenance,
+  redactor: Redactor,
 ): RunSummary {
+  const captures = Object.fromEntries(
+    Object.entries(state.captures).map(([name, value]) => [
+      name,
+      state.secretCaptures.has(name) ? REDACTED : redactor.redactValue(value),
+    ]),
+  );
   return {
     verdict,
     flow_id: flowId,
@@ -2884,7 +3062,7 @@ function buildSummary(
     replan_count: state.replanCount,
     repaired_steps: [...state.repairedSteps],
     provenance,
-    ...(Object.keys(state.captures).length > 0 ? { captures: { ...state.captures } } : {}),
+    ...(Object.keys(captures).length > 0 ? { captures } : {}),
     ...(state.pages.length > 0 ? { pages: [...state.pages] } : {}),
     steps: state.stepSummaries,
   };

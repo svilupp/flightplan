@@ -196,6 +196,11 @@ export function gatherSecretValues(
       collectStringLeaves(step.expression, secrets);
       continue;
     }
+    if (step.do === "webmcp_call") {
+      // WebMCP input may contain credentials or personal data at arbitrary nesting depth.
+      collectStringLeaves(step.input, secrets);
+      continue;
+    }
     const payload =
       "value" in step && typeof step.value === "string"
         ? step.value

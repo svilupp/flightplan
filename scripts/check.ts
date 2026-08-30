@@ -1,26 +1,17 @@
 #!/usr/bin/env bun
 /**
- * Quiet check runner — success is silence, the Unix way.
- *
- * Each leg runs with NO output on success and prints a one-line "<Label>: OK".
- * On failure it prints "<Label>: FAIL" followed by the tool's combined
- * stdout+stderr, then exits non-zero.
+ * Check runner. Each leg delegates output handling to scripts/run-quiet, which
+ * keeps a complete per-leg log and prints a bounded status block. Every
+ * requested leg runs even if an earlier one fails, so one command surfaces all
+ * failures at once.
  *
  *   bun run scripts/check.ts                 # run every leg
  *   bun run scripts/check.ts lint            # run a single leg
  *   bun run scripts/check.ts lint typecheck  # run a subset
  *
- * Every requested leg runs even if an earlier one fails, so one command
- * surfaces all failures at once. Set NO_COLOR=1 (or pipe to a non-TTY) to
- * disable ANSI colors.
  */
 import { spawnSync } from "node:child_process";
-
-const NO_COLOR = process.env.NO_COLOR != null || !process.stdout.isTTY;
-const paint = (code: string, s: string) => (NO_COLOR ? s : `\x1b[${code}m${s}\x1b[0m`);
-const green = (s: string) => paint("32", s);
-const red = (s: string) => paint("31", s);
-const bold = (s: string) => paint("1", s);
+import { join } from "node:path";
 
 type Leg = { name: string; label: string; cmd: string };
 
@@ -44,29 +35,21 @@ const legs: Leg[] = requested.length
     })
   : LEGS;
 
-// Tool binaries live in node_modules/.bin; put it on PATH so the `sh -c`
+// Tool binaries live in node_modules/.bin; put it on PATH so each `sh -c`
 // subshell resolves them the way `bun run` would.
 const PATH = `${process.cwd()}/node_modules/.bin:${process.env.PATH ?? ""}`;
-const pad = Math.max(...legs.map((l) => l.label.length)) + 1;
+const RUN_QUIET = join(import.meta.dir, "run-quiet");
 
 let failed = false;
 for (const leg of legs) {
-  const r = spawnSync("sh", ["-c", leg.cmd], {
+  const r = spawnSync("sh", [RUN_QUIET, leg.label, "--", "sh", "-c", leg.cmd], {
     env: { ...process.env, PATH },
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: "inherit",
   });
-  const tag = `${leg.label}:`.padEnd(pad);
-  if (r.status === 0) {
-    console.log(`  ${green(`${tag} OK`)}`);
-  } else {
+  if (r.status !== 0 || r.error) {
     failed = true;
-    console.log(`  ${red(`${tag} FAIL`)}`);
-    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trimEnd();
-    if (out) console.log(out);
-    if (r.error) console.log(String(r.error.message ?? r.error));
+    if (r.error) console.error(`${leg.label}: could not start run-quiet: ${r.error.message}`);
   }
 }
 
 if (failed) process.exit(1);
-if (legs.length > 1) console.log(green(bold("All checks passed.")));

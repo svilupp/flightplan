@@ -596,6 +596,50 @@ export function transition(
  * `[data-testid=…]` input the AX snapshot never surfaces is now readable; semantic targets keep the
  * existing snapshot behaviour. In both cases a missing element fails with a clear message.
  */
+/** Resolve a dot-path against a structured WebMCP result. */
+function resultAtPath(
+  root: unknown,
+  path: string | undefined,
+): { exists: boolean; value: unknown } {
+  if (path === undefined || path === ".") return { exists: root !== undefined, value: root };
+  const parts = path.split(".").filter((part) => part.length > 0);
+  let value: unknown = root;
+  for (const part of parts) {
+    if (value === null || value === undefined || typeof value !== "object") {
+      return { exists: false, value: undefined };
+    }
+    if (!(part in (value as object))) return { exists: false, value: undefined };
+    value = (value as Record<string, unknown>)[part];
+  }
+  return { exists: value !== undefined, value };
+}
+
+/** Assert a path/value or path/existence predicate against the current WebMCP result. */
+export function result(
+  path: string | undefined,
+  equals: string | number | boolean | null | undefined,
+  exists: boolean | undefined,
+  opts: ConditionOpts,
+): Promise<AssertionResult> {
+  const target = path ?? ".";
+  const observed = resultAtPath(opts.actionResult, path);
+  const pass =
+    equals !== undefined
+      ? observed.exists && observed.value === equals
+      : observed.exists === (exists === true);
+  const message = pass
+    ? `WebMCP result path ${JSON.stringify(target)} satisfied`
+    : `WebMCP result path ${JSON.stringify(target)} did not satisfy its predicate`;
+  return Promise.resolve({
+    type: "result",
+    pass,
+    message,
+    durationMs: 0,
+    when: "after",
+    selectorOrTarget: target,
+  });
+}
+
 export function value(
   target: string,
   expected: string,
@@ -733,6 +777,8 @@ export function evaluateDeterministic(
         opts,
         assertion.from ?? assertion.capture,
       );
+    case "result":
+      return result(assertion.path, assertion.equals, assertion.exists, opts);
     case "ai_judge":
       throw new Error(
         "ai_judge is not a deterministic assertion (route via the engine to the Phase-4 stub)",

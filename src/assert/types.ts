@@ -103,6 +103,8 @@ export interface AssertContext {
   stepId?: string;
   /** Runtime captures available to transition assertions and dynamic templates. */
   captures?: Record<string, string>;
+  /** Structured result returned by the current WebMCP call, when applicable. */
+  actionResult?: unknown;
   /** Before-state captured immediately before the step action. */
   beforeState?: {
     url?: string;
@@ -143,6 +145,8 @@ export interface ConditionOpts {
   clock: AssertClock;
   /** Runtime captures available to transition assertions. */
   captures?: Record<string, string>;
+  /** Structured result returned by the current WebMCP call, when applicable. */
+  actionResult?: unknown;
   /** State observed immediately before the step action. */
   beforeState?: AssertContext["beforeState"];
 }

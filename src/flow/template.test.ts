@@ -92,6 +92,23 @@ describe("applyTemplating", () => {
   test("leaves non-template text untouched", () => {
     expect(applyTemplating("plain text $100", { inputs: {} })).toBe("plain text $100");
   });
+
+  test("can defer runtime captures during a static pass", () => {
+    expect(
+      applyTemplating("${capture.order_id}", {
+        inputs: {},
+        env: {},
+        deferCaptures: true,
+      }),
+    ).toBe("${capture.order_id}");
+    expect(
+      applyTemplating("${capture.order_id}", {
+        inputs: {},
+        env: {},
+        captures: { order_id: "42" },
+      }),
+    ).toBe("42");
+  });
 });
 
 describe("collectRefs (linter hook)", () => {

@@ -27,6 +27,8 @@ export interface TemplateContext {
   env?: Record<string, string | undefined>;
   /** Values captured by earlier runtime steps. */
   captures?: Record<string, string | undefined>;
+  /** Keep runtime capture tokens unresolved during the initial static flow pass. */
+  deferCaptures?: boolean;
 }
 
 /** A single `${...}` reference found in a template string. */
@@ -89,6 +91,7 @@ export function applyTemplating(value: string, ctx: TemplateContext): string {
       return v;
     }
     if (source === "capture") {
+      if (ctx.deferCaptures) return raw;
       const v = captures[name];
       if (v === undefined) {
         throw new TemplateError(

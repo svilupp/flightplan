@@ -5,11 +5,32 @@ locks, and a layered resolver backed by browser-pilot.
 
 ## Quick start
 
+For a published consumer project:
+
+```sh
+npm install @svilupp/flightplan browser-pilot
+# Or use Bun: bun add @svilupp/flightplan browser-pilot
+# If `flightplan` is on PATH (for example, after a global install):
+flightplan --help
+flightplan --version
+flightplan lint path/to/flow.toml
+flightplan run path/to/flow.toml --frozen --no-lock-write --json
+# In a project, the same commands can use `npx flightplan` or `bunx flightplan`.
+```
+
+Run Chrome with CDP on `localhost:9222`, or set `[config.connect] mode = "launch"` in the flow.
+
+For repository development:
+
 ```sh
 bun install
 bun run check
 bun run flightplan --help
 ```
+
+Checks are quiet on success: each leg prints a short status block and a temporary log path. If a
+leg fails, its captured diagnostics are printed. Run `bun run lint`, `bun run typecheck`, or
+`bun run test` to execute one leg.
 
 Run a deterministic fixture flow:
 
@@ -61,15 +82,22 @@ model = "gemini-3-pro:high"  # native Google model id + reasoning effort suffix
 
 ## Install
 
-Install the public package with Bun or npm:
+Install the public packages with npm or Bun. The direct `browser-pilot` dependency exposes the
+`bp` discovery and WebMCP diagnostics CLI; Flightplan also declares it as its runtime driver. The
+CLI and library run on Node.js 18+ or Bun:
 
 ```sh
-bun add @svilupp/flightplan
+npm install @svilupp/flightplan browser-pilot
 # or
-npm install @svilupp/flightplan
+bun add @svilupp/flightplan browser-pilot
 ```
 
-The executable remains `flightplan`.
+Once the executable is on `PATH`, call it as `flightplan ...`. In a project, `npx flightplan ...`
+and `bunx flightplan ...` are equivalent package runners. From this repository, use
+`bun run flightplan ...`.
+
+The library is published as ESM with TypeScript declarations; import it from a Node.js ESM project
+or use the `flightplan` executable for command-line workflows.
 
 ## Why the tiered resolver
 
@@ -145,17 +173,48 @@ purpose = "postcondition"
 | `idempotent` | Safe repeated setup or navigation |
 | `at_most_once` | Create, approve, pay, save, submit, confirm |
 
-Mark action steps explicitly. The linter treats clicks, fills, selects, and `emit` as
+Mark action steps explicitly. The linter treats clicks, fills, selects, `emit`, and `webmcp_call` as
 mutation-capable, even when a click only filters a table or changes tabs. `emit` (WebSocket command
 injection, see [docs/BROWSER_PILOT_INTEGRATION.md](docs/BROWSER_PILOT_INTEGRATION.md#emit--websocket-command-injection))
 is always `at_most_once` - the linter rejects any other value. Do not add `on_fail = { goto = "self" }`
 to a step that may have dispatched. Use `retry = { policy = "never" }` for dangerous steps and let an
 exact postcondition rescue an uncertain result.
 
+### WebMCP calls
+
+Flightplan uses browser-pilot's WebMCP bridge through the `webmcp_call` step. It invokes one exact
+page-provided tool with structured input and can assert or capture a typed result:
+
+WebMCP is experimental and page-scoped. The target must satisfy the browser's secure-context,
+origin-isolation, and Permissions Policy requirements. Chrome's origin trial starts at version 149;
+for local testing, enable `chrome://flags/#enable-webmcp-testing` and use browser-pilot's
+`bp webmcp status` to diagnose availability before running a flow.
+
+```toml
+[[steps]]
+id = "lookup"
+do = "webmcp_call"
+tool = "orders.lookup"
+input = { order_id = "${inputs.order_id}" }
+effect = "observe" # requires the tool's readOnlyHint annotation
+
+[[steps.assert]]
+type = "result"
+path = "order.status"
+equals = "ready"
+```
+
+Use `origin` to disambiguate same-named tools and `from_origins` for explicit cross-origin discovery.
+Mutation-capable tools require `effect = "idempotent"` or `"at_most_once"`; invocation failures are
+treated as uncertain and are never automatically replayed. Raw inputs/results stay out of artifacts;
+mark a result capture `secret = true` when its value must be masked in summaries and step events. See
+[the browser-pilot integration guide](docs/BROWSER_PILOT_INTEGRATION.md#webmcp_call--page-provided-tools)
+for the full contract.
+
 ### 1a. Fill verification (`verify`)
 
-_Requires browser-pilot >= 0.2.1._ `page.fill` verifies by reading the field back and comparing it
-to what was typed. Some fields auto-format as you type (a phone field re-spacing
+`page.fill` verifies by reading the field back and comparing it to what was typed. Some fields
+auto-format as you type (a phone field re-spacing
 `+447881122333` into `+44 7881 122333`, a card field spacing out digits) — that legitimate
 reformat looks identical to a real fill failure. Flightplan's `verify` option maps straight onto
 browser-pilot's native fill verification, forwarded through the batch step:
@@ -256,7 +315,7 @@ parent budget; `on_fail` targets cannot cross a `run` boundary.
 
 ## Run, lock, and dependency workflows
 
-Run the repository checks:
+Run repository checks from a checkout:
 
 ```sh
 bun run check
@@ -268,14 +327,14 @@ bun run test
 Lint and preview effect policy before execution:
 
 ```sh
-bun run flightplan lint path/to/flow.toml
-bun run flightplan migrate-effects path/to/flow.toml
+flightplan lint path/to/flow.toml
+flightplan migrate-effects path/to/flow.toml
 ```
 
 Use frozen, no-lock-write runs for proof and CI:
 
 ```sh
-bun run flightplan run path/to/flow.toml \
+flightplan run path/to/flow.toml \
   --frozen --no-lock-write --json -o /tmp/flightplan-run
 ```
 
@@ -325,9 +384,9 @@ a seeded disposable resource, a mutation budget, and cleanup or restoration.
 ## Inspect failures
 
 ```sh
-bun run flightplan explain /tmp/flightplan-proof/<run-id>
-bun run flightplan report /tmp/flightplan-proof
-bun run flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/flightplan-campaign
+flightplan explain /tmp/flightplan-proof/<run-id>
+flightplan report /tmp/flightplan-proof
+flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/flightplan-campaign
 ```
 
 Read the result as a state machine:
@@ -362,11 +421,11 @@ chromeFlags = ["--disable-gpu", "--window-size=1280,720"]
 "+44 7881 122333".`** The target field auto-formats as you type (a phone field re-spacing digits, a
 card field inserting spaces). The default `verify = "normalized"` (see
 [Fill verification](#1a-fill-verification-verify)) already tolerates whitespace/NFKC formatting
-differences, so this usually only surfaces on browser-pilot < 0.2.1 or with an explicit
+differences, so this usually only surfaces on older browser-pilot builds or with an explicit
 `verify = "exact"`. If the formatter inserts punctuation instead (dashes, parens, etc. —
 `normalized` won't strip those), set `verify = "off"` on that step to skip verification entirely.
 Set `verify = "exact"` to restore strict verification once you've confirmed the field's real
-behavior. This option requires browser-pilot >= 0.2.1.
+behavior.
 
 ## AI tiers and planner
 
@@ -426,9 +485,8 @@ parsed but un-applied (the driver feature-detects the capability).
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.
-- [`docs/research/PERFORMANCE.md`](docs/research/PERFORMANCE.md) - cost and resolution guidance.
-- [`docs/research/KNOWN_ISSUES.md`](docs/research/KNOWN_ISSUES.md) - current limits and workarounds.
-- [`docs/plans/`](docs/plans) - design and phased plans.
+- [`docs/BENCHMARK.md`](docs/BENCHMARK.md) - cost, resolution, and validation methodology.
+- [`docs/BROWSER_PILOT_INTEGRATION.md`](docs/BROWSER_PILOT_INTEGRATION.md) - browser integration contract.
 
 ## Skills
 

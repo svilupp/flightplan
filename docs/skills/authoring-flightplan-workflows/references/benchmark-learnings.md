@@ -48,7 +48,7 @@ through browser-pilot and Flightplan.
 ## Proof checklist
 
 1. Reset fixture state.
-2. Install the released dependencies from the lockfile.
+2. Run the available `flightplan` command (or the equivalent `npx`/`bunx` launcher).
 3. Lint the flow and review `migrate-effects` output.
 4. Run with `--frozen --no-lock-write --json` into a dedicated output directory.
 5. Check `summary.json`, `run.jsonl`, and `trace.jsonl`.

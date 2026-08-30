@@ -24,6 +24,7 @@ import {
   parseFlowFile,
   resolveImports,
 } from "../flow/index.ts";
+import { expandGlob, listTomlFiles, readTextFile } from "../runtime.ts";
 import { FILE_KINDS } from "../types.ts";
 import {
   diag,
@@ -158,7 +159,7 @@ export async function lintFile(path: string, opts?: LintFileOptions): Promise<Li
     sourceText = opts.sourceText;
   } else {
     try {
-      sourceText = await Bun.file(file).text();
+      sourceText = await readTextFile(file);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       return tally(file, [
@@ -302,7 +303,7 @@ export async function lintFlowFile(path: string, opts?: LintFileOptions): Promis
 /**
  * Expand a path into the concrete TOML files it refers to: a single `.toml` file passes
  * through; a directory expands to its `*.toml` children (non-recursive by default; a `**`
- * glob recurses); a glob pattern is expanded via Bun.Glob.
+ * glob recurses).
  */
 export async function expandPaths(paths: string[]): Promise<string[]> {
   const out: string[] = [];
@@ -316,18 +317,15 @@ export async function expandPaths(paths: string[]): Promise<string[]> {
   };
 
   for (const raw of paths) {
-    if (raw.includes("*")) {
-      // Glob relative to cwd.
-      const glob = new Bun.Glob(raw);
-      for await (const match of glob.scan({ cwd: process.cwd(), absolute: true })) {
+    if (/[*?[]/.test(raw)) {
+      for (const match of await expandGlob(raw)) {
         if (match.endsWith(".toml") && !match.endsWith(".lock.toml")) push(match);
       }
       continue;
     }
     const abs = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
     if (existsSync(abs) && statSync(abs).isDirectory()) {
-      const glob = new Bun.Glob("*.toml");
-      for await (const match of glob.scan({ cwd: abs, absolute: true })) {
+      for (const match of await listTomlFiles(abs)) {
         if (!match.endsWith(".lock.toml")) push(match);
       }
       continue;

@@ -1,14 +1,17 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
+
 // Flightplan CLI shell.
 //
-// Phase 1 deliverable: a REAL command shell (arg parsing + dispatch) with `lint | run |
-// explain` stubbed. Later phases drop real implementations into runLint/runRun/runExplain
-// without touching the parser or dispatcher. See PLAN.md §2 (cli/) and §5 (Phase 1).
+// Command shell (arg parsing + dispatch) for the public `flightplan` executable. The parser is
+// exported so it can be unit-tested in isolation.
 //
 // No external arg-parsing dependency — the parser below is hand-rolled and exported so it
 // can be unit-tested in isolation.
 
-import pkg from "../../package.json" with { type: "json" };
+import { realpathSync } from "node:fs";
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { RunSummary } from "../artifacts/index.ts";
 import type { Config, ResolvedConfig } from "../config/index.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
@@ -21,6 +24,9 @@ import { runSweep } from "./sweep.ts";
 
 export const COMMANDS = ["lint", "run", "explain", "report", "sweep", "migrate-effects"] as const;
 export type Command = (typeof COMMANDS)[number];
+
+const require = createRequire(import.meta.url);
+const pkg = require("../../package.json") as { version: string };
 
 /** Parsed, validated command line. */
 export interface ParsedArgs {
@@ -70,6 +76,59 @@ export class CliUsageError extends Error {
 
 function isCommand(value: string): value is Command {
   return (COMMANDS as readonly string[]).includes(value);
+}
+
+/** Validate command-specific operands and flags after the shared parser has collected them. */
+function validateCommandArgs(args: ParsedArgs): void {
+  if (args.command === null) return;
+
+  const allowed = {
+    lint: new Set(["json"]),
+    run: new Set(["json", "frozen", "noLockWrite", "lock", "out", "from", "to", "startTier"]),
+    explain: new Set(["json"]),
+    report: new Set(["json"]),
+    sweep: new Set(["frozen", "noLockWrite", "lock", "out", "trials", "compareBaseline"]),
+    "migrate-effects": new Set(["json"]),
+  }[args.command];
+  const values: Array<[string, boolean]> = [
+    ["--json", args.json],
+    ["--frozen", args.frozen],
+    ["--no-lock-write", args.noLockWrite],
+    ["--lock", args.lock !== null],
+    ["--out", args.out !== null],
+    ["--from", args.from !== null],
+    ["--to", args.to !== null],
+    ["--start-tier", args.startTier !== null],
+    ["--trials", args.trials !== null],
+    ["--compare-baseline", args.compareBaseline],
+  ];
+  const unsupported = values.find(([name, used]) => used && !allowed.has(flagField(name)));
+  if (unsupported) {
+    throw new CliUsageError(`${args.command}: flag ${unsupported[0]} is not supported`);
+  }
+
+  const maxPositionals = args.command === "lint" || args.command === "report" ? Infinity : 1;
+  if (args.positionals.length === 0) {
+    throw new CliUsageError(
+      `${args.command}: expected ${args.command === "lint" || args.command === "report" ? "at least one" : "one"} path argument`,
+    );
+  }
+  if (args.positionals.length > maxPositionals) {
+    throw new CliUsageError(`${args.command}: expected exactly one path argument`);
+  }
+}
+
+function flagField(name: string): string {
+  switch (name) {
+    case "--no-lock-write":
+      return "noLockWrite";
+    case "--start-tier":
+      return "startTier";
+    case "--compare-baseline":
+      return "compareBaseline";
+    default:
+      return name.slice(2).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+  }
 }
 
 /**
@@ -193,47 +252,61 @@ export function parseArgs(argv: string[]): ParsedArgs {
 const USAGE = `flightplan — TOML-defined browser-automation flow runner
 
 Usage:
-  flightplan <command> [file] [flags]
+  flightplan <command> [path] [flags]
 
 Commands:
-  lint <flow.toml>      Validate a flow/config file against the linter rules
+  lint <path...>        Validate flow/config files, directories, or globs
   run <flow.toml>       Execute a flow against a browser
-  explain <run.jsonl>   Render a human-readable failure diagnosis for a run
+  explain <run-dir|run.jsonl>
+                        Render a human-readable failure diagnosis for a run
   report <run-dir>...   Aggregate one or many runs into a campaign metrics report
   sweep <flows-dir>     Run N trials of every flow (tiered, +baseline) into a campaign dir
   migrate-effects <flow.toml>
                         Review-only effect suggestions; never edits flows or locks
 
+Invocation:
+  flightplan <command> ...          installed globally or available on PATH
+  npx flightplan <command> ...       npm package runner
+  bunx flightplan <command> ...      Bun package runner
+  bun run flightplan <command> ...   this repository checkout
+
+Quick start:
+  flightplan lint path/to/flow.toml
+  flightplan run path/to/flow.toml --frozen --no-lock-write --json
+  flightplan --version
+  # Run Chrome with CDP on localhost:9222, or set [config.connect] mode = "launch".
+
+From this repository, prefix commands with \`bun run flightplan\`.
+
 Flags:
-  --json                Emit machine-readable JSON (run-summary contract)
-  --frozen              CI mode: heal at runtime, report drift, do not persist
-  --no-lock-write       Suppress all lock writes
-  --lock <path>         Override the lock file path
-  -o, --out <dir>       Output directory for run artifacts
-  --from <step>         Resume a run starting at the given step id (inclusive)
-  --to <step>           Stop a run after the given step id (inclusive); combine with --from
-                         to run a debugging slice
-  --start-tier <tier>   Start ladder resolution at "l0" (default) or "l3" (AI-only vision
-                         baseline: skips L0/L1, resolves every step via vision, falls through
-                         to L4 on escalation — for fair comparison against the tiered resolver)
+  --json                lint/run/explain/report/migrate-effects: emit machine-readable JSON
+  --frozen              run/sweep: heal at runtime, report drift, do not persist
+  --no-lock-write       run/sweep: suppress all lock writes
+  --lock <path>         run/sweep: override the lock file path
+  -o, --out <dir>       run/sweep: output directory for run artifacts
+  --from <step>         run: resume at the given step id (inclusive)
+  --to <step>           run: stop after the given step id (inclusive); combine with --from
+                        to run a debugging slice
+  --start-tier <tier>   run: start at "l0" (default) or "l3" (AI-only vision baseline)
   --trials <n>          sweep: number of trials per (flow, arm) (default 1)
   --compare-baseline    sweep: also run each trial with --start-tier l3
   -h, --help            Show this help
   --version             Show version
 
 Examples:
-  bun run fixtures                       Start the local fixture server on :3000
-  flightplan lint examples/flows/wizard.toml      Validate a flow file
-  flightplan run examples/flows/wizard.toml       Execute a flow against a browser
-  flightplan run examples/flows/wizard.toml --json   Execute a flow, emit run-summary JSON
+  flightplan lint path/to/flow.toml       Validate a flow file
+  flightplan run path/to/flow.toml        Execute a flow against a browser
+  flightplan run path/to/flow.toml --json Execute a flow, emit run-summary JSON
   flightplan explain <run.jsonl>         Diagnose a failed run
   flightplan report .flightplan-runs/    Aggregate runs into a metrics report
-  flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/campaign
+  flightplan sweep path/to/flows --trials 3 --compare-baseline -o /tmp/campaign
                                           Sweep every flow, tiered + baseline, into a campaign dir
-  flightplan migrate-effects examples/flows/wizard.toml
+  flightplan migrate-effects path/to/flow.toml
                                           Review effect-policy suggestions (no files changed)
 
-See docs/plans/ for the full design. This project is under active development.`;
+WebMCP is page-scoped and experimental: use Chrome 149+ with the required origin-trial/testing
+configuration and verify availability with \`bp webmcp status\`. See README.md and
+docs/BROWSER_PILOT_INTEGRATION.md for the full authoring and browser setup contract.`;
 
 export function printUsage(write: (s: string) => void = (s) => console.log(s)): void {
   write(USAGE);
@@ -470,10 +543,34 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  try {
+    validateCommandArgs(args);
+  } catch (err) {
+    if (err instanceof CliUsageError) {
+      console.error(err.message);
+      return err.exitCode;
+    }
+    throw err;
+  }
+
   return dispatch(args);
 }
 
-// Only run when invoked directly (not when imported by a test).
-if (import.meta.main) {
-  process.exit(await main(Bun.argv.slice(2)));
+// Only run when invoked directly (not when imported by a test). This explicit Node-compatible
+// check works for both `node dist/cli/index.js` and Bun's source/test invocation.
+const invokedPath = process.argv[1];
+let invokedDirectly = false;
+if (invokedPath !== undefined) {
+  const modulePath = fileURLToPath(import.meta.url);
+  try {
+    // npm and pnpm expose bins through symlinks, so compare canonical paths rather than the
+    // argv spelling. The fallback keeps direct relative-path invocation usable if the target
+    // disappears between startup and this check.
+    invokedDirectly = realpathSync(modulePath) === realpathSync(resolve(invokedPath));
+  } catch {
+    invokedDirectly = modulePath === resolve(invokedPath);
+  }
+}
+if (invokedDirectly) {
+  process.exit(await main(process.argv.slice(2)));
 }

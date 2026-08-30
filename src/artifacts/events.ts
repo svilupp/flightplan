@@ -120,6 +120,8 @@ export interface StepEndEvent {
   receipt?: ActionReceipt;
   transportAmbiguous?: boolean;
   captures?: Record<string, string>;
+  /** Safe WebMCP invocation metadata; raw input/result values are never persisted. */
+  webmcp?: WebMcpEvidence;
   popup?: {
     matched: boolean;
     targetId?: string;
@@ -297,6 +299,8 @@ export interface StepSummary {
   receipt?: ActionReceipt;
   transportAmbiguous?: boolean;
   captures?: Record<string, string>;
+  /** Safe WebMCP invocation metadata; raw input/result values are never persisted. */
+  webmcp?: WebMcpEvidence;
   popup?: {
     matched: boolean;
     targetId?: string;
@@ -309,6 +313,17 @@ export interface StepSummary {
   };
   effect?: "observe" | "idempotent" | "at_most_once";
   anchor?: string;
+}
+
+/** Redaction-safe evidence for a WebMCP call. */
+export interface WebMcpEvidence {
+  tool: string;
+  origin?: string;
+  phase: "preflight" | "invoke";
+  dispatchState: DispatchState;
+  retrySafe: boolean;
+  readOnlyHint?: boolean;
+  untrustedContentHint?: boolean;
 }
 
 /**

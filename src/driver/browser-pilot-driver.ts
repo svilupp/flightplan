@@ -15,6 +15,8 @@ import {
   captureStateSignature as bpCaptureStateSignature,
   captureStructureSignature as bpCaptureStructureSignature,
   connect as bpConnect,
+  webmcpCall as bpWebmcpCall,
+  webmcpList as bpWebmcpList,
   type Dialog,
   type ExpectNewPageOptions,
   getBrowserWebSocketUrl,
@@ -69,6 +71,9 @@ import type {
   SnapshotOpts,
   SubmitOpts,
   TypeOpts,
+  WebMcpCallOptions,
+  WebMcpCallResult,
+  WebMcpListResult,
 } from "./types.ts";
 
 /** Native-dialog policy: how the driver answers `alert`/`confirm`/`beforeunload` dialogs. */
@@ -791,6 +796,121 @@ export class BrowserPilotDriver implements Driver {
     }
     const { channel: _channel, payload, ...wsOpts } = opts;
     return page.emitMessage(payload, wsOpts);
+  }
+
+  // --- WebMCP tool invocation ---
+
+  /**
+   * Discover and invoke one exact WebMCP tool on the active page. Discovery is performed here
+   * before delegating to browser-pilot's call helper so a missing/ambiguous/unapproved tool is
+   * classified as a clean preflight failure. Once the helper is entered, any rejection is
+   * conservatively classified as uncertain because the page may already have started executing
+   * the tool and WebMCP exposes no dispatch receipt.
+   */
+  async webmcpCall(opts: WebMcpCallOptions): Promise<WebMcpCallResult> {
+    const page = this.requirePage();
+    const fromOrigins = [
+      ...new Set([...(opts.fromOrigins ?? []), ...(opts.origin ? [opts.origin] : [])]),
+    ];
+    let listed: WebMcpListResult;
+    try {
+      listed = await bpWebmcpList(page, fromOrigins);
+    } catch (error) {
+      return {
+        ok: false,
+        phase: "preflight",
+        dispatchState: "not_dispatched",
+        retrySafe: true,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (!listed.status.available) {
+      return {
+        ok: false,
+        phase: "preflight",
+        dispatchState: "not_dispatched",
+        retrySafe: true,
+        status: listed.status,
+        error: `WebMCP is unavailable on ${listed.status.url}${
+          listed.status.reason ? `: ${listed.status.reason}` : "."
+        }`,
+      };
+    }
+    const matching = listed.tools.filter(
+      (tool) =>
+        tool.name === opts.tool && (opts.origin === undefined || tool.origin === opts.origin),
+    );
+    if (matching.length === 0) {
+      return {
+        ok: false,
+        phase: "preflight",
+        dispatchState: "not_dispatched",
+        retrySafe: true,
+        status: listed.status,
+        error:
+          "WebMCP tool " +
+          JSON.stringify(opts.tool) +
+          " was not found on " +
+          listed.status.url +
+          ".",
+      };
+    }
+    if (matching.length > 1 && opts.origin === undefined) {
+      return {
+        ok: false,
+        phase: "preflight",
+        dispatchState: "not_dispatched",
+        retrySafe: true,
+        status: listed.status,
+        error:
+          "WebMCP tool " +
+          JSON.stringify(opts.tool) +
+          " is exposed by multiple origins; set origin to select one exactly.",
+      };
+    }
+    const tool = matching[0]!;
+    if (!opts.allowMutation && tool.annotations?.readOnlyHint !== true) {
+      return {
+        ok: false,
+        phase: "preflight",
+        dispatchState: "not_dispatched",
+        retrySafe: true,
+        status: listed.status,
+        tool,
+        error:
+          "WebMCP tool " +
+          JSON.stringify(opts.tool) +
+          ' is not marked read-only; set effect = "idempotent" or "at_most_once" to acknowledge mutation.',
+      };
+    }
+    try {
+      const called = await bpWebmcpCall(page, opts.tool, opts.input, {
+        ...(opts.origin !== undefined ? { origin: opts.origin } : {}),
+        ...(fromOrigins.length > 0 ? { fromOrigins } : {}),
+        allowMutation: opts.allowMutation,
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+      });
+      return {
+        ok: true,
+        phase: "invoke",
+        dispatchState: "dispatched",
+        retrySafe: false,
+        tool: called.tool,
+        result: called.result,
+        status: listed.status,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        phase: "invoke",
+        dispatchState: "uncertain",
+        retrySafe: false,
+        status: listed.status,
+        tool,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   // --- eval (escape-hatch JS execution) ---

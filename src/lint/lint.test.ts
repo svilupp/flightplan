@@ -126,6 +126,59 @@ url = "\${env.BASE_URL}/wizard"
   });
 });
 
+describe("WebMCP ergonomics", () => {
+  test("requires result assertions to stay on the WebMCP step", async () => {
+    const source = `
+version = 1
+kind = "flow"
+id = "x"
+description = "bad result scope"
+[[steps]]
+id = "wait"
+do = "wait"
+ms = 0
+[[steps.assert]]
+type = "result"
+exists = true
+`;
+    const result = await lintFlowFile("result-scope.toml", { sourceText: source });
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.map((d) => d.ruleId)).toContain("assert/result-scope");
+  });
+
+  test("warns when a WebMCP effect is left implicit", async () => {
+    const source = `
+version = 1
+kind = "flow"
+id = "x"
+description = "implicit effect"
+[[steps]]
+id = "lookup"
+do = "webmcp_call"
+tool = "orders.lookup"
+`;
+    const result = await lintFlowFile("webmcp-effect.toml", { sourceText: source });
+    expect(result.diagnostics.map((d) => d.ruleId)).toContain("effect/unspecified");
+  });
+
+  test("warns when a WebMCP input interpolates a secret-looking env var", async () => {
+    const source = `
+version = 1
+kind = "flow"
+id = "x"
+description = "unmarked WebMCP secret"
+[[steps]]
+id = "lookup"
+do = "webmcp_call"
+tool = "orders.lookup"
+input = { token = "\${env.API_TOKEN}" }
+effect = "observe"
+`;
+    const result = await lintFlowFile("webmcp-secret.toml", { sourceText: source });
+    expect(result.diagnostics.map((d) => d.ruleId)).toContain("security/unmarked-secret");
+  });
+});
+
 describe("a [cache] block + per-step cache lint clean (L0 cache-hit quality — Layer 2)", () => {
   test("flow-level [config.cache] and a per-step cache = 'struct-only' parse + lint clean", async () => {
     const source = `
