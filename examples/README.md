@@ -15,6 +15,10 @@ they run against.
 
 ## Run
 
+The fixture server and Bun commands below are for this repository checkout. In a published
+consumer project, use `flightplan ...`, `npx flightplan ...`, or `bunx flightplan ...` (see the root
+README quick start).
+
 From the repo root, start Chrome/Chromium with remote debugging enabled at `localhost:9222`, or
 add a `[config.connect]` block with `mode = "launch"` to the flow. Then start the fixture server
 in terminal 1:

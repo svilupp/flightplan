@@ -2,9 +2,8 @@
 
 // Flightplan CLI shell.
 //
-// Phase 1 deliverable: a REAL command shell (arg parsing + dispatch) with `lint | run |
-// explain` stubbed. Later phases drop real implementations into runLint/runRun/runExplain
-// without touching the parser or dispatcher. See PLAN.md §2 (cli/) and §5 (Phase 1).
+// Command shell (arg parsing + dispatch) for the public `flightplan` executable. The parser is
+// exported so it can be unit-tested in isolation.
 //
 // No external arg-parsing dependency — the parser below is hand-rolled and exported so it
 // can be unit-tested in isolation.
@@ -253,29 +252,42 @@ export function parseArgs(argv: string[]): ParsedArgs {
 const USAGE = `flightplan — TOML-defined browser-automation flow runner
 
 Usage:
-  flightplan <command> [file] [flags]
+  flightplan <command> [path] [flags]
 
 Commands:
-  lint <flow.toml>      Validate a flow/config file against the linter rules
+  lint <path...>        Validate flow/config files, directories, or globs
   run <flow.toml>       Execute a flow against a browser
-  explain <run.jsonl>   Render a human-readable failure diagnosis for a run
+  explain <run-dir|run.jsonl>
+                        Render a human-readable failure diagnosis for a run
   report <run-dir>...   Aggregate one or many runs into a campaign metrics report
   sweep <flows-dir>     Run N trials of every flow (tiered, +baseline) into a campaign dir
   migrate-effects <flow.toml>
                         Review-only effect suggestions; never edits flows or locks
 
+Invocation:
+  flightplan <command> ...          installed globally or available on PATH
+  npx flightplan <command> ...       npm package runner
+  bunx flightplan <command> ...      Bun package runner
+  bun run flightplan <command> ...   this repository checkout
+
+Quick start:
+  flightplan lint path/to/flow.toml
+  flightplan run path/to/flow.toml --frozen --no-lock-write --json
+  flightplan --version
+  # Run Chrome with CDP on localhost:9222, or set [config.connect] mode = "launch".
+
+From this repository, prefix commands with \`bun run flightplan\`.
+
 Flags:
-  --json                Emit machine-readable JSON (run-summary contract)
-  --frozen              CI mode: heal at runtime, report drift, do not persist
-  --no-lock-write       Suppress all lock writes
-  --lock <path>         Override the lock file path
-  -o, --out <dir>       Output directory for run artifacts
-  --from <step>         Resume a run starting at the given step id (inclusive)
-  --to <step>           Stop a run after the given step id (inclusive); combine with --from
-                         to run a debugging slice
-  --start-tier <tier>   Start ladder resolution at "l0" (default) or "l3" (AI-only vision
-                         baseline: skips L0/L1, resolves every step via vision, falls through
-                         to L4 on escalation — for fair comparison against the tiered resolver)
+  --json                lint/run/explain/report/migrate-effects: emit machine-readable JSON
+  --frozen              run/sweep: heal at runtime, report drift, do not persist
+  --no-lock-write       run/sweep: suppress all lock writes
+  --lock <path>         run/sweep: override the lock file path
+  -o, --out <dir>       run/sweep: output directory for run artifacts
+  --from <step>         run: resume at the given step id (inclusive)
+  --to <step>           run: stop after the given step id (inclusive); combine with --from
+                        to run a debugging slice
+  --start-tier <tier>   run: start at "l0" (default) or "l3" (AI-only vision baseline)
   --trials <n>          sweep: number of trials per (flow, arm) (default 1)
   --compare-baseline    sweep: also run each trial with --start-tier l3
   -h, --help            Show this help
@@ -292,7 +304,9 @@ Examples:
   flightplan migrate-effects path/to/flow.toml
                                           Review effect-policy suggestions (no files changed)
 
-See the documentation in the repository for the full design. This project is under active development.`;
+WebMCP is page-scoped and experimental: use Chrome 149+ with the required origin-trial/testing
+configuration and verify availability with \`bp webmcp status\`. See README.md and
+docs/BROWSER_PILOT_INTEGRATION.md for the full authoring and browser setup contract.`;
 
 export function printUsage(write: (s: string) => void = (s) => console.log(s)): void {
   write(USAGE);

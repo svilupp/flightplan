@@ -5,6 +5,23 @@ locks, and a layered resolver backed by browser-pilot.
 
 ## Quick start
 
+For a published consumer project:
+
+```sh
+npm install @svilupp/flightplan browser-pilot
+# Or use Bun: bun add @svilupp/flightplan browser-pilot
+# If `flightplan` is on PATH (for example, after a global install):
+flightplan --help
+flightplan --version
+flightplan lint path/to/flow.toml
+flightplan run path/to/flow.toml --frozen --no-lock-write --json
+# In a project, the same commands can use `npx flightplan` or `bunx flightplan`.
+```
+
+Run Chrome with CDP on `localhost:9222`, or set `[config.connect] mode = "launch"` in the flow.
+
+For repository development:
+
 ```sh
 bun install
 bun run check
@@ -65,16 +82,19 @@ model = "gemini-3-pro:high"  # native Google model id + reasoning effort suffix
 
 ## Install
 
-Install the public package with npm or Bun. The CLI and library run on Node.js 18+ (Bun is also
-supported for development and tests):
+Install the public packages with npm or Bun. The direct `browser-pilot` dependency exposes the
+`bp` discovery and WebMCP diagnostics CLI; Flightplan also declares it as its runtime driver. The
+CLI and library run on Node.js 18+ or Bun:
 
 ```sh
-npm install @svilupp/flightplan
+npm install @svilupp/flightplan browser-pilot
 # or
-bun add @svilupp/flightplan
+bun add @svilupp/flightplan browser-pilot
 ```
 
-The executable remains `flightplan`.
+Once the executable is on `PATH`, call it as `flightplan ...`. In a project, `npx flightplan ...`
+and `bunx flightplan ...` are equivalent package runners. From this repository, use
+`bun run flightplan ...`.
 
 The library is published as ESM with TypeScript declarations; import it from a Node.js ESM project
 or use the `flightplan` executable for command-line workflows.
@@ -295,7 +315,7 @@ parent budget; `on_fail` targets cannot cross a `run` boundary.
 
 ## Run, lock, and dependency workflows
 
-Run the repository checks:
+Run repository checks from a checkout:
 
 ```sh
 bun run check
@@ -307,14 +327,14 @@ bun run test
 Lint and preview effect policy before execution:
 
 ```sh
-bun run flightplan lint path/to/flow.toml
-bun run flightplan migrate-effects path/to/flow.toml
+flightplan lint path/to/flow.toml
+flightplan migrate-effects path/to/flow.toml
 ```
 
 Use frozen, no-lock-write runs for proof and CI:
 
 ```sh
-bun run flightplan run path/to/flow.toml \
+flightplan run path/to/flow.toml \
   --frozen --no-lock-write --json -o /tmp/flightplan-run
 ```
 
@@ -364,9 +384,9 @@ a seeded disposable resource, a mutation budget, and cleanup or restoration.
 ## Inspect failures
 
 ```sh
-bun run flightplan explain /tmp/flightplan-proof/<run-id>
-bun run flightplan report /tmp/flightplan-proof
-bun run flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/flightplan-campaign
+flightplan explain /tmp/flightplan-proof/<run-id>
+flightplan report /tmp/flightplan-proof
+flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/flightplan-campaign
 ```
 
 Read the result as a state machine:

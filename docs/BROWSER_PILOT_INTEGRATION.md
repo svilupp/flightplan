@@ -8,17 +8,17 @@ learned lock.
 
 ### Consumers
 
-Install a released `browser-pilot` package in the consumer project and keep its lockfile committed:
+Install the released Flightplan package in the consumer project and keep the lockfile committed:
 
 ```sh
-bun add browser-pilot
-# or
-npm install browser-pilot
+npm install @svilupp/flightplan browser-pilot
+# In a Flightplan checkout, use `bun install` instead.
 ```
 
-Do not use a `file:` path, a workspace reference, or a sibling checkout in a consumer install.
-Flightplan uses the package-resolved browser-pilot capabilities and feature-detects optional
-driver APIs at runtime.
+The direct `browser-pilot` install exposes the `bp` discovery CLI used below; Flightplan also
+declares the same package as its runtime driver dependency. Do not use a `file:` path, a workspace
+reference, or a sibling checkout in a consumer install. Flightplan uses the package-resolved
+browser-pilot capabilities and feature-detects optional driver APIs at runtime.
 
 ## Canonical authoring flow
 
@@ -75,10 +75,13 @@ text = "Order created"
 Then lint, learn locally, and replay against the reviewed lock. Replace the clearly marked example
 path below with the flow you authored:
 
+The examples use `flightplan` on `PATH`; `npx flightplan` and `bunx flightplan` are equivalent
+package runners, and a checkout can use `bun run flightplan`.
+
 ```sh
-bun run flightplan lint path/to/your-flow.toml
-bun run flightplan run path/to/your-flow.toml
-bun run flightplan run path/to/your-flow.toml --frozen
+flightplan lint path/to/your-flow.toml
+flightplan run path/to/your-flow.toml
+flightplan run path/to/your-flow.toml --frozen
 ```
 
 The first unlocked run can create or update the collocated `<your-flow>.lock.toml`. Inspect the run
@@ -233,7 +236,7 @@ invoke L2 resolver, L3 vision, L4 advisor, L5 planner, `ai_pick`, or `ai_judge`:
 
 ```sh
 export OPENROUTER_API_KEY=...
-bun run flightplan run path/to/your-flow.toml
+flightplan run path/to/your-flow.toml
 ```
 
 `--frozen` controls lock writes, not model availability. A frozen run still needs the key if the

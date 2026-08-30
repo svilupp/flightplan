@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { main } from "./index.ts";
+import { main, printUsage } from "./index.ts";
 
 const originalError = console.error;
 
@@ -14,6 +14,19 @@ function captureErrors(): { lines: string[]; restore: () => void } {
 }
 
 describe("command validation", () => {
+  test("help exposes launcher choices and browser prerequisite", () => {
+    let usage = "";
+    printUsage((text) => {
+      usage = text;
+    });
+
+    expect(usage).toContain("flightplan <command> ...");
+    expect(usage).toContain("npx flightplan <command> ...");
+    expect(usage).toContain("bunx flightplan <command> ...");
+    expect(usage).toContain("flightplan run path/to/flow.toml");
+    expect(usage).toContain("bp webmcp status");
+  });
+
   test("rejects flags that belong to a different command", async () => {
     const captured = captureErrors();
     try {
