@@ -99,6 +99,118 @@ and `bunx flightplan ...` are equivalent package runners. From this repository, 
 The library is published as ESM with TypeScript declarations; import it from a Node.js ESM project
 or use the `flightplan` executable for command-line workflows.
 
+## Portable / Workers entry
+
+Three subpath exports let a host pick exactly the surface it needs, with `.` staying the full
+Node-flavored default:
+
+- **`@svilupp/flightplan/worker`** — a curated, Node-free barrel: `runFlow`, `lintText`,
+  `RunOptions`/`RunResult`/`RunInterruptedError`, `FileSystemPort`, `MockDriver`,
+  `BrowserPilotDriver` (attach mode), `memoryFileSystem`. Bundles for Cloudflare Workers.
+- **`@svilupp/flightplan/adapters/node`** — the real `node:fs`-backed `nodeFileSystem`.
+- **`@svilupp/flightplan/adapters/memory`** — an in-memory `FileSystemPort` for tests.
+
+```ts
+import { runFlow, memoryFileSystem, MockDriver } from "@svilupp/flightplan/worker";
+
+const result = await runFlow({
+  flowPath: "/virtual/flow.toml",
+  flowSource: "version = 1\nkind = \"flow\"\nid = \"demo\"\n...",
+  fs: memoryFileSystem(),
+  env: {},
+  config: { run: {}, connect: { mode: "attach" } } as never,
+  driverFactory: () => new MockDriver(),
+});
+console.log(result.summary.verdict);
+```
+
+### Shell hosts
+
+`@svilupp/flightplan/shell` exposes `runFlightplan(args, context, ports)` for shell hosts.
+It shares the native CLI's `lint`/`run` implementation and returns `{ stdout, stderr, exitCode }`.
+
+```ts
+import { runFlightplan, type FileSystemPort } from "@svilupp/flightplan/shell";
+import type { Driver } from "@svilupp/flightplan/worker";
+
+function command(args: string[], fs: FileSystemPort, cwd: string, driver: Driver) {
+  return runFlightplan(args, { fs, cwd }, {
+    driverFactory: () => driver,
+  });
+}
+```
+
+Pass an argv array such as `["run", "flows/demo.toml", "--json"]` and an absolute `cwd` in the
+supplied filesystem. The host registers its command and maps its storage to `FileSystemPort`.
+Just-bash is one tested consumer; it is a dev dependency only. Production code and public types
+have no dependency on it.
+
+`ports.env` defaults to `{}`. AI requires an injected `aiRuntimeFactory` or explicit provider
+credentials in that environment. `run` requires `driverFactory` and otherwise returns exit 2.
+Hosts can disable `lint` or `run` with `ports.capabilities` and cap each output stream with
+`ports.limits.maxOutputBytes` (default 1 MiB).
+
+Pass cancellation as `context.signal` and a run deadline as `ports.timeoutMs`. Flightplan returns
+130 for cancellation and 124 for a deadline; the surrounding shell may translate these codes.
+`explain`, `report`, `sweep`, and `migrate-effects` require the native CLI.
+
+## Embed a workflow
+
+`runFlow` accepts host filesystem and driver implementations. The ordinary Node/Bun defaults
+remain available. A Workers host needs `nodejs_compat`; the root package still includes provider
+SDKs and native config/lint loaders.
+
+```ts
+import {
+  runFlow, resolveConfigWithDefaults,
+  type Driver, type FileSystemPort,
+} from "@svilupp/flightplan";
+
+function execute(fs: FileSystemPort, driver: Driver, signal: AbortSignal) {
+  return runFlow({
+    flowPath: "/workspace/flows/health.toml",
+    fs,
+    driverFactory: () => driver,
+    config: resolveConfigWithDefaults([{}]),
+    env: {},
+    out: "/workspace/runs",
+    frozen: true,
+    noLockWrite: true,
+    signal,
+    timeoutMs: 60_000,
+    cleanupTimeoutMs: 1_000,
+  });
+}
+```
+
+- `fs` supplies text reads, writes, appends, existence checks, and directory creation. Imports,
+  hooks, locks, and run artifacts use it. `flowSource` can supply the root TOML text directly.
+- With `fs`, recording requires `writeBinaryFile(path, bytes)`. Flightplan saves per-step PNG
+  frames through that method and disables native browser-pilot recording output. The same frame
+  path is used for deadline-controlled runs. Existing native recording stays unchanged otherwise.
+- Pass an explicit `env` and `driverFactory` in isolated hosts. Omitting them retains ambient
+  environment lookup and native browser connection defaults. Pass a resolved config; filesystem
+  injection does not change `loadConfigFile` or the file-based lint commands.
+- Adapters own path authorization, symlink checks, write limits, and atomic commit rules. Paths
+  follow host filesystem syntax; relative hooks/imports are normalized against their parent flow.
+  Filesystem errors must reject; `fileExists` returns false only for a missing entry.
+
+Cancellation and deadlines reject with the exported `RunInterruptedError` (`RUN_CANCELLED` or
+`RUN_TIMEOUT`). The deadline covers loading, browser work, and artifact writes; interruption adds
+at most `cleanupTimeoutMs` of cleanup waiting. New driver, filesystem, and AI calls stop, and late
+results cannot resume the workflow. Driver factories receive the combined signal as their second
+argument's `signal`; AI factories receive it in their dependencies and generators in the request.
+Custom implementations should pass it to their underlying operations.
+
+Inspect `pendingWrites`, `pendingBrowserOperations`, and `cleanup` on the error. Already-dispatched
+writes or effects may finish after the run rejects. Reconcile them before retrying; Flightplan
+does not delete destinations on cancellation. `cleanup: "completed"` means driver teardown
+returned, not that a remote provider confirmed release. `"failed"` and `"pending"` require host
+follow-up; a late connection still gets a best-effort teardown. Persist the interruption report
+outside the interrupted filesystem, even if a previously dispatched summary write later finishes.
+Provider usage may be unknown after cancellation. Session release and durable recovery belong to
+the host.
+
 ## Why the tiered resolver
 
 Flightplan uses deterministic lock replay and DOM resolution first, then pays for AI only when a
@@ -482,6 +594,11 @@ token fails the run before any navigation happens. Requires a browser-pilot buil
 parsed but un-applied (the driver feature-detects the capability).
 
 ## Development reference
+
+Run `bun run test:package` before release to build and test the npm tarball's public types,
+CLI, VFS artifacts, and cancellation. To check an unpublished browser-pilot candidate without
+installing it into this checkout, run `bun run test:package /absolute/path/browser-pilot.tgz`.
+Both browser-pilot 0.4.x (from 0.4.1) and 0.5.x are supported.
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.

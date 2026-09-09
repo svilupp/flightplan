@@ -13,7 +13,8 @@
 // redacted by the caller before reaching `emitAiCall` (see events.ts REDACTION CONTRACT and
 // PLAN.md §5 Phase 5).
 
-import { type FileSystemPort, nodeFileSystem } from "../runtime.ts";
+import { defaultFileSystem } from "../fs-default.ts";
+import type { FileSystemPort } from "../runtime.ts";
 import type {
   AiCallEvent,
   AiEvent,
@@ -46,7 +47,7 @@ export class RunWriter {
   private readonly jsonl: JsonlWriter;
   private readonly now: Clock;
 
-  constructor(path: string, now: Clock = Date.now, fs?: FileSystemPort) {
+  constructor(path: string, now: Clock = Date.now, fs: FileSystemPort) {
     this.jsonl = new JsonlWriter(path, fs);
     this.now = now;
   }
@@ -94,7 +95,7 @@ export class TraceWriter {
   private readonly jsonl: JsonlWriter;
   private readonly now: Clock;
 
-  constructor(path: string, now: Clock = Date.now, fs?: FileSystemPort) {
+  constructor(path: string, now: Clock = Date.now, fs: FileSystemPort) {
     this.jsonl = new JsonlWriter(path, fs);
     this.now = now;
   }
@@ -133,7 +134,7 @@ export class AiWriter {
   private readonly jsonl: JsonlWriter;
   private readonly now: Clock;
 
-  constructor(path: string, now: Clock = Date.now, fs?: FileSystemPort) {
+  constructor(path: string, now: Clock = Date.now, fs: FileSystemPort) {
     this.jsonl = new JsonlWriter(path, fs);
     this.now = now;
   }
@@ -173,7 +174,7 @@ export class ArtifactWriters {
   /** The run dir these writers belong to (paths + runId). */
   readonly runDir: RunDir;
 
-  constructor(runDir: RunDir, now: Clock = Date.now, fs?: FileSystemPort) {
+  constructor(runDir: RunDir, now: Clock = Date.now, fs: FileSystemPort) {
     this.runDir = runDir;
     this.run = new RunWriter(runDir.runJsonl, now, fs);
     this.trace = new TraceWriter(runDir.traceJsonl, now, fs);
@@ -189,12 +190,21 @@ export class ArtifactWriters {
 /**
  * Open the writer facade for a run directory. Pass the injected clock through to stamp every
  * event deterministically in tests.
+ *
+ * Eagerly creates `run.jsonl` and `trace.jsonl` (empty) so they exist on disk from the start of
+ * the run, even if a stream never gets an event (e.g. a run with no trace events). `ai.jsonl` is
+ * intentionally left lazy — its file is created on the first `emitAiCall` (see {@link AiWriter}'s
+ * doc comment), matching its documented behavior since the original release.
  */
-export function openArtifactWriters(
+export async function openArtifactWriters(
   runDir: RunDir,
   now: Clock = Date.now,
-  fs?: FileSystemPort,
-): ArtifactWriters {
+  fs: FileSystemPort,
+): Promise<ArtifactWriters> {
+  await Promise.all([
+    fs.writeTextFile(runDir.runJsonl, ""),
+    fs.writeTextFile(runDir.traceJsonl, ""),
+  ]);
   return new ArtifactWriters(runDir, now, fs);
 }
 
@@ -210,7 +220,8 @@ export function openArtifactWriters(
 export async function writeSummary(
   runDir: RunDir,
   summary: RunSummary,
-  fs: FileSystemPort = nodeFileSystem,
+  fs?: FileSystemPort,
 ): Promise<void> {
-  await fs.writeTextFile(runDir.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
+  const f = fs ?? (await defaultFileSystem());
+  await f.writeTextFile(runDir.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
 }

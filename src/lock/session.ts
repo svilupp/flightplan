@@ -21,8 +21,9 @@
 
 import type { Step } from "../flow/index.ts";
 import { describeTarget } from "../flow/normalize-target.ts";
+import { defaultFileSystem } from "../fs-default.ts";
 import type { LockHook, StepExecution } from "../ladder/index.ts";
-import { type FileSystemPort, nodeFileSystem } from "../runtime.ts";
+import type { FileSystemPort } from "../runtime.ts";
 import type { Strategy } from "../types.ts";
 import {
   type ComposedEntry,
@@ -145,14 +146,14 @@ export class LockSession {
       now?: () => number;
       redactNote?: (note: string) => string;
       hookOptions?: CreateLockHookOptions;
-      fs?: FileSystemPort;
+      fs: FileSystemPort;
     },
   ) {
     this.mode = options.mode;
     this.inferStrategy = options.inferStrategy;
     this.now = options.now;
     this.redactNote = options.redactNote;
-    this.fs = options.fs ?? nodeFileSystem;
+    this.fs = options.fs;
     this.rootSource = root.lock.source;
 
     this.bySource.set(root.lock.source, root);
@@ -287,7 +288,7 @@ function upsertTarget(lock: LockFile, target: LockTarget): void {
  */
 export async function openLockSession(options: OpenLockSessionOptions): Promise<LockSession> {
   const onWarn = options.onWarn ?? ((m: string) => console.error(m));
-  const fs = options.fs ?? nodeFileSystem;
+  const fs = options.fs ?? (await defaultFileSystem());
 
   const rootLock = await loadLockSafe(
     options.lockPath,
@@ -346,7 +347,7 @@ async function loadLockSafe(
   mode: LockWriteMode,
   onWarn: (message: string) => void,
   now?: () => number,
-  fs: FileSystemPort = nodeFileSystem,
+  fs?: FileSystemPort,
 ): Promise<{ lock: LockFile; dirty: boolean }> {
   try {
     const lock = await loadLockFile(path, fresh, now ?? Date.now, fs);

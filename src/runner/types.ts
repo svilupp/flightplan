@@ -24,7 +24,10 @@ import type { TelemetrySink } from "../telemetry/index.ts";
  * `MockDriver` and production passes a `BrowserPilotDriver`. Called exactly once per
  * `runFlow`, BEFORE `connect()`.
  */
-export type DriverFactory = (connectCfg: ConnectConfig) => Driver;
+export type DriverFactory = (
+  connectCfg: ConnectConfig,
+  context?: { signal: AbortSignal },
+) => Driver;
 
 /**
  * A factory that produces the {@link AiRuntime} for one run (the L2/L3/L4 hooks, the `ai_judge`
@@ -72,6 +75,12 @@ export interface RunOptions {
    * `runFlow` somewhere with no `node:fs` (e.g. Cloudflare Workers).
    */
   fs?: FileSystemPort;
+  /** Stop the run and reject with RunInterruptedError. Already-dispatched effects may finish. */
+  signal?: AbortSignal;
+  /** Whole-run wall-clock deadline in milliseconds, including loading and artifact writes. */
+  timeoutMs?: number;
+  /** Maximum wait for driver cleanup after interruption (default 1000 ms). */
+  cleanupTimeoutMs?: number;
   /**
    * The fully-resolved config (built-in → global → imported → flow → CLI). The runner reads
    * `run` (budgets / assertion mode / fail_on_assertion / timeout), `connect` (the connect

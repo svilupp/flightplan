@@ -9,6 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
+import { nodeFileSystem } from "../adapters/node/index.ts";
 import {
   ArtifactWriters,
   createRun,
@@ -117,7 +118,7 @@ describe("createRun (directory structure)", () => {
 describe("JsonlWriter (generic primitive)", () => {
   test("opens lazily and appends one parseable JSON object per line", async () => {
     const path = join(tmp, "raw.jsonl");
-    const w = new JsonlWriter(path);
+    const w = new JsonlWriter(path, nodeFileSystem);
     expect(existsSync(path)).toBe(false); // not opened until first write
     await w.write({ a: 1 });
     await w.write({ b: "two", nested: { c: [1, 2, 3] } });
@@ -129,7 +130,7 @@ describe("JsonlWriter (generic primitive)", () => {
 
   test("concurrent writes do not interleave bytes (each line parses)", async () => {
     const path = join(tmp, "concurrent.jsonl");
-    const w = new JsonlWriter(path);
+    const w = new JsonlWriter(path, nodeFileSystem);
     const N = 50;
     await Promise.all(Array.from({ length: N }, (_, i) => w.write({ i, payload: "x".repeat(i) })));
     await w.close();
@@ -142,7 +143,7 @@ describe("JsonlWriter (generic primitive)", () => {
 
   test("write after close rejects", async () => {
     const path = join(tmp, "afterclose.jsonl");
-    const w = new JsonlWriter(path);
+    const w = new JsonlWriter(path, nodeFileSystem);
     await w.write({ ok: true });
     await w.close();
     expect(w.write({ ok: false })).rejects.toThrow(/write after close/);
@@ -150,7 +151,7 @@ describe("JsonlWriter (generic primitive)", () => {
 
   test("close is idempotent", async () => {
     const path = join(tmp, "idempotent.jsonl");
-    const w = new JsonlWriter(path);
+    const w = new JsonlWriter(path, nodeFileSystem);
     await w.write({ x: 1 });
     await w.close();
     await w.close(); // must not throw
@@ -161,7 +162,7 @@ describe("JsonlWriter (generic primitive)", () => {
 describe("typed writers — emit* shaping + ts/type stamping", () => {
   test("RunWriter emit* methods produce correctly-shaped run events", async () => {
     const rd = await createRun({ baseDir: join(tmp, "runwriter"), runId: "rw" });
-    const writers = new ArtifactWriters(rd, fixedNow);
+    const writers = new ArtifactWriters(rd, fixedNow, nodeFileSystem);
 
     await writers.run.emitRunStart({
       runId: rd.runId,
@@ -222,7 +223,7 @@ describe("typed writers — emit* shaping + ts/type stamping", () => {
 
   test("TraceWriter emit* methods produce correctly-shaped trace events", async () => {
     const rd = await createRun({ baseDir: join(tmp, "tracewriter"), runId: "tw" });
-    const writers = openArtifactWriters(rd, fixedNow);
+    const writers = await openArtifactWriters(rd, fixedNow, nodeFileSystem);
 
     await writers.trace.emitBrowserAction({
       action: "click",
@@ -261,7 +262,7 @@ describe("typed writers — emit* shaping + ts/type stamping", () => {
 
   test("AiWriter creates ai.jsonl lazily and shapes ai_call events", async () => {
     const rd = await createRun({ baseDir: join(tmp, "aiwriter"), runId: "aw" });
-    const writers = openArtifactWriters(rd, fixedNow);
+    const writers = await openArtifactWriters(rd, fixedNow, nodeFileSystem);
 
     // No ai.jsonl until the first emit (Phase 4 lazy creation).
     expect(existsSync(rd.aiJsonl)).toBe(false);
@@ -290,14 +291,17 @@ describe("typed writers — emit* shaping + ts/type stamping", () => {
     });
   });
 
-  test("facade.close() closes a writer with no events without creating its file", async () => {
+  test("facade.close() closes a writer with no events; run+trace exist eagerly, ai stays lazy", async () => {
     const rd = await createRun({ baseDir: join(tmp, "emptyfacade"), runId: "ef" });
-    const writers = openArtifactWriters(rd, fixedNow);
+    const writers = await openArtifactWriters(rd, fixedNow, nodeFileSystem);
     await writers.run.emitStepStart({ stepId: "only", do: "goto" });
     await writers.close();
     expect(existsSync(rd.runJsonl)).toBe(true);
-    // trace + ai never written → files never created.
-    expect(existsSync(rd.traceJsonl)).toBe(false);
+    // trace.jsonl is created eagerly by openArtifactWriters even with no trace events (avoids a
+    // dangling `summary.trace_path` pointing at a file that was never created).
+    expect(existsSync(rd.traceJsonl)).toBe(true);
+    expect(readJsonl(rd.traceJsonl)).toEqual([]);
+    // ai.jsonl stays lazy: never created unless emitAiCall is called.
     expect(existsSync(rd.aiJsonl)).toBe(false);
   });
 });
@@ -306,6 +310,7 @@ describe("writeSummary", () => {
   test("writes parseable JSON with the expected RunSummary fields", async () => {
     const rd = await createRun({ baseDir: join(tmp, "summary"), runId: "sum" });
     const summary: RunSummary = {
+      summary_version: 1,
       verdict: "passed",
       flow_id: "flow-1",
       run_id: rd.runId,

@@ -50,6 +50,18 @@ export interface LintContext {
   lock: LockLintInfo | null;
   /** The flow's `source_hash` (`sha256:<hex>`) — used for the lock-stale comparison. */
   sourceHash: string;
+  /**
+   * Parsed sidecar lock document (raw, post-TOML-parse), precomputed by `lintFile` via the
+   * injected fs so `lock/orphaned-target` stays a pure, I/O-free rule. `null` when there is no
+   * lock file, or it could not be read/parsed.
+   */
+  lockDoc: RawDoc | null;
+  /**
+   * Existence of directories checked by path rules (`paths/lock-writable`,
+   * `paths/out-writable`), precomputed by `lintFile` via the injected fs so those rules stay
+   * I/O-free. Keyed by absolute directory path.
+   */
+  dirExists: Map<string, boolean>;
 }
 
 /**

@@ -12,6 +12,8 @@
 //
 // Canonical reference: PLAN.md §5 (Phase 1) and PROPOSAL "Data flow and templating".
 
+import { ambientEnv } from "../runtime.ts";
+
 /** Raised when templating references something that cannot be resolved. */
 export class TemplateError extends Error {
   constructor(message: string) {
@@ -68,7 +70,7 @@ export function collectRefs(value: string): TemplateRef[] {
  * (e.g. `${steps.x}`, deferred to v1) throw as well — they are not valid in v0.
  */
 export function applyTemplating(value: string, ctx: TemplateContext): string {
-  const env = ctx.env ?? process.env;
+  const env = ctx.env ?? ambientEnv();
   const captures = ctx.captures ?? {};
   return value.replace(TOKEN_RE, (raw, source: string, name: string) => {
     if (source === "inputs") {
@@ -277,7 +279,7 @@ export function resolveInputs(
   parentInputs?: Record<string, string>,
 ): Record<string, string> {
   const resolved: Record<string, string> = {};
-  const baseEnv = env ?? process.env;
+  const baseEnv = env ?? ambientEnv();
 
   // First resolve `with` overrides against the parent's scope (env + parent inputs).
   const resolvedWith: Record<string, string> = {};

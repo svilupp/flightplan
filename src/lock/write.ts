@@ -34,8 +34,9 @@
 // Canonical references: PLAN.md §4 (lock TOML), §5 Phase 3 (write policy / stable diffs).
 
 import { stringify } from "smol-toml";
+import { defaultFileSystem } from "../fs-default.ts";
 import type { StepExecution } from "../ladder/index.ts";
-import { type FileSystemPort, nodeFileSystem } from "../runtime.ts";
+import type { FileSystemPort } from "../runtime.ts";
 import type { Strategy } from "../types.ts";
 import { sanitizeNote } from "./note-sanitize.ts";
 import { compareCandidates, mergeWinningRecipe, recipeFromExecution } from "./recipe.ts";
@@ -171,10 +172,11 @@ export function serializeLock(lock: LockFile): string {
 export async function writeLockFile(
   path: string,
   lock: LockFile,
-  fs: FileSystemPort = nodeFileSystem,
+  fs?: FileSystemPort,
 ): Promise<string> {
+  const f = fs ?? (await defaultFileSystem());
   const text = serializeLock(lock);
-  await fs.writeTextFile(path, text);
+  await f.writeTextFile(path, text);
   return text;
 }
 

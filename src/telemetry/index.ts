@@ -31,6 +31,7 @@
 // =============================================================================================
 
 import type { Config } from "../config/types.ts";
+import { ambientEnv } from "../runtime.ts";
 import { LogfireSink } from "./otlp.ts";
 import type {
   AttributeValue,
@@ -345,7 +346,7 @@ export interface CreateTelemetryOptions {
  * throws and NEVER makes a network call here (the first POST is on the first span `end`).
  */
 export function createTelemetry(opts: CreateTelemetryOptions): Telemetry {
-  const env = opts.env ?? process.env;
+  const env = opts.env ?? ambientEnv();
   const onError = opts.onError ?? (() => {});
   let gating: TelemetryGating;
   try {

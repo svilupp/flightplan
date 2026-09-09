@@ -7,11 +7,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { memoryFileSystem } from "../adapters/memory.ts";
 import {
   formatJson,
   lintFile,
   lintFlowFile,
   lintPaths,
+  lintText,
   looksLikeUnprefixedSelector,
   RULE_IDS,
 } from "./index.ts";
@@ -1149,5 +1151,92 @@ describe("formatJson", () => {
     const multi = await lintPaths([fx("invalid-kind.toml")]);
     const json = formatJson(multi);
     expect(() => JSON.parse(json)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Portability: lintText over an injected FileSystemPort (imports + a setup hook file), no
+// disk access, must match the on-disk lint of the byte-identical fixture (U2, workers-slice-2).
+// ---------------------------------------------------------------------------
+
+describe("lintText over an injected FileSystemPort", () => {
+  const LIB = [
+    "version = 1",
+    'kind = "flow"',
+    'id = "lib"',
+    'description = "a library module"',
+    "",
+    "[inputs]",
+    'greeting = { default = "hi" }',
+    "",
+    "[[steps]]",
+    'id = "noop"',
+    'do = "wait"',
+    "ms = 0",
+    "",
+  ].join("\n");
+
+  const HOOK = [
+    "version = 1",
+    'kind = "flow"',
+    'id = "hook"',
+    'description = "a setup hook module"',
+    "",
+    "[[steps]]",
+    'id = "setup-step"',
+    'do = "wait"',
+    "ms = 0",
+    "",
+  ].join("\n");
+
+  const MAIN = [
+    "version = 1",
+    'kind = "flow"',
+    'id = "main"',
+    'description = "imports a library and runs a setup hook"',
+    "",
+    'imports = ["./lib.toml"]',
+    'setup = "./hook.toml"',
+    "",
+    "[[steps]]",
+    'id = "run-lib"',
+    'do = "run"',
+    'flow = "lib"',
+    "",
+  ].join("\n");
+
+  test("finds identical diagnostics as the on-disk lint of the same fixture", async () => {
+    // In-memory Map-backed fs: main.toml + its import (lib.toml) + its setup hook (hook.toml).
+    const memFs = memoryFileSystem();
+    await memFs.writeTextFile("/flow/main.toml", MAIN);
+    await memFs.writeTextFile("/flow/lib.toml", LIB);
+    await memFs.writeTextFile("/flow/hook.toml", HOOK);
+
+    const memResult = await lintText(MAIN, "/flow/main.toml", { fs: memFs, cwd: "/flow" });
+
+    // Byte-identical fixture written to a real temp dir, linted through the default
+    // (nodeFileSystem-backed) `lintFile`.
+    const tmp = mkdtempSync(join(tmpdir(), "fp-lint-memfs-"));
+    try {
+      writeFileSync(join(tmp, "main.toml"), MAIN);
+      writeFileSync(join(tmp, "lib.toml"), LIB);
+      writeFileSync(join(tmp, "hook.toml"), HOOK);
+
+      const diskResult = await lintFile(join(tmp, "main.toml"));
+
+      expect(memResult.ok).toBe(true);
+      expect(diskResult.ok).toBe(true);
+      expect(memResult.errorCount).toBe(diskResult.errorCount);
+      expect(memResult.warningCount).toBe(diskResult.warningCount);
+      // Diagnostics are identical modulo the `file` field (absolute paths differ by design:
+      // one is memory-fs rooted at /flow, the other a real tmp dir).
+      const strip = (d: { file: string }) => {
+        const { file: _file, ...rest } = d;
+        return rest;
+      };
+      expect(memResult.diagnostics.map(strip)).toEqual(diskResult.diagnostics.map(strip));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

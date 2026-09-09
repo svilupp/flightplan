@@ -5,7 +5,8 @@
 // (kind === 'config'). Canonical reference: PLAN.md §2 (config/) and §5 (Phase 1).
 
 import { parse as parseTomlRaw } from "smol-toml";
-import { readTextFile } from "../runtime.ts";
+import { defaultFileSystem } from "../fs-default.ts";
+import type { FileSystemPort } from "../runtime.ts";
 import { ConfigFileSchema } from "./schema.ts";
 import type { ConfigFile } from "./types.ts";
 
@@ -60,8 +61,9 @@ export interface LoadedConfigFile {
  * Throws {@link TomlParseError} on bad TOML and {@link ConfigValidationError} on a schema
  * violation (including a wrong `kind`).
  */
-export async function loadConfigFile(path: string): Promise<LoadedConfigFile> {
-  const sourceText = await readTextFile(path);
+export async function loadConfigFile(path: string, fs?: FileSystemPort): Promise<LoadedConfigFile> {
+  const f = fs ?? (await defaultFileSystem());
+  const sourceText = await f.readTextFile(path);
   const data = parseToml(sourceText, path);
 
   const result = ConfigFileSchema.safeParse(data);

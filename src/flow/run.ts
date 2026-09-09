@@ -22,7 +22,7 @@
 // [run] limits block, [config], imports, and setup/teardown hooks are ignored when embedded
 // (a child's hooks/budgets apply only when it is run standalone).
 
-import type { FileSystemPort } from "../runtime.ts";
+import { ambientEnv, type FileSystemPort } from "../runtime.ts";
 import {
   ImportCycleError,
   type ImportGraph,
@@ -109,7 +109,7 @@ function namespaceStep(callSiteId: string, step: Step): Step {
  * construction (the graph is a DAG, and id-form references can only reach imported modules).
  */
 export async function flattenRunSteps(loaded: LoadedFlow, opts?: FlattenOptions): Promise<Step[]> {
-  const env = opts?.env ?? process.env;
+  const env = opts?.env ?? ambientEnv();
   // Combined import + run DAG: loads every referenced module and throws on a cycle (v002-6).
   const graph = await resolveImports(loaded, { env, ...(opts?.fs ? { fs: opts.fs } : {}) });
   const rootInputs = graph.nodes.get(loaded.path)?.inputs ?? {};

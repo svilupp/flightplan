@@ -6,10 +6,17 @@
 // detaches without killing it; Mode B launches its own Chrome via chrome-launcher and kills
 // it on teardown. Canonical reference: PLAN.md §3 (lifecycle table, gotchas-as-defaults).
 
-// The single allowed `import ... from 'browser-pilot'` in the whole codebase.
+// The single allowed `import ... from 'browser-pilot'` (plus its portable `/core` entry) in the
+// whole codebase. `Page` and `TargetNotFoundError` are re-exported byte-identically from both
+// entries (same underlying compiled chunk — `browser-pilot/core`'s `dist/core/index.d.ts` and the
+// root `dist/index.d.ts` both point at `page-*.js` / `types-*.js`), so importing them from
+// `/core` costs nothing and narrows this file's reliance on the root (non-portable) entry to just
+// the exports `/core` genuinely lacks (`connect`, webmcp*, capture*Signature, getBuildProvenance,
+// mintCfAccessJwt, Dialog/ExpectNewPageOptions/PageSnapshot/Step — see
+// `src/fitness/browser-pilot-chunk-gate.test.ts` for the reachability proof this doesn't change).
+import { type Browser, type Page, TargetNotFoundError } from "browser-pilot/core";
 import {
   type EmitWsOptions as BpEmitWsOptions,
-  type Browser,
   captureStateSignature as bpCaptureStateSignature,
   captureStructureSignature as bpCaptureStructureSignature,
   connect as bpConnect,
@@ -25,10 +32,8 @@ import {
   // so a driver built against an older browser-pilot that predates this export degrades to a clear
   // error instead of a hard import-time crash.
   mintCfAccessJwt,
-  type Page,
   type PageSnapshot,
   type Step,
-  TargetNotFoundError,
 } from "browser-pilot";
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
 import {

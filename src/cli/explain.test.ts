@@ -221,6 +221,7 @@ describe("explain — full AI run", () => {
     ];
 
     const summary: RunSummary = {
+      summary_version: 1,
       verdict: "failed",
       flow_id: "admin-create-order",
       run_id: "20260630T120000000-abcd1234",

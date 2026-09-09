@@ -12,11 +12,9 @@
 //
 // Canonical reference: PLAN.md §5 (Phase 1 ruleset) + §8 (starter ruleset).
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
-import { parseToml } from "../config/index.ts";
 import { collectRefs, isRunFlowPath } from "../flow/index.ts";
 import { classifyLocator, normalizeTarget } from "../flow/normalize-target.ts";
+import { dirname, isAbsolute, resolve } from "../paths.ts";
 import { AI_JUDGE_INPUTS, ASSERT_TYPES, ASSERT_WHENS, FILE_KINDS, STEP_DOS } from "../types.ts";
 import { diag, type LintContext, type RawDoc, type Rule } from "./context.ts";
 import type { Diagnostic } from "./types.ts";
@@ -1115,11 +1113,17 @@ function readArtifactPath(doc: RawDoc, field: string): string | null {
   return null;
 }
 
-/** Warn when the parent directory of a configured path does not exist. */
+/**
+ * Warn when the parent directory of a configured path does not exist. Existence is read from
+ * `ctx.dirExists`, precomputed by `lintFile` via the injected fs — this rule stays I/O-free.
+ * A directory absent from the map (not one of the paths `lintFile` checked) is treated as
+ * existing, matching the pre-portability default of "no findings" for paths this rule cannot
+ * evaluate.
+ */
 function checkParentDir(ctx: LintContext, p: string, ruleId: string, label: string): Diagnostic[] {
   const abs = isAbsolute(p) ? p : resolve(ctx.baseDir, p);
   const parent = dirname(abs);
-  if (!existsSync(parent)) {
+  if (!(ctx.dirExists.get(parent) ?? true)) {
     return [
       diag(
         ctx,
@@ -1572,14 +1576,7 @@ const lockOrphanedTarget: Rule = {
   description: "A lock target references a step id that no longer exists in the flow.",
   run(ctx) {
     if (!ctx.lock) return [];
-    if (!existsSync(ctx.lock.path)) return [];
-    let lockDoc: unknown;
-    try {
-      lockDoc = parseToml(readFileSync(ctx.lock.path, "utf8"), ctx.lock.path);
-    } catch {
-      // A malformed lock is not this rule's concern (the lock manager validates it).
-      return [];
-    }
+    const lockDoc = ctx.lockDoc;
     if (!isRecord(lockDoc)) return [];
     const targets = asArray(lockDoc.targets).filter(isRecord);
     if (targets.length === 0) return [];
@@ -2032,4 +2029,4 @@ export const RULES: readonly Rule[] = [
 export const RULE_IDS: readonly string[] = RULES.map((r) => r.id);
 
 // Re-export the heuristic for unit testing.
-export { looksLikeUnprefixedSelector };
+export { looksLikeUnprefixedSelector, readArtifactPath };

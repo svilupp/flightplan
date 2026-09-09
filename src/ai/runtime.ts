@@ -50,6 +50,15 @@ export function timeoutMsByRoleFromConfig(
  * `AiHooks`; `judge` satisfies `assertCtx.aiJudge`; `usageTotals()` returns the run-level rollup.
  */
 export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
+  const generate: AiRuntimeDeps["generate"] = async (request) => {
+    deps.signal?.throwIfAborted();
+    const result = await deps.generate({
+      ...request,
+      ...(deps.signal ? { signal: deps.signal } : {}),
+    });
+    deps.signal?.throwIfAborted();
+    return result;
+  };
   const registry = resolveRegistry(deps.config);
   const budget = new BudgetTracker(resolveBudgetLimits(deps.config));
   const cost = new CostAccumulator();
@@ -63,7 +72,7 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
     registry,
     budget,
     cost,
-    generate: deps.generate,
+    generate,
     aiWriter: deps.aiWriter,
     ...(deps.redactor ? { redactor: deps.redactor } : {}),
     ...(deps.onAiCall ? { onAiCall: deps.onAiCall } : {}),
@@ -92,7 +101,7 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
     registry,
     budget,
     cost,
-    generate: deps.generate,
+    generate,
     aiWriter: deps.aiWriter,
     hooks,
     judge: (assertion: AiJudgeAssertion, opts: AiJudgeOptions): Promise<AssertionResult> =>
