@@ -35,7 +35,7 @@
 
 import { stringify } from "smol-toml";
 import type { StepExecution } from "../ladder/index.ts";
-import { writeTextFile } from "../runtime.ts";
+import { type FileSystemPort, nodeFileSystem } from "../runtime.ts";
 import type { Strategy } from "../types.ts";
 import { sanitizeNote } from "./note-sanitize.ts";
 import { compareCandidates, mergeWinningRecipe, recipeFromExecution } from "./recipe.ts";
@@ -168,9 +168,13 @@ export function serializeLock(lock: LockFile): string {
  * Serialize + write a lock to `path`. Returns the serialized text (handy for callers that also
  * want to log/inspect it). Creates or overwrites the file using the shared Node-compatible writer.
  */
-export async function writeLockFile(path: string, lock: LockFile): Promise<string> {
+export async function writeLockFile(
+  path: string,
+  lock: LockFile,
+  fs: FileSystemPort = nodeFileSystem,
+): Promise<string> {
   const text = serializeLock(lock);
-  await writeTextFile(path, text);
+  await fs.writeTextFile(path, text);
   return text;
 }
 

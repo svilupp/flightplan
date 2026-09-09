@@ -106,7 +106,7 @@ import {
   type SessionImport,
 } from "../lock/index.ts";
 import { createRedactor, gatherSecretValues, REDACTED, type Redactor } from "../redaction/index.ts";
-import { writeTextFile } from "../runtime.ts";
+import { type FileSystemPort, nodeFileSystem } from "../runtime.ts";
 import {
   aiCallEventAttrs,
   artifactCreatedAttrs,
@@ -2278,10 +2278,11 @@ async function runHookFlow(
   runtime: AiRuntime | undefined,
   lockMode: LockWriteMode,
   services: RunServices,
+  fs: FileSystemPort,
 ): Promise<void> {
   const resolvedPath = hookPath.startsWith("/") ? hookPath : `${baseDir}/${hookPath}`;
   // Hooks flatten their own `run` steps too (a setup/teardown module may compose flows).
-  const loaded = await loadFlowFileFlattened(resolvedPath, { env });
+  const loaded = await loadFlowFileFlattened(resolvedPath, { env, fs });
   const inputs = resolveInputs(loaded.flow.inputs, undefined, env, {});
   const { steps } = templateFlow(loaded.flow, inputs, env);
   // Open the hook module's OWN lock session (its sidecar `<module>.lock.toml`). The hook's steps
@@ -2296,6 +2297,7 @@ async function runHookFlow(
     now: () => clock.now(),
     // Redact an AI-emitted note before persisting it to the hook module's lock (DESIGN §4).
     redactNote: (note: string) => services.redactor.redactText(note),
+    fs,
   });
   // `max_steps` is a main-flow budget, so hook steps are not counted against it (maxSteps undefined).
   await executeSteps(
@@ -2337,13 +2339,20 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   const clock = opts.clock ?? systemRunClock;
   const env = opts.env ?? process.env;
   const artifactClock: ArtifactClock = () => clock.now();
+  const fs: FileSystemPort = opts.fs ?? nodeFileSystem;
 
   // --- (1) load + import-resolve + template ---
   // Load with `run` steps flattened into namespaced child steps (PLAN_v002 v002-8) — the
-  // runner always executes against the final concrete step list.
-  const loaded = await loadFlowFileFlattened(opts.flowPath, { env });
+  // runner always executes against the final concrete step list. When `opts.flowSource` is set,
+  // the root flow is parsed from that in-memory text instead of read from disk (`flowPath` is
+  // still the nominal path for imports/locks/relative resolution).
+  const loaded = await loadFlowFileFlattened(opts.flowPath, {
+    env,
+    fs,
+    ...(opts.flowSource !== undefined ? { flowSource: opts.flowSource } : {}),
+  });
   // Resolve the import graph (root node carries this flow's resolved inputs).
-  const graph = await resolveImports(loaded, { env });
+  const graph = await resolveImports(loaded, { env, fs });
   const rootNode = graph.nodes.get(graph.rootPath);
   const inputs = rootNode?.inputs ?? resolveInputs(loaded.flow.inputs, undefined, env, {});
   const { steps: allSteps } = templateFlow(loaded.flow, inputs, env);
@@ -2353,11 +2362,16 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
 
   // --- (2) connect config + artifact run dir + writers ---
   const connectCfg = resolveConnectConfig(opts.config);
-  const runDir = await createRun({
-    ...(opts.out !== undefined ? { baseDir: opts.out } : {}),
-    ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
-  });
-  const writers = openArtifactWriters(runDir, artifactClock);
+  const runDir = await createRun(
+    {
+      ...(opts.out !== undefined ? { baseDir: opts.out } : {}),
+      ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
+    },
+    fs,
+  );
+  // Pass the RAW opts.fs (not the defaulted `fs`): when no port is injected, JsonlWriter must
+  // keep its original append-fd FileHandle path instead of per-line appendTextFile.
+  const writers = openArtifactWriters(runDir, artifactClock, opts.fs);
 
   // --- (2.05) redaction (Phase 5) — secrets + PII masked before anything is logged/traced/sent ---
   // Gather every `secret:true` fill value (+ backing inputs) across the ROOT steps AND the
@@ -2494,6 +2508,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
       ...(stepNamespaces.size > 0
         ? { hookOptions: { namespaceFor: (step: Step) => stepNamespaces.get(step.id) } }
         : {}),
+      fs,
     });
   } catch (err) {
     if (err instanceof LockParseError) {
@@ -2587,6 +2602,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
         runtime,
         lockMode,
         services,
+        fs,
       );
     }
 
@@ -2610,7 +2626,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     // --- (5.4) act on L4 advisor verdicts (Phase 4): heal-write (only with a validated basis from
     // a deeper acting tier) / materialize an `intent_changed` proposed patch. `bug`/`flake` never
     // write. This NEVER changes the run verdict (the step already failed). ---
-    await processAdvisoryVerdicts(state, runDir, session);
+    await processAdvisoryVerdicts(state, runDir, session, fs);
 
     // --- (5.5) persist learned/healed recipes (auto mode only; frozen/no-write never write) ---
     // Heals are written even when a later step/assertion failed (the recipe is still valid); a
@@ -2645,6 +2661,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
           runtime,
           lockMode,
           services,
+          fs,
         );
       } catch {
         // teardown is best-effort — never let it turn a good run into an error.
@@ -2705,7 +2722,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     },
     ...(state.runError ? { error: state.runError } : {}),
   });
-  await writeSummary(runDir, summary);
+  await writeSummary(runDir, summary, fs);
   await writers.close();
 
   // Close the telemetry run span (verdict + drift_count). NOOP when telemetry is disabled.
@@ -2849,6 +2866,7 @@ async function processAdvisoryVerdicts(
   state: RunState,
   runDir: { proposedPatchesDir: string },
   session: LockSession | undefined,
+  fs: FileSystemPort,
 ): Promise<void> {
   for (const adv of state.advisorySteps) {
     try {
@@ -2884,8 +2902,8 @@ async function processAdvisoryVerdicts(
           summary: adv.verdict.summary,
           proposed_patch_path: adv.verdict.proposed_patch_path,
         };
-        await writeTextFile(jsonPath, `${JSON.stringify(body, null, 2)}\n`);
-        await writeTextFile(patchPath, intentChangedPatchBody(adv.step, adv.verdict));
+        await fs.writeTextFile(jsonPath, `${JSON.stringify(body, null, 2)}\n`);
+        await fs.writeTextFile(patchPath, intentChangedPatchBody(adv.step, adv.verdict));
         if (state.proposedPatchPath === null) state.proposedPatchPath = patchPath;
       }
       // `bug` / `flake`: never write (PLAN.md §5 Phase 4 / PROPOSAL "Advisory verdict").

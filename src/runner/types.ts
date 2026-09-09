@@ -16,6 +16,7 @@ import type { AiRuntime, AiRuntimeDeps } from "../ai/index.ts";
 import type { RunSummary } from "../artifacts/index.ts";
 import type { ConnectConfig, ResolvedConfig } from "../config/types.ts";
 import type { Driver } from "../driver/index.ts";
+import type { FileSystemPort } from "../runtime.ts";
 import type { TelemetrySink } from "../telemetry/index.ts";
 
 /**
@@ -56,6 +57,21 @@ export interface RunClock {
 export interface RunOptions {
   /** Absolute or cwd-relative path to the flow .toml to run. */
   flowPath: string;
+  /**
+   * When supplied, the ROOT flow is parsed from this in-memory TOML text instead of being read
+   * from disk — `flowPath` is still used as the nominal path for imports/locks/relative resolution
+   * and the run directory/lock naming. Lets `runFlow` execute a flow with no filesystem access to
+   * the flow file itself (e.g. a Worker fetching TOML over the network). Imported/run-referenced
+   * modules and locks still resolve through `fs` (or the real filesystem when `fs` is omitted).
+   */
+  flowSource?: string;
+  /**
+   * Injectable filesystem for every run-path file operation (flow/import loading, lock read/
+   * write, artifact writes). Defaults to the real Node filesystem (`nodeFileSystem`), so default
+   * behavior is byte-for-byte unchanged when omitted. Inject an in-memory implementation to run
+   * `runFlow` somewhere with no `node:fs` (e.g. Cloudflare Workers).
+   */
+  fs?: FileSystemPort;
   /**
    * The fully-resolved config (built-in → global → imported → flow → CLI). The runner reads
    * `run` (budgets / assertion mode / fail_on_assertion / timeout), `connect` (the connect

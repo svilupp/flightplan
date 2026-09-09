@@ -5,25 +5,65 @@
 
 import { createHash } from "node:crypto";
 import { constants, type Dirent } from "node:fs";
-import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 
+/**
+ * The filesystem operations the run path (artifacts, locks, flow/import loading) needs.
+ * Injectable so `runFlow` can execute somewhere with no `node:fs` (e.g. Cloudflare Workers)
+ * by supplying an in-memory or KV-backed implementation via `RunOptions.fs`. The default
+ * ({@link nodeFileSystem}) is the real Node implementation used when no port is supplied, so
+ * default behavior is byte-for-byte unchanged.
+ */
+export interface FileSystemPort {
+  /** Read a UTF-8 text file. Rejects if the file does not exist. */
+  readTextFile(path: string): Promise<string>;
+  /** Write a UTF-8 text file, creating parent directories as needed. Overwrites. */
+  writeTextFile(path: string, text: string): Promise<void>;
+  /** Append a UTF-8 chunk to a file, creating it (and parent directories) if missing. */
+  appendTextFile(path: string, text: string): Promise<void>;
+  /** True iff a file/dir exists at `path`. */
+  fileExists(path: string): Promise<boolean>;
+  /** Create a directory. `recursive` mirrors `fs.mkdir`'s option (no-op if it already exists). */
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
+}
+
+/** The real Node `node:fs`-backed {@link FileSystemPort}. The default when no port is injected. */
+export const nodeFileSystem: FileSystemPort = {
+  async readTextFile(path: string): Promise<string> {
+    return readFile(path, "utf8");
+  },
+  async writeTextFile(path: string, text: string): Promise<void> {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, text, "utf8");
+  },
+  async appendTextFile(path: string, text: string): Promise<void> {
+    await mkdir(dirname(path), { recursive: true });
+    await appendFile(path, text, "utf8");
+  },
+  async fileExists(path: string): Promise<boolean> {
+    try {
+      await access(path, constants.F_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
+    await mkdir(path, options);
+  },
+};
+
 export async function readTextFile(path: string): Promise<string> {
-  return readFile(path, "utf8");
+  return nodeFileSystem.readTextFile(path);
 }
 
 export async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
+  return nodeFileSystem.fileExists(path);
 }
 
 export async function writeTextFile(path: string, text: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, text, "utf8");
+  return nodeFileSystem.writeTextFile(path, text);
 }
 
 export function sha256Text(text: string): string {

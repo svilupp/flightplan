@@ -23,8 +23,8 @@
 //
 // Dependency-light: only `node:fs/promises` + `node:path`.
 
-import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { type FileSystemPort, nodeFileSystem } from "../runtime.ts";
 
 /** The default base directory for run artifacts. Gitignored by the scaffold. */
 export const DEFAULT_BASE_DIR = ".flightplan-runs";
@@ -153,14 +153,17 @@ export function resolveRunDir(options: CreateRunOptions = {}): RunDir {
  * The JSONL files and `summary.json` are NOT created here — the JSONL writers open them
  * lazily on first write and {@link import("./writers.ts")} writes the summary at the end.
  */
-export async function createRun(options: CreateRunOptions = {}): Promise<RunDir> {
+export async function createRun(
+  options: CreateRunOptions = {},
+  fs: FileSystemPort = nodeFileSystem,
+): Promise<RunDir> {
   const runDir = resolveRunDir(options);
   // `recursive: true` creates `<base>` and `<base>/<runId>` in one go and is a no-op if they
   // already exist.
-  await mkdir(runDir.dir, { recursive: true });
+  await fs.mkdir(runDir.dir, { recursive: true });
   await Promise.all([
-    mkdir(runDir.screenshotsDir, { recursive: true }),
-    mkdir(runDir.proposedPatchesDir, { recursive: true }),
+    fs.mkdir(runDir.screenshotsDir, { recursive: true }),
+    fs.mkdir(runDir.proposedPatchesDir, { recursive: true }),
   ]);
   return runDir;
 }

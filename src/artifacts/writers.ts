@@ -13,7 +13,7 @@
 // redacted by the caller before reaching `emitAiCall` (see events.ts REDACTION CONTRACT and
 // PLAN.md §5 Phase 5).
 
-import { writeTextFile } from "../runtime.ts";
+import { type FileSystemPort, nodeFileSystem } from "../runtime.ts";
 import type {
   AiCallEvent,
   AiEvent,
@@ -46,8 +46,8 @@ export class RunWriter {
   private readonly jsonl: JsonlWriter;
   private readonly now: Clock;
 
-  constructor(path: string, now: Clock = Date.now) {
-    this.jsonl = new JsonlWriter(path);
+  constructor(path: string, now: Clock = Date.now, fs?: FileSystemPort) {
+    this.jsonl = new JsonlWriter(path, fs);
     this.now = now;
   }
 
@@ -94,8 +94,8 @@ export class TraceWriter {
   private readonly jsonl: JsonlWriter;
   private readonly now: Clock;
 
-  constructor(path: string, now: Clock = Date.now) {
-    this.jsonl = new JsonlWriter(path);
+  constructor(path: string, now: Clock = Date.now, fs?: FileSystemPort) {
+    this.jsonl = new JsonlWriter(path, fs);
     this.now = now;
   }
 
@@ -133,8 +133,8 @@ export class AiWriter {
   private readonly jsonl: JsonlWriter;
   private readonly now: Clock;
 
-  constructor(path: string, now: Clock = Date.now) {
-    this.jsonl = new JsonlWriter(path);
+  constructor(path: string, now: Clock = Date.now, fs?: FileSystemPort) {
+    this.jsonl = new JsonlWriter(path, fs);
     this.now = now;
   }
 
@@ -173,11 +173,11 @@ export class ArtifactWriters {
   /** The run dir these writers belong to (paths + runId). */
   readonly runDir: RunDir;
 
-  constructor(runDir: RunDir, now: Clock = Date.now) {
+  constructor(runDir: RunDir, now: Clock = Date.now, fs?: FileSystemPort) {
     this.runDir = runDir;
-    this.run = new RunWriter(runDir.runJsonl, now);
-    this.trace = new TraceWriter(runDir.traceJsonl, now);
-    this.ai = new AiWriter(runDir.aiJsonl, now);
+    this.run = new RunWriter(runDir.runJsonl, now, fs);
+    this.trace = new TraceWriter(runDir.traceJsonl, now, fs);
+    this.ai = new AiWriter(runDir.aiJsonl, now, fs);
   }
 
   /** Flush and close all three writers. Idempotent per underlying writer. */
@@ -190,8 +190,12 @@ export class ArtifactWriters {
  * Open the writer facade for a run directory. Pass the injected clock through to stamp every
  * event deterministically in tests.
  */
-export function openArtifactWriters(runDir: RunDir, now: Clock = Date.now): ArtifactWriters {
-  return new ArtifactWriters(runDir, now);
+export function openArtifactWriters(
+  runDir: RunDir,
+  now: Clock = Date.now,
+  fs?: FileSystemPort,
+): ArtifactWriters {
+  return new ArtifactWriters(runDir, now, fs);
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +207,10 @@ export function openArtifactWriters(runDir: RunDir, now: Clock = Date.now): Arti
  * is the structured surface `--json` mode prints and Phase 5's `explain` reads. Overwrites any
  * existing summary (a run writes it exactly once at the end).
  */
-export async function writeSummary(runDir: RunDir, summary: RunSummary): Promise<void> {
-  await writeTextFile(runDir.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
+export async function writeSummary(
+  runDir: RunDir,
+  summary: RunSummary,
+  fs: FileSystemPort = nodeFileSystem,
+): Promise<void> {
+  await fs.writeTextFile(runDir.summaryJson, `${JSON.stringify(summary, null, 2)}\n`);
 }

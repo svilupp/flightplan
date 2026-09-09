@@ -14,6 +14,7 @@
 // shaping lives in `writers.ts`. Keep it dependency-light: only `node:fs/promises`.
 
 import { type FileHandle, open } from "node:fs/promises";
+import type { FileSystemPort } from "../runtime.ts";
 
 /**
  * A JSON-serializable event object. Any non-null object is accepted — the writer only requires
@@ -35,9 +36,17 @@ export class JsonlWriter {
   /** Serializes opens + appends so lines never interleave and the open never races. */
   private tail: Promise<void> = Promise.resolve();
   private closed = false;
+  /**
+   * Optional injected {@link FileSystemPort}. When supplied, appends go through
+   * `fs.appendTextFile` instead of a real Node `FileHandle` — no `node:fs` fd is opened, which is
+   * what lets this writer run outside Node (e.g. Cloudflare Workers). Undefined preserves the
+   * original FileHandle-based behavior exactly.
+   */
+  private readonly fs: FileSystemPort | undefined;
 
-  constructor(path: string) {
+  constructor(path: string, fs?: FileSystemPort) {
     this.path = path;
+    this.fs = fs;
   }
 
   /** Open the append fd if not already open. Called under the serialized `tail`. */
@@ -73,6 +82,10 @@ export class JsonlWriter {
     }
 
     const next = this.tail.then(async () => {
+      if (this.fs) {
+        await this.fs.appendTextFile(this.path, line);
+        return;
+      }
       const handle = await this.ensureOpen();
       await handle.write(line);
     });

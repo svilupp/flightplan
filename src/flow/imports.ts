@@ -20,6 +20,7 @@
 // Canonical reference: PLAN.md §5 (Phase 1, "import resolution"), PLAN_v002 §3.
 
 import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
+import type { FileSystemPort } from "../runtime.ts";
 import { type LoadedFlow, loadFlowFile } from "./load.ts";
 import { resolveInputs } from "./template.ts";
 import type { FlowFile } from "./types.ts";
@@ -137,9 +138,10 @@ export function resolveModulePath(modulePath: string, importerPath: string): str
  */
 export async function resolveImports(
   root: LoadedFlow,
-  opts?: { env?: Record<string, string | undefined> },
+  opts?: { env?: Record<string, string | undefined>; fs?: FileSystemPort },
 ): Promise<ImportGraph> {
   const env = opts?.env ?? process.env;
+  const fs = opts?.fs;
   const nodes = new Map<string, ImportNode>();
   const order: string[] = [];
 
@@ -169,7 +171,7 @@ export async function resolveImports(
       children.push(childPath);
       let childLoaded: LoadedFlow;
       try {
-        childLoaded = await loadFlowFile(childPath);
+        childLoaded = fs ? await loadFlowFile(childPath, fs) : await loadFlowFile(childPath);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         throw new ImportResolutionError(

@@ -22,6 +22,7 @@
 // [run] limits block, [config], imports, and setup/teardown hooks are ignored when embedded
 // (a child's hooks/budgets apply only when it is run standalone).
 
+import type { FileSystemPort } from "../runtime.ts";
 import {
   ImportCycleError,
   type ImportGraph,
@@ -29,7 +30,7 @@ import {
   resolveImports,
   resolveModulePath,
 } from "./imports.ts";
-import { type LoadedFlow, loadFlowFile } from "./load.ts";
+import { type LoadedFlow, loadFlowFile, parseFlowFile } from "./load.ts";
 import { applyInputsTemplatingDeep, resolveInputs } from "./template.ts";
 import type { RunStep, Step } from "./types.ts";
 
@@ -51,6 +52,8 @@ export { ImportCycleError, isRunFlowPath };
 export interface FlattenOptions {
   /** Environment for `with` / input templating; defaults to `process.env`. */
   env?: Record<string, string | undefined>;
+  /** Injectable filesystem for loading imported/run-referenced modules. Defaults to Node's. */
+  fs?: FileSystemPort;
 }
 
 /**
@@ -108,7 +111,7 @@ function namespaceStep(callSiteId: string, step: Step): Step {
 export async function flattenRunSteps(loaded: LoadedFlow, opts?: FlattenOptions): Promise<Step[]> {
   const env = opts?.env ?? process.env;
   // Combined import + run DAG: loads every referenced module and throws on a cycle (v002-6).
-  const graph = await resolveImports(loaded, { env });
+  const graph = await resolveImports(loaded, { env, ...(opts?.fs ? { fs: opts.fs } : {}) });
   const rootInputs = graph.nodes.get(loaded.path)?.inputs ?? {};
   return flattenFile(loaded, rootInputs, graph, env, /* preTemplateInputs */ false);
 }
@@ -117,12 +120,22 @@ export async function flattenRunSteps(loaded: LoadedFlow, opts?: FlattenOptions)
  * Load a flow file and flatten its `run` steps — what the runner executes against. The
  * returned LoadedFlow keeps the original source text/hash (locks key by content) with
  * `flow.steps` replaced by the fully flattened list.
+ *
+ * When `opts.flowSource` is supplied, the ROOT flow is parsed from this in-memory text
+ * instead of being read from disk (`path` is still used as the nominal path for imports/locks/
+ * relative resolution); imported/run-referenced modules still load through `opts.fs` (or the
+ * real filesystem when omitted).
  */
 export async function loadFlowFileFlattened(
   path: string,
-  opts?: FlattenOptions,
+  opts?: FlattenOptions & { flowSource?: string },
 ): Promise<LoadedFlow> {
-  const loaded = await loadFlowFile(path);
+  const loaded =
+    opts?.flowSource !== undefined
+      ? parseFlowFile(opts.flowSource, path)
+      : opts?.fs
+        ? await loadFlowFile(path, opts.fs)
+        : await loadFlowFile(path);
   const steps = await flattenRunSteps(loaded, opts);
   return { ...loaded, flow: { ...loaded.flow, steps } };
 }

@@ -22,6 +22,7 @@
 import type { Step } from "../flow/index.ts";
 import { describeTarget } from "../flow/normalize-target.ts";
 import type { LockHook, StepExecution } from "../ladder/index.ts";
+import { type FileSystemPort, nodeFileSystem } from "../runtime.ts";
 import type { Strategy } from "../types.ts";
 import {
   type ComposedEntry,
@@ -88,6 +89,8 @@ export interface OpenLockSessionOptions {
   hookOptions?: CreateLockHookOptions;
   /** Where to report a malformed-lock warning (defaults to `console.error`). */
   onWarn?: (message: string) => void;
+  /** Injectable filesystem for lock reads/writes. Defaults to the real Node filesystem. */
+  fs?: FileSystemPort;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +134,7 @@ export class LockSession {
   private readonly inferStrategy: (selector: string) => Strategy | null;
   private readonly now: (() => number) | undefined;
   private readonly redactNote: ((note: string) => string) | undefined;
+  private readonly fs: FileSystemPort;
 
   constructor(
     root: TrackedLock,
@@ -141,12 +145,14 @@ export class LockSession {
       now?: () => number;
       redactNote?: (note: string) => string;
       hookOptions?: CreateLockHookOptions;
+      fs?: FileSystemPort;
     },
   ) {
     this.mode = options.mode;
     this.inferStrategy = options.inferStrategy;
     this.now = options.now;
     this.redactNote = options.redactNote;
+    this.fs = options.fs ?? nodeFileSystem;
     this.rootSource = root.lock.source;
 
     this.bySource.set(root.lock.source, root);
@@ -229,7 +235,7 @@ export class LockSession {
     const written: string[] = [];
     for (const tracked of this.bySource.values()) {
       if (!tracked.dirty) continue;
-      await writeLockFile(tracked.path, tracked.lock);
+      await writeLockFile(tracked.path, tracked.lock, this.fs);
       tracked.dirty = false;
       written.push(tracked.path);
     }
@@ -281,6 +287,7 @@ function upsertTarget(lock: LockFile, target: LockTarget): void {
  */
 export async function openLockSession(options: OpenLockSessionOptions): Promise<LockSession> {
   const onWarn = options.onWarn ?? ((m: string) => console.error(m));
+  const fs = options.fs ?? nodeFileSystem;
 
   const rootLock = await loadLockSafe(
     options.lockPath,
@@ -292,6 +299,7 @@ export async function openLockSession(options: OpenLockSessionOptions): Promise<
     options.mode,
     onWarn,
     options.now,
+    fs,
   );
   const root: TrackedLock = {
     path: options.lockPath,
@@ -307,6 +315,7 @@ export async function openLockSession(options: OpenLockSessionOptions): Promise<
       options.mode,
       onWarn,
       options.now,
+      fs,
     );
     imported.push({
       tracked: { path: imp.lockPath, lock: lock.lock, dirty: lock.dirty },
@@ -320,6 +329,7 @@ export async function openLockSession(options: OpenLockSessionOptions): Promise<
     ...(options.now ? { now: options.now } : {}),
     ...(options.redactNote ? { redactNote: options.redactNote } : {}),
     ...(options.hookOptions ? { hookOptions: options.hookOptions } : {}),
+    fs,
   });
 }
 
@@ -336,9 +346,10 @@ async function loadLockSafe(
   mode: LockWriteMode,
   onWarn: (message: string) => void,
   now?: () => number,
+  fs: FileSystemPort = nodeFileSystem,
 ): Promise<{ lock: LockFile; dirty: boolean }> {
   try {
-    const lock = await loadLockFile(path, fresh, now ?? Date.now);
+    const lock = await loadLockFile(path, fresh, now ?? Date.now, fs);
     if (lock.source_hash === fresh.source_hash) return { lock, dirty: false };
     const message =
       `stale lock source_hash for ${path}: expected ${fresh.source_hash || "<missing>"}, ` +
