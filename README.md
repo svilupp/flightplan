@@ -111,14 +111,22 @@ Node-flavored default:
 - **`@svilupp/flightplan/adapters/memory`** — an in-memory `FileSystemPort` for tests.
 
 ```ts
-import { runFlow, memoryFileSystem, MockDriver } from "@svilupp/flightplan/worker";
+import { runFlow, memoryFileSystem, MockDriver, resolveConfigWithDefaults } from "@svilupp/flightplan/worker";
 
 const result = await runFlow({
   flowPath: "/virtual/flow.toml",
-  flowSource: "version = 1\nkind = \"flow\"\nid = \"demo\"\n...",
+  flowSource: `version = 1
+kind = "flow"
+id = "demo"
+description = "Worker smoke test"
+[[steps]]
+id = "open"
+do = "goto"
+url = "https://example.com/"
+`,
   fs: memoryFileSystem(),
   env: {},
-  config: { run: {}, connect: { mode: "attach" } } as never,
+  config: resolveConfigWithDefaults([{}]),
   driverFactory: () => new MockDriver(),
 });
 console.log(result.summary.verdict);
@@ -154,11 +162,59 @@ Pass cancellation as `context.signal` and a run deadline as `ports.timeoutMs`. F
 130 for cancellation and 124 for a deadline; the surrounding shell may translate these codes.
 `explain`, `report`, `sweep`, and `migrate-effects` require the native CLI.
 
+### Cloudflare Workers with just-bash
+
+Use `/worker` for direct execution or `/shell` to expose a shell command. The runnable
+[Worker example](examples/cloudflare-worker/worker.ts) registers `flightplan` with
+`just-bash/browser` and adapts its VFS to `FileSystemPort`. The adapter belongs to the host.
+
+From a new Worker project, copy `worker.ts` and
+[`wrangler.toml`](examples/cloudflare-worker/wrangler.toml) from that example, then run:
+
+```sh
+npm install @svilupp/flightplan@^0.2.0 just-bash
+npm install -D wrangler
+npx wrangler dev
+```
+
+In another terminal:
+
+```sh
+curl http://localhost:8787
+```
+
+The example handler uses a fresh shell and filesystem per request:
+
+```ts
+const bash = createShell(() => new MockDriver(), request.signal);
+const result = await bash.exec(
+  "flightplan lint demo.toml --json > lint.json && " +
+  "flightplan run demo.toml --json --frozen --no-lock-write -o /runs",
+);
+return Response.json({ mode: "mock", ...result });
+```
+
+`createShell` is defined in the example. The default uses `MockDriver` for an offline smoke
+test; it does not open a browser. For live automation, supply your host's `DriverFactory`
+instead. It must return a fresh, unconnected `Driver`; Flightplan then calls `connect()` and
+`teardown()`. Keep browser credentials and session allocation in that factory or driver.
+Workers need a remote browser connection or driver bridge; local Chrome launch is unavailable.
+
+The flow, `lint.json`, and `/runs` artifacts share the shell VFS. That VFS lasts for one request;
+copy artifacts to R2 or another durable store before returning if you need them later.
+`request.signal` reaches the command, and `timeoutMs: 30_000` bounds each Flightplan run.
+Provider credentials are not taken from the shell environment; inject `aiRuntimeFactory` for
+host-managed AI.
+
+The sample pins `compatibility_date = "2026-06-01"` with `nodejs_compat`. Cloudflare enables
+Node compatibility by default for dates from `2026-08-04`; see its
+[Node.js compatibility guide](https://developers.cloudflare.com/workers/runtime-apis/nodejs/).
+
 ## Embed a workflow
 
 `runFlow` accepts host filesystem and driver implementations. The ordinary Node/Bun defaults
-remain available. A Workers host needs `nodejs_compat`; the root package still includes provider
-SDKs and native config/lint loaders.
+remain available. Workers should use the `/worker` or `/shell` entry above and supply their
+filesystem and driver. The root entry also exports Node adapters and provider SDK helpers.
 
 ```ts
 import {
@@ -598,7 +654,7 @@ parsed but un-applied (the driver feature-detects the capability).
 Run `bun run test:package` before release to build and test the npm tarball's public types,
 CLI, VFS artifacts, and cancellation. To check an unpublished browser-pilot candidate without
 installing it into this checkout, run `bun run test:package /absolute/path/browser-pilot.tgz`.
-Both browser-pilot 0.4.x (from 0.4.1) and 0.5.x are supported.
+Only browser-pilot ^0.5.0 is supported.
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.

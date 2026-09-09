@@ -21,7 +21,7 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 ### Fixed
 
 - Normalize hook paths for virtual filesystems, keep recording artifacts in injected storage, and stop AI fallbacks after cancellation.
-- Accept browser-pilot 0.5.x alongside 0.4.x, with a packed-package compatibility check for release candidates.
+- Depend on browser-pilot ^0.5.0 only (dropped 0.4.x support); the real driver now sources `Page`/`TargetNotFoundError`/`Browser` from the portable `browser-pilot/core` entry and everything else from the root entry, with a packed-package compatibility check for release candidates.
 
 ### Changed
 

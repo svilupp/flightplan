@@ -41,10 +41,6 @@ const EXPECTED_OFFENDERS: ReadonlyArray<{ line: string; note: string }> = [
     note: "the guard check itself — references the identifier `getBuiltinModule`, not a call; part of the same guarded nodeFileSize() helper.",
   },
   {
-    line: 'const fs2 = getBuiltinModule("node:fs");',
-    note: "only reachable when the guarded getBuiltinModule() above returned a function (i.e. real Node) — the node:fs specifier is a runtime string, never a static import.",
-  },
-  {
     line: "return process.env;",
     note: 'local-discovery\'s getRuntimeEnv() — guarded by a preceding `typeof process === "undefined"` early-return two lines up (not adjacent-token-guarded, so the naive scan still lists it; safe by control flow).',
   },
@@ -53,9 +49,16 @@ const EXPECTED_OFFENDERS: ReadonlyArray<{ line: string; note: string }> = [
     note: 'local-discovery\'s getRuntimePlatform() — same `typeof process === "undefined"` early-return guard as process.env above.',
   },
   {
-    line: 'const baseDir = record.outputDir ?? join(process.cwd(), ".browser-pilot");',
-    note: "UNGUARDED — recording.createRecordingContext(), only reached on the video-recording code path (lazy, non-attach). Documented risk in §4: workers hosts must avoid `[browser] record` without `nodejs_compat`. Filed upstream against browser-pilot 0.4.x; fixed by the /core split in 0.5.0.",
+    line: 'const fs = getBuiltinModule("node:fs");',
+    note: "0.5.0 rename of the same guarded nodeFileSize() helper's local (was `fs2` on 0.4.1) — only reachable when the guarded getBuiltinModule() above returned a function (i.e. real Node); the node:fs specifier is a runtime string, never a static import.",
   },
+  // NOTE: the 0.4.1 UNGUARDED `record.outputDir ?? join(process.cwd(), ".browser-pilot")` offender
+  // (recording.createRecordingContext(), reachable via `BatchOptions.record` in the video-recording
+  // path) is CONFIRMED FIXED in 0.5.0: the compiled dist now reads `record.outputDir ?? io.join(io.cwd(), ".browser-pilot")`
+  // through an abstracted io port, so the bare `process.cwd()` token no longer appears anywhere in
+  // the reached graph (root OR `/core`) — verified via `grep -rn "process.cwd()" node_modules/browser-pilot/dist/*.mjs`
+  // returning no hits. Left out of this list on purpose; the stale-entry console.warn below is the
+  // signal that would fire if it reappeared, not a second `EXPECTED_OFFENDERS` slot for an absent line.
 ];
 
 const STATIC_NODE_IMPORT_RE = /^\s*import\s[^;\n]*from\s+["']node:[^"']+["']/;
@@ -103,6 +106,18 @@ function walkChunks(entry: string): string[] {
   return [...visited];
 }
 
+// The driver (`src/driver/browser-pilot-driver.ts`) now imports from BOTH the root `.` entry
+// (connect/webmcp*/capture*Signature/getBuildProvenance/mintCfAccessJwt/Dialog/
+// ExpectNewPageOptions/PageSnapshot/Step — none of these are exported by `/core`) and the
+// portable `/core` entry (`Page`/`TargetNotFoundError`/`Browser`, which `/core` DOES export).
+// This gate still walks only the root `.` entry: a direct chunk-graph comparison (root vs
+// `./core`, both resolved via their own `package.json` `exports` map) measured the root graph
+// as a SUPERSET of the `/core` graph on this 0.5.0 build (16 files reached from root vs 9 from
+// `/core`; every `/core`-reached file — including the one file carrying the guarded
+// `getBuiltinModule("node:fs")` offender below — is also reached from root). Walking root alone
+// therefore already covers everything `/core` would additionally surface; a future bp release
+// where `/core` reaches a chunk root does NOT (e.g. a `/core`-only offender) would invalidate
+// this assumption and must be caught by re-running that comparison, not silently trusted.
 describe("browser-pilot dist chunk gate", () => {
   const entry = resolveEntryPoint();
   const chunks = walkChunks(entry);
@@ -110,7 +125,8 @@ describe("browser-pilot dist chunk gate", () => {
   test("resolves a non-trivial chunk graph from the package's own exports map", () => {
     // Sanity bound so a future bp release that collapses to a single monolithic file (or one
     // that suddenly explodes to hundreds of chunks) is visible as a deliberate change, not
-    // silently accepted. workers-slice-2 §4 measured 8 (index.mjs + 7 relative chunks) on 0.4.1.
+    // silently accepted. workers-slice-2 §4 measured 8 (index.mjs + 7 relative chunks) on 0.4.1;
+    // 0.5.0 measures 16 (index.mjs + 15 relative chunks, incl. the new `/core` split).
     expect(chunks.length).toBeGreaterThan(0);
     expect(chunks.length).toBeLessThan(50);
   });

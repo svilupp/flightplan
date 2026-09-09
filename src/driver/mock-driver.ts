@@ -51,7 +51,7 @@
 //   d.enqueueEmitError(err)          // next emitCommand() call rejects once (FIFO)
 //   d.onEmit((opts, callIndex) => EmitCommandResult)   // full dynamic control
 //
-// OPT-IN webmcpCall (installed lazily; mirrors browser-pilot 0.4.1):
+// OPT-IN webmcpCall (installed lazily; mirrors browser-pilot 0.5.0):
 //   d.setWebmcpResult(result) / d.enqueueWebmcpResult(result)
 //   d.enqueueWebmcpError(err) / d.onWebmcp((opts, callIndex) => result)
 //
@@ -266,7 +266,7 @@ export class MockDriver implements Driver {
     candidates: [],
   };
 
-  // --- webmcpCall (opt-in; mirrors browser-pilot >=0.4.1) ---
+  // --- webmcpCall (opt-in; mirrors browser-pilot >=0.5.0) ---
   private webmcpInstalled = false;
   private webmcpResultQueue: WebMcpCallResult[] = [];
   private webmcpErrorQueue: Error[] = [];
