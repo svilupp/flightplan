@@ -52,10 +52,19 @@ export function timeoutMsByRoleFromConfig(
 export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
   const generate: AiRuntimeDeps["generate"] = async (request) => {
     deps.signal?.throwIfAborted();
+    // Combine rather than clobber: a caller-supplied `request.signal` must still be honored
+    // alongside the runtime's own `deps.signal` — neither should silently override the other.
+    const combinedSignal =
+      request.signal && deps.signal
+        ? AbortSignal.any([request.signal, deps.signal])
+        : (request.signal ?? deps.signal);
     const result = await deps.generate({
       ...request,
-      ...(deps.signal ? { signal: deps.signal } : {}),
+      ...(combinedSignal ? { signal: combinedSignal } : {}),
     });
+    // A generation that completed successfully but whose signal fired during the race above is
+    // intentionally discarded here: `throwIfAborted` below still throws, and the (unused) result
+    // — along with any usage it carried — is never recorded.
     deps.signal?.throwIfAborted();
     return result;
   };

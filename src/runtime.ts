@@ -31,7 +31,11 @@ export interface FileSystemPort {
   writeBinaryFile?(path: string, bytes: Uint8Array): Promise<void>;
   /** True iff a file/dir exists at `path`. */
   fileExists(path: string): Promise<boolean>;
-  /** Create a directory. `recursive` mirrors `fs.mkdir`'s option (no-op if it already exists). */
+  /**
+   * Create a directory, always recursive/idempotent: creates missing parents and is a no-op
+   * if the directory already exists. The `recursive` option is accepted for API compatibility
+   * with `fs.mkdir` but every adapter must behave as if it were always `true`.
+   */
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   /**
    * List a directory's immediate entries. Directory listing for lint path expansion and glob

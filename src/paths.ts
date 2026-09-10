@@ -75,3 +75,31 @@ export function resolve(base: string, ...parts: string[]): string {
   const normalized = normalizeSlashes(result);
   return normalized === "" ? "." : normalized;
 }
+
+/**
+ * The relative path from `from` to `to` (mirrors `node:path.posix.relative` for the absolute-
+ * path shapes flightplan uses, e.g. relativizing an absolutized flow path against a run cwd for
+ * a lock header's `source`). Both inputs are treated as already-normalized segment paths (no
+ * `.`/`..` resolution is performed here — callers pass `resolve()`d paths); a bare segment-by-
+ * segment common-prefix diff, so mixed absolute/relative inputs still produce a sane result.
+ */
+export function relative(from: string, to: string): string {
+  const fromParts = normalize(from)
+    .split("/")
+    .filter((part) => part.length > 0 && part !== ".");
+  const toParts = normalize(to)
+    .split("/")
+    .filter((part) => part.length > 0 && part !== ".");
+  let common = 0;
+  while (
+    common < fromParts.length &&
+    common < toParts.length &&
+    fromParts[common] === toParts[common]
+  ) {
+    common++;
+  }
+  const ups = fromParts.length - common;
+  const downs = toParts.slice(common);
+  const result = [...Array(ups).fill(".."), ...downs].join("/");
+  return result === "" ? "." : result;
+}

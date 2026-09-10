@@ -317,6 +317,9 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
               abortSignal,
             );
           }
+          // A generation that completed here but whose signal fired during the race is
+          // intentionally discarded: `throwIfAborted` below still throws, so `result` (and its
+          // usage) is never returned or recorded.
           abortSignal.throwIfAborted();
           return { output: result.output, model: rawModelId, usage: extractRawUsage(result) };
         } catch (err) {

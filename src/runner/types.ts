@@ -61,6 +61,15 @@ export interface RunOptions {
   /** Absolute or cwd-relative path to the flow .toml to run. */
   flowPath: string;
   /**
+   * The run's cwd (e.g. the CLI host's `io.cwd`), used ONLY to relativize `flowPath` (and every
+   * imported module's path) for the `source` recorded in a freshly created/reset lock header
+   * (`lock/parse.ts` `emptyLock`), so a committed lock stays portable even when the CALLER
+   * absolutizes `flowPath` first (adapter-cwd independence). Omit when `flowPath` is already the
+   * value you want recorded verbatim (e.g. most unit tests passing a bare relative path) —
+   * behavior is then unchanged (no relativization is attempted).
+   */
+  cwd?: string;
+  /**
    * When supplied, the ROOT flow is parsed from this in-memory TOML text instead of being read
    * from disk — `flowPath` is still used as the nominal path for imports/locks/relative resolution
    * and the run directory/lock naming. Lets `runFlow` execute a flow with no filesystem access to

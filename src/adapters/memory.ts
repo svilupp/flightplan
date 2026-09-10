@@ -56,7 +56,12 @@ export function memoryFileSystem(): FileSystemPort {
       const key = normalize(path);
       ensureDir(dirnameOf(key));
       const existing = files.get(key);
-      const prefix = existing === undefined ? "" : typeof existing === "string" ? existing : "";
+      const prefix =
+        existing === undefined
+          ? ""
+          : typeof existing === "string"
+            ? existing
+            : new TextDecoder().decode(existing);
       files.set(key, prefix + text);
     },
     async writeBinaryFile(path: string, bytes: Uint8Array): Promise<void> {

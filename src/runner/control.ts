@@ -167,8 +167,13 @@ export class RunControl {
     return this.cleanupPromise;
   }
 
-  async interrupted(): Promise<never> {
+  async interrupted(maskedError?: unknown): Promise<never> {
     const error = this.error!;
+    // A genuine harness error can race the interrupt signal/deadline and be discarded when the
+    // caller falls back to this cancellation path. Preserve it as `cause` so it is not lost.
+    if (maskedError !== undefined && maskedError !== error && error.cause === undefined) {
+      error.cause = maskedError;
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       error.cleanup = await Promise.race([

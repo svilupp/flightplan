@@ -104,7 +104,7 @@ import {
   resolveLockWriteMode,
   type SessionImport,
 } from "../lock/index.ts";
-import { resolve as resolvePath } from "../paths.ts";
+import { isAbsolute, relative as relativePath, resolve as resolvePath } from "../paths.ts";
 import { createRedactor, gatherSecretValues, REDACTED, type Redactor } from "../redaction/index.ts";
 import { ambientEnv, type FileSystemPort } from "../runtime.ts";
 import {
@@ -129,7 +129,7 @@ import type {
   AdvisoryVerdictKind,
   RunVerdict,
 } from "../types.ts";
-import { RunControl } from "./control.ts";
+import { RunControl, RunInterruptedError } from "./control.ts";
 import {
   type Divergence,
   detectDivergence,
@@ -974,6 +974,7 @@ async function performStepAction(
       try {
         result = await driver.emitCommand(emitOpts);
       } catch (err) {
+        if (err instanceof RunInterruptedError) throw err;
         await emitBa(false);
         const detail = err instanceof Error ? err.message : String(err);
         return {
@@ -1074,6 +1075,7 @@ async function performStepAction(
       try {
         result = await driver.webmcpCall(opts);
       } catch (err) {
+        if (err instanceof RunInterruptedError) throw err;
         await emitTrace(false, undefined);
         return {
           ok: false,
@@ -1142,6 +1144,7 @@ async function performStepAction(
       try {
         result = await driver.evalInFrame(evalOpts);
       } catch (err) {
+        if (err instanceof RunInterruptedError) throw err;
         await evalBa(false);
         const detail = err instanceof Error ? err.message : String(err);
         return {
@@ -1211,6 +1214,7 @@ async function performStepAction(
       try {
         await driver.evaluateExpression(step.expression);
       } catch (err) {
+        if (err instanceof RunInterruptedError) throw err;
         await evaluateBa(false);
         const detail = err instanceof Error ? err.message : String(err);
         return {
@@ -1749,6 +1753,9 @@ async function executeSteps(
         // A budget overflow propagates from the AI tiers — re-throw so the per-step budget handler
         // (below) maps it to `inconclusive`, NOT to a `runError`/`error`.
         if (isBudgetExceeded(err)) throw err;
+        // A cancellation/deadline is an embedding error, not a step or harness failure — propagate
+        // immediately rather than folding it into `state.runError`.
+        if (err instanceof RunInterruptedError) throw err;
         // Any other driver/ladder throw is an INFRA error → abort the run with verdict `error`.
         const detail = err instanceof Error ? err.message : String(err);
         action = { ok: false, error: detail };
@@ -2145,6 +2152,9 @@ async function runRepairAndSplice(
   } catch (err) {
     // A budget ceiling (`max_model_calls` / `max_cost_usd`) MUST propagate → `inconclusive`.
     if (isBudgetExceeded(err)) throw err;
+    // A cancellation/deadline is an embedding error, not a best-effort planner failure — propagate
+    // immediately rather than degrading to "no repair".
+    if (err instanceof RunInterruptedError) throw err;
     // ANY OTHER planner failure (a malformed model response, a driver hiccup while gathering the
     // page) is BEST-EFFORT recovery — it must NEVER turn a failed/passed run into an `error`. Degrade
     // to "no repair": the diverged/failed step stays as it was.
@@ -2294,6 +2304,7 @@ async function runHookFlow(
   lockMode: LockWriteMode,
   services: RunServices,
   fs: FileSystemPort,
+  cwd: string | undefined,
 ): Promise<void> {
   const resolvedPath = resolvePath(baseDir, hookPath);
   // Hooks flatten their own `run` steps too (a setup/teardown module may compose flows).
@@ -2304,7 +2315,7 @@ async function runHookFlow(
   // L0-hit + heal against THIS lock; a missing/malformed lock loads fresh (auto-heal default).
   const hookSession = await openLockSession({
     lockPath: defaultLockPath(resolvedPath),
-    source: loaded.path,
+    source: lockSourceOf(loaded.path, cwd),
     sourceHash: loaded.sourceHash,
     ...(loaded.flow.description ? { description: loaded.flow.description } : {}),
     mode: lockMode,
@@ -2389,7 +2400,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
       ),
     );
   } catch (error) {
-    if (control.interruptedError) return await control.interrupted();
+    if (control.interruptedError) return await control.interrupted(error);
     throw error;
   } finally {
     control.dispose();
@@ -2558,7 +2569,7 @@ async function runFlowImpl(
   // matches an imported module's step onto that module's namespace so a root reference can L0-hit a
   // composed import recipe (`<namespace>:<step>`). Empty when there are no imports → behavior is
   // identical to before (the namespaceFor lookup only fires after a bare-key miss).
-  const imported = buildSessionImports(graph);
+  const imported = buildSessionImports(graph, opts.cwd);
   const stepNamespaces = buildStepNamespaceMap(graph);
   // Under `--frozen` the committed lock is authoritative: a malformed `*.lock.toml` is a hard
   // failure (a `LockParseError`) — we must NOT silently re-resolve fresh (which would mask a garbage
@@ -2568,7 +2579,7 @@ async function runFlowImpl(
   try {
     session = await openLockSession({
       lockPath,
-      source: loaded.path,
+      source: lockSourceOf(loaded.path, opts.cwd),
       sourceHash: loaded.sourceHash,
       description: loaded.flow.description,
       mode: lockMode,
@@ -2676,6 +2687,7 @@ async function runFlowImpl(
         lockMode,
         services,
         fs,
+        opts.cwd,
       );
     }
 
@@ -2735,12 +2747,17 @@ async function runFlowImpl(
           lockMode,
           services,
           fs,
+          opts.cwd,
         );
       } catch {
         // teardown is best-effort — never let it turn a good run into an error.
       }
     }
   } catch (err) {
+    // A cancellation/deadline is an embedding error, not a harness failure — propagate it so the
+    // `runFlow` wrapper's `control.interruptedError` check maps it to a `RunInterruptedError`,
+    // never a `runError`/`error` verdict.
+    if (err instanceof RunInterruptedError) throw err;
     // connect() or a fatal harness error → verdict `error` (not a flow `failed`).
     const detail = err instanceof Error ? err.message : String(err);
     state.runError = state.runError ?? `connect/harness error: ${detail}`;
@@ -2915,13 +2932,13 @@ async function buildAiRuntime(
  * import's recipe is namespaced by its flow id (`<flow.id>:<step>`) and its heals route back to the
  * module's own sidecar `<module>.lock.toml` via provenance.
  */
-function buildSessionImports(graph: ImportGraph): SessionImport[] {
+function buildSessionImports(graph: ImportGraph, cwd: string | undefined): SessionImport[] {
   const out: SessionImport[] = [];
   for (const node of graph.nodes.values()) {
     if (node.path === graph.rootPath || node.relation !== "import") continue;
     out.push({
       lockPath: defaultLockPath(node.path),
-      source: node.loaded.path,
+      source: lockSourceOf(node.loaded.path, cwd),
       sourceHash: node.loaded.sourceHash,
       namespace: node.loaded.flow.id,
       ...(node.loaded.flow.description ? { description: node.loaded.flow.description } : {}),
@@ -3161,6 +3178,20 @@ export function resolveFlowGoal(flow: FlowFile): string {
 function dirOf(path: string): string {
   const i = path.lastIndexOf("/");
   return i >= 0 ? path.slice(0, i) : ".";
+}
+
+/**
+ * The `source` recorded in a freshly created/reset lock header (`emptyLock`, via
+ * `openLockSession`) for a loaded flow's path. The CLI absolutizes the operand it passes as
+ * `opts.flowPath` (adapter-cwd independence), which would otherwise bake a machine-absolute path
+ * into a committed lock (every example lock records a repo-relative `source`, e.g.
+ * `examples/flows/vision.toml`). When `cwd` is given and `path` is absolute under it, relativize;
+ * otherwise pass the path through unchanged (matches prior behavior for callers/tests that pass
+ * an already-relative `flowPath` with no `cwd`).
+ */
+function lockSourceOf(path: string, cwd: string | undefined): string {
+  if (cwd === undefined || !isAbsolute(path)) return path;
+  return relativePath(cwd, path);
 }
 
 /**

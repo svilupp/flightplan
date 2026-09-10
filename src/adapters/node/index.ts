@@ -61,8 +61,10 @@ export const nodeFileSystem: FileSystemPort = {
       throw error;
     }
   },
-  async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
-    await mkdir(path, options);
+  async mkdir(path: string): Promise<void> {
+    // Always recursive/idempotent per the `FileSystemPort` contract (`runtime.ts`), regardless
+    // of any caller-supplied `options.recursive` — matches the in-memory adapter's semantics.
+    await mkdir(path, { recursive: true });
   },
   async readDir(
     path: string,

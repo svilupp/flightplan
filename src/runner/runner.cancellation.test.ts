@@ -3,7 +3,7 @@ import { FakeClock } from "../assert/clock.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
 import { MockDriver } from "../driver/index.ts";
 import type { FileSystemPort } from "../runtime.ts";
-import { RunInterruptedError } from "./control.ts";
+import { RunControl, RunInterruptedError } from "./control.ts";
 import { runFlow } from "./runner.ts";
 import type { RunOptions } from "./types.ts";
 
@@ -276,6 +276,69 @@ describe("run cancellation and deadlines", () => {
     controller.abort();
     expect((await done).cleanup).toBe("pending");
     gate.resolve();
+  });
+
+  test("cancellation during a guarded emit call propagates instead of folding into a step failure", async () => {
+    // Regression: a RunInterruptedError thrown mid-`emitCommand` used to be caught by the emit
+    // step's own try/catch (a normal step-failure path) and surface as `{ok:false}`, which the
+    // run loop then folded into a `connect/harness error` verdict instead of a real cancellation.
+    const { driver, options } = fixture();
+    const gate = deferred(),
+      entered = deferred();
+    (driver as unknown as { emitCommand: () => Promise<{ delivered: boolean }> }).emitCommand =
+      async () => {
+        entered.resolve();
+        await gate.promise;
+        return { delivered: true };
+      };
+    const controller = new AbortController();
+    const done = interruption(
+      runFlow({
+        ...options,
+        signal: controller.signal,
+        flowSource: `${options.flowSource}\n[[steps]]\nid="send"\ndo="emit"\nchannel="ws"\npayload={type="x"}`,
+      }),
+    );
+    await entered.promise;
+    controller.abort();
+    const error = await done;
+    expect(error.code).toBe("RUN_CANCELLED");
+    gate.resolve();
+  });
+
+  test("a genuine harness error masked by a race with interruption is preserved as `cause`", async () => {
+    // If `runFlowImpl` rejects with a real error just as the signal/deadline fires, the wrapper's
+    // `control.interruptedError` check discards that raw rejection in favor of the interruption —
+    // but the real error must not vanish silently; `RunControl.interrupted()` attaches it as `cause`.
+    const controller = new AbortController();
+    const control = new RunControl({ signal: controller.signal });
+    controller.abort();
+    const maskedError = new Error("disk exploded");
+    let caught: unknown;
+    try {
+      await control.interrupted(maskedError);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(RunInterruptedError);
+    expect((caught as RunInterruptedError).cause).toBe(maskedError);
+    control.dispose();
+  });
+
+  test("`interrupted()` never overwrites an already-set cause and ignores its own error as a mask", async () => {
+    const controller = new AbortController();
+    const control = new RunControl({ signal: controller.signal });
+    controller.abort();
+    // Passing the RunInterruptedError itself back in (e.g. a caller re-checking) must not self-cause.
+    const selfError = control.interruptedError!;
+    let caught: unknown;
+    try {
+      await control.interrupted(selfError);
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as RunInterruptedError).cause).toBeUndefined();
+    control.dispose();
   });
 
   test("completed runs detach cancellation and preserve a successful result", async () => {

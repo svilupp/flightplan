@@ -93,7 +93,7 @@ async function dispatch(
   const { exitCode } = await (command === "lint" ? executeLint(args, io) : executeRun(args, io));
   return {
     stdout: stdout.join("\n") + (stdout.length ? "\n" : ""),
-    stderr: stderr.join("\n"),
+    stderr: stderr.join("\n") + (stderr.length ? "\n" : ""),
     exitCode,
   };
 }

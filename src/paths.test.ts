@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import nodePath from "node:path";
 
-import { dirname, isAbsolute, join, normalize, resolve } from "./paths.ts";
+import { dirname, isAbsolute, join, normalize, relative, resolve } from "./paths.ts";
 
 describe("paths (parity with node:path posix)", () => {
   test("dirname matches node:path.posix.dirname", () => {
@@ -54,5 +54,25 @@ describe("paths (parity with node:path posix)", () => {
     expect(resolve("flows", "/shared/child.toml")).toBe("/shared/child.toml");
     expect(resolve("", "child.toml")).toBe("child.toml");
     expect(resolve("flows", "..")).toBe(".");
+  });
+
+  test("relative matches node:path.posix.relative for absolute-path shapes", () => {
+    const cases: Array<[string, string]> = [
+      ["/a/b", "/a/b/c"],
+      ["/a/b/c", "/a/d"],
+      ["/a", "/a/b/c"],
+      ["/a/b/c", "/a"],
+    ];
+    for (const [from, to] of cases) {
+      expect(relative(from, to)).toBe(nodePath.posix.relative(from, to));
+    }
+  });
+
+  test("relative returns '.' (not '') for identical paths, unlike node:path", () => {
+    expect(relative("/a/b", "/a/b")).toBe(".");
+  });
+
+  test("relative leaves an already-relative `to` under `from`'s cwd as-is", () => {
+    expect(relative("/repo", "/repo/examples/flow.toml")).toBe("examples/flow.toml");
   });
 });

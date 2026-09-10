@@ -55,6 +55,25 @@ describe.each([
     expect(await fs.readTextFile(path)).toBe("ab");
   });
 
+  test("appendTextFile after a binary write decodes the existing bytes as the prefix", async () => {
+    const path = `${root}/binary-then-append.txt`;
+    await fs.writeBinaryFile?.(path, new TextEncoder().encode("BYTES"));
+    await fs.appendTextFile(path, "tail");
+    expect(await fs.readTextFile(path)).toBe("BYTEStail");
+  });
+
+  test("mkdir on an already-existing directory (and nested parent) is a no-op", async () => {
+    await fs.mkdir(`${root}/exists`, { recursive: true });
+    await expect(fs.mkdir(`${root}/exists`)).resolves.toBeUndefined();
+    await expect(fs.mkdir(`${root}/exists`, { recursive: true })).resolves.toBeUndefined();
+
+    await fs.mkdir(`${root}/nested/parent/child`, { recursive: true });
+    await expect(
+      fs.mkdir(`${root}/nested/parent/child`, { recursive: true }),
+    ).resolves.toBeUndefined();
+    expect(await fs.stat(`${root}/nested/parent`)).toEqual({ isFile: false, isDirectory: true });
+  });
+
   test("fileExists / stat report false / null for missing paths", async () => {
     const missing = `${root}/does-not-exist.txt`;
     expect(await fs.fileExists(missing)).toBe(false);

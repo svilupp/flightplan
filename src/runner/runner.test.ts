@@ -1048,6 +1048,25 @@ target = ["text:Primary", "click the primary button"]
     );
   });
 
+  test("a lock created from an absolutized flow path records a cwd-relative source (not the machine-absolute path)", async () => {
+    const { flowPath, outDir } = await writeFlow(CLICK_FLOW);
+    const lockPath = lockPathFor(flowPath);
+    // `flowPath` from writeFlow() is already absolute; a `cwd` at its parent dir mimics the CLI
+    // absolutizing a relative operand against `io.cwd` (src/cli/commands.ts executeRun).
+    const cwd = flowPath.slice(0, flowPath.lastIndexOf("/"));
+
+    const d = new MockDriver();
+    d.setSnapshot(primarySnapshot());
+    d.setSignature("http://localhost:3000/drift|stable-hash");
+    d.setBatchResult(makeSuccessBatch("role:button:Primary", "click"));
+
+    const run = await runFlow(optsFor(flowPath, outDir, d, defaultConfig(), { cwd }));
+    expect(run.summary.verdict).toBe("passed");
+
+    const learned = await loadLockFile(lockPath);
+    expect(learned.source).toBe("flow.toml");
+  });
+
   /** Pre-write a lock whose recipe drifts (stale selector) and whose signature won't match. */
   async function writeStaleLock(lockPath: string): Promise<void> {
     const lock = emptyLock("test.lock", computeSourceHash(CLICK_FLOW), "lock manager");

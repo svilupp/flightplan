@@ -470,6 +470,7 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
 
   const runOpts: RunOptions = {
     flowPath,
+    cwd: io.cwd,
     config,
     fs: io.fs,
     env: io.env,
