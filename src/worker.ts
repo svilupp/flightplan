@@ -95,6 +95,28 @@ export type {
   RunOptions,
   RunResult,
 } from "./runner/types.ts";
+
+// ---- SDK-free AI runtime factory + contracts ----
+// `createAiRuntime` accepts an injected GenerateFn, so this export remains safe for
+// Worker hosts. Provider/SDK wiring stays outside this curated entry.
+export { createAiRuntime } from "./ai/runtime.ts";
+export type {
+  AiCallContext,
+  AiCallFailure,
+  AiCallResult,
+  AiCallSink,
+  AiContentPart,
+  AiHooksImpl,
+  AiMessage,
+  AiRuntime,
+  AiRuntimeDeps,
+  AiUserMessage,
+  GenerateFn,
+  GenerateRequest,
+  GenerateResult,
+  PlannerRuntime,
+  RawUsage,
+} from "./ai/types.ts";
 export type { FileSystemPort } from "./runtime.ts";
 // ---- Filesystem port + capability/env primitives ----
 export { ambientEnv, CapabilityError, expandGlob, listTomlFiles } from "./runtime.ts";

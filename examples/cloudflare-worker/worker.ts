@@ -100,10 +100,10 @@ export default {
   async fetch(request: Request): Promise<Response> {
     // Offline demo. Replace this factory with your host's remote browser Driver.
     const bash = createShell(() => new MockDriver(), request.signal);
-    const result = await bash.exec(
+    const { stdout, stderr, exitCode } = await bash.exec(
       "flightplan lint demo.toml --json > lint.json && " +
         "flightplan run demo.toml --json --frozen --no-lock-write -o /runs",
     );
-    return Response.json({ mode: "mock", ...result });
+    return Response.json({ mode: "mock", stdout, stderr, exitCode });
   },
 };

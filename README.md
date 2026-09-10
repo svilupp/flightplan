@@ -187,11 +187,11 @@ The example handler uses a fresh shell and filesystem per request:
 
 ```ts
 const bash = createShell(() => new MockDriver(), request.signal);
-const result = await bash.exec(
+const { stdout, stderr, exitCode } = await bash.exec(
   "flightplan lint demo.toml --json > lint.json && " +
   "flightplan run demo.toml --json --frozen --no-lock-write -o /runs",
 );
-return Response.json({ mode: "mock", ...result });
+return Response.json({ mode: "mock", stdout, stderr, exitCode });
 ```
 
 `createShell` is defined in the example. The default uses `MockDriver` for an offline smoke

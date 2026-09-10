@@ -70,4 +70,9 @@ describe("./worker barrel", () => {
     const mod = await import("./worker.ts");
     expect(Object.keys(mod)).not.toContain("nodeFileSystem");
   });
+
+  test("exports the SDK-free createAiRuntime factory for injected providers", async () => {
+    const mod = await import("./worker.ts");
+    expect(typeof mod.createAiRuntime).toBe("function");
+  });
 });
