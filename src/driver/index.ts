@@ -7,7 +7,7 @@
 // Re-export the concrete browser-pilot `Page` type for the (rare) callers — chiefly the
 // ladder — that legitimately need the richer page surface behind `PageHandle`. This keeps
 // the `import ... from 'browser-pilot'` confined to the driver module.
-export type { Page } from "browser-pilot";
+export type { Page } from "browser-pilot/core";
 // --- the real implementation ---
 export {
   BrowserPilotDriver,

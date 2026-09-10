@@ -244,81 +244,95 @@ export function defaultGenerate(opts: DefaultGenerateOptions): GenerateFn {
     // remains; once the deadline fires the remaining attempts reject instantly and the loop exits.
     // A fail-FAST model (throws immediately, e.g. a rotated id) still falls through to the next model
     // within budget — the shared signal only bites a genuinely SLOW/HUNG chain.
-    const abortSignal = AbortSignal.timeout(timeoutMs);
+    const controller = new AbortController();
+    const abortSignal = controller.signal;
+    const cancel = () => controller.abort(req.signal?.reason);
+    req.signal?.addEventListener("abort", cancel, { once: true });
+    if (req.signal?.aborted) cancel();
+    const timer = setTimeout(() => controller.abort(timeoutError(timeoutMs)), timeoutMs);
     const deadline = Date.now() + timeoutMs;
     const family = opts.family ?? "openrouter";
     let lastErr: unknown;
-    for (const rawModelId of req.models) {
-      const { model: modelId, effort } = parseModelId(rawModelId);
-      try {
-        const remainingMs = deadline - Date.now();
-        if (remainingMs <= 0) throw abortSignal.reason ?? timeoutError(timeoutMs);
-        // Build the call with EXACTLY one of `messages` / `prompt` (the SDK `Prompt` is a strict
-        // XOR — a spread of an optional union widens it and fails typecheck), so branch here.
-        // The shared `abortSignal` bounds the whole logical call so a hung provider call (never
-        // throws, never resolves) can't block indefinitely — the 174s L4 iframe hang this guards
-        // against. A fired timeout aborts the in-flight attempt; the `catch` below treats it like any
-        // other failure and moves to the next model (which then rejects at once on the same signal).
-        const effortOptions = mergeProviderOptions(
-          familyBaseProviderOptions(family),
-          effortProviderOptions(family, effort),
-        );
-        const openrouterOptions =
-          family === "openrouter"
-            ? {
-                usage: { include: true },
-                ...(effortOptions.openrouter as Record<string, unknown> | undefined),
-              }
-            : undefined;
-        const common = {
-          model: opts.resolveModel(modelId),
-          output: Output.object({ schema: req.schema }),
-          maxOutputTokens: req.maxOutputTokens,
-          providerOptions: {
-            ...effortOptions,
-            ...(openrouterOptions !== undefined ? { openrouter: openrouterOptions } : {}),
-          },
-          abortSignal,
-        };
-        // Three shapes, all a strict XOR in the SDK `Prompt`:
-        //   1. multimodal `messages` (vision tiers) — passed through as-is;
-        //   2. a prompt-cached text call (PLAN_v003 v003-6) — the stable prefix is marked cacheable
-        //      via a two-part user message (`cachedPromptMessages`);
-        //   3. a plain text `prompt` (resolver/advisor/uncached planner).
-        const messages = req.messages;
-        const cache = req.cache;
-        let result: Awaited<ReturnType<typeof generateText>>;
-        if (messages !== undefined) {
-          result = await withDeadline(
-            () => generateText({ ...common, messages }),
-            remainingMs,
-            abortSignal,
+    try {
+      for (const rawModelId of req.models) {
+        abortSignal.throwIfAborted();
+        const { model: modelId, effort } = parseModelId(rawModelId);
+        try {
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) throw abortSignal.reason ?? timeoutError(timeoutMs);
+          // Build the call with EXACTLY one of `messages` / `prompt` (the SDK `Prompt` is a strict
+          // XOR — a spread of an optional union widens it and fails typecheck), so branch here.
+          // The shared `abortSignal` bounds the whole logical call so a hung provider call (never
+          // throws, never resolves) can't block indefinitely — the 174s L4 iframe hang this guards
+          // against. Cancellation or timeout prevents the next model from starting.
+          const effortOptions = mergeProviderOptions(
+            familyBaseProviderOptions(family),
+            effortProviderOptions(family, effort),
           );
-        } else if (cache !== undefined) {
-          result = await withDeadline(
-            () =>
-              generateText({
-                ...common,
-                messages: cachedPromptMessages(req.prompt ?? "", cache.prefix),
-              }),
-            remainingMs,
+          const openrouterOptions =
+            family === "openrouter"
+              ? {
+                  usage: { include: true },
+                  ...(effortOptions.openrouter as Record<string, unknown> | undefined),
+                }
+              : undefined;
+          const common = {
+            model: opts.resolveModel(modelId),
+            output: Output.object({ schema: req.schema }),
+            maxOutputTokens: req.maxOutputTokens,
+            providerOptions: {
+              ...effortOptions,
+              ...(openrouterOptions !== undefined ? { openrouter: openrouterOptions } : {}),
+            },
             abortSignal,
-          );
-        } else {
-          result = await withDeadline(
-            () => generateText({ ...common, prompt: req.prompt ?? "" }),
-            remainingMs,
-            abortSignal,
-          );
+          };
+          // Three shapes, all a strict XOR in the SDK `Prompt`:
+          //   1. multimodal `messages` (vision tiers) — passed through as-is;
+          //   2. a prompt-cached text call (PLAN_v003 v003-6) — the stable prefix is marked cacheable
+          //      via a two-part user message (`cachedPromptMessages`);
+          //   3. a plain text `prompt` (resolver/advisor/uncached planner).
+          const messages = req.messages;
+          const cache = req.cache;
+          let result: Awaited<ReturnType<typeof generateText>>;
+          if (messages !== undefined) {
+            result = await withDeadline(
+              () => generateText({ ...common, messages }),
+              remainingMs,
+              abortSignal,
+            );
+          } else if (cache !== undefined) {
+            result = await withDeadline(
+              () =>
+                generateText({
+                  ...common,
+                  messages: cachedPromptMessages(req.prompt ?? "", cache.prefix),
+                }),
+              remainingMs,
+              abortSignal,
+            );
+          } else {
+            result = await withDeadline(
+              () => generateText({ ...common, prompt: req.prompt ?? "" }),
+              remainingMs,
+              abortSignal,
+            );
+          }
+          // A generation that completed here but whose signal fired during the race is
+          // intentionally discarded: `throwIfAborted` below still throws, so `result` (and its
+          // usage) is never returned or recorded.
+          abortSignal.throwIfAborted();
+          return { output: result.output, model: rawModelId, usage: extractRawUsage(result) };
+        } catch (err) {
+          // Ordinary provider errors permit fallback. The next iteration checks cancellation
+          // before resolving or calling another model.
+          lastErr = err;
         }
-        return { output: result.output, model: rawModelId, usage: extractRawUsage(result) };
-      } catch (err) {
-        // Any error (incl. AI_NoOutputGeneratedError from a tight Gemini cap, or a rotated id) is
-        // fallback-eligible — try the next model. Throw only after the whole chain is exhausted.
-        lastErr = err;
       }
+      throw lastErr ?? new Error(`No models to try for role ${req.modelRole}`);
+    } finally {
+      clearTimeout(timer);
+      req.signal?.removeEventListener("abort", cancel);
     }
-    throw lastErr ?? new Error(`No models to try for role ${req.modelRole}`);
   };
 }
 

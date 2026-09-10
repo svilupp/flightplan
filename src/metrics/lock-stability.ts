@@ -9,14 +9,16 @@
 // This is offline + deterministic: callers read the lock file's bytes around a run and pass them
 // in. We never touch the lock writer — we only measure its output.
 
-import { createHash } from "node:crypto";
+import { sha256 as nobleSha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 import type { RunVerdict } from "../types.ts";
 import type { StabilityResult } from "./types.ts";
 
 /** sha256 of the given bytes (or UTF-8 string), as a lowercase hex digest. */
 export function sha256(bytes: Uint8Array | string): string {
-  return createHash("sha256").update(bytes).digest("hex");
+  const input = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
+  return bytesToHex(nobleSha256(input));
 }
 
 /** Inputs to {@link checkLockStability}; a null `before`/`after` means "no lock file existed". */

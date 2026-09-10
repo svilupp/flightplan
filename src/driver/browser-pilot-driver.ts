@@ -6,12 +6,16 @@
 // detaches without killing it; Mode B launches its own Chrome via chrome-launcher and kills
 // it on teardown. Canonical reference: PLAN.md §3 (lifecycle table, gotchas-as-defaults).
 
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
-// The single allowed `import ... from 'browser-pilot'` in the whole codebase.
+// The single allowed `import ... from 'browser-pilot'` (plus its portable `/core` entry below) in
+// the whole codebase. `Page`/`TargetNotFoundError`/`Browser` are re-exported byte-identically from
+// both entries (same underlying compiled chunk — `browser-pilot/core`'s `dist/core/index.d.ts` and
+// the root `dist/index.d.ts` both point at `page-*.js` / `types-*.js`), so importing them from
+// `/core` costs nothing and narrows this file's reliance on the root (non-portable) entry to just
+// the exports `/core` genuinely lacks (`connect`, webmcp*, capture*Signature, getBuildProvenance,
+// mintCfAccessJwt, Dialog/ExpectNewPageOptions/PageSnapshot/Step — see
+// `src/fitness/browser-pilot-chunk-gate.test.ts` for the reachability proof this doesn't change).
 import {
   type EmitWsOptions as BpEmitWsOptions,
-  type Browser,
   captureStateSignature as bpCaptureStateSignature,
   captureStructureSignature as bpCaptureStructureSignature,
   connect as bpConnect,
@@ -27,12 +31,10 @@ import {
   // so a driver built against an older browser-pilot that predates this export degrades to a clear
   // error instead of a hard import-time crash.
   mintCfAccessJwt,
-  type Page,
   type PageSnapshot,
   type Step,
-  TargetNotFoundError,
 } from "browser-pilot";
-import * as ChromeLauncher from "chrome-launcher";
+import { type Browser, type Page, TargetNotFoundError } from "browser-pilot/core";
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
 import {
   buildAttachConnectArgs,
@@ -138,9 +140,14 @@ interface AttachConnection {
   /** Tab names we opened with `newPage` so teardown closes only those. */
   openedPages: string[];
 }
+/** Minimal shape of chrome-launcher's `LaunchedChrome` — enough for kill()/port. */
+interface LaunchedChrome {
+  port: number;
+  kill(): void;
+}
 interface LaunchConnection {
   kind: "launch";
-  chrome: ChromeLauncher.LaunchedChrome;
+  chrome: LaunchedChrome;
 }
 type Connection = AttachConnection | LaunchConnection;
 
@@ -242,11 +249,29 @@ export class BrowserPilotDriver implements Driver {
   /** Mode B — launch our own Chrome, connect, own the full lifecycle (kill on teardown). */
   private async connectLaunch(cfg: Extract<ConnectConfig, { mode: "launch" }>): Promise<void> {
     const plan = buildLaunchPlan(cfg);
-    const launchOpts: ChromeLauncher.Options = { chromeFlags: plan.chromeFlags };
+    const launchOpts: { chromeFlags: string[]; userDataDir?: string; chromePath?: string } = {
+      chromeFlags: plan.chromeFlags,
+    };
     if (plan.userDataDir) launchOpts.userDataDir = plan.userDataDir;
     if (plan.channel) launchOpts.chromePath = plan.channel; // channel→path is best-effort
 
-    const chrome = await ChromeLauncher.launch(launchOpts);
+    // Lazy computed-specifier import so bundling for non-Node targets (e.g. Workers) neither
+    // resolves nor ships chrome-launcher. Only the IMPORT failure gets the "unavailable"
+    // message — a real launch error (Chrome missing, port in use) must propagate as-is.
+    let launch: (opts: typeof launchOpts) => Promise<LaunchedChrome>;
+    try {
+      const spec = "chrome-launcher";
+      const ChromeLauncher = (await import(/* @vite-ignore */ spec)) as {
+        launch(opts: typeof launchOpts): Promise<LaunchedChrome>;
+      };
+      launch = (o) => ChromeLauncher.launch(o);
+    } catch (err) {
+      throw new Error(
+        "Local Chrome launch requires Node/Bun (chrome-launcher unavailable); use attach mode (wsUrl/cdpUrl) instead.",
+        { cause: err },
+      );
+    }
+    const chrome = await launch(launchOpts);
     const version = (await (
       await fetch(`http://127.0.0.1:${chrome.port}/json/version`)
     ).json()) as { webSocketDebuggerUrl: string };
@@ -1021,8 +1046,15 @@ export class BrowserPilotDriver implements Driver {
     try {
       const page = this.requirePage();
       const b64 = opts ? await page.screenshot(opts) : await page.screenshot();
+      const fsSpec = "node:fs/promises";
+      const pathSpec = "node:path";
+      const { mkdir, writeFile } = (await import(
+        /* @vite-ignore */ fsSpec
+      )) as typeof import("node:fs/promises");
+      const { dirname } = (await import(/* @vite-ignore */ pathSpec)) as typeof import("node:path");
       await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, Buffer.from(b64, "base64"));
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      await writeFile(path, bytes);
       return path;
     } catch {
       return null;

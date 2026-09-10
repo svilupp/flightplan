@@ -30,9 +30,7 @@ import {
   type AiRuntime,
   type BudgetLimitName,
   createAiRuntime,
-  createGoogleGenerate,
-  createOpenAiGenerate,
-  createOpenRouterGenerate,
+  type GenerateFn,
   isBudgetExceeded,
   type RecentAction,
 } from "../ai/index.ts";
@@ -88,6 +86,7 @@ import type {
   PopupExpectation,
   Step,
 } from "../flow/types.ts";
+import { defaultFileSystem } from "../fs-default.ts";
 import {
   createLadder,
   type LadderResult,
@@ -105,8 +104,9 @@ import {
   resolveLockWriteMode,
   type SessionImport,
 } from "../lock/index.ts";
+import { isAbsolute, relative as relativePath, resolve as resolvePath } from "../paths.ts";
 import { createRedactor, gatherSecretValues, REDACTED, type Redactor } from "../redaction/index.ts";
-import { writeTextFile } from "../runtime.ts";
+import { ambientEnv, type FileSystemPort } from "../runtime.ts";
 import {
   aiCallEventAttrs,
   artifactCreatedAttrs,
@@ -129,6 +129,7 @@ import type {
   AdvisoryVerdictKind,
   RunVerdict,
 } from "../types.ts";
+import { RunControl, RunInterruptedError } from "./control.ts";
 import {
   type Divergence,
   detectDivergence,
@@ -305,6 +306,8 @@ interface RunServices {
   activeSpan: { current: SpanHandle };
   /** `[browser] record` — opt-in run video / per-step frame capture (default off). */
   record: boolean;
+  /** Injected storage owns per-step media; native recording is disabled in this mode. */
+  mediaFs?: FileSystemPort;
   /** `[redaction] redact_media` — skip persisting a secret-adjacent step's frame (fail-closed). */
   redactMedia: boolean;
   /** The run's `screenshots/` dir (per-step frames + bp's `record` output land here). */
@@ -382,8 +385,8 @@ function isSecretStep(step: Step): boolean {
  * policy (P5_DESIGN.md §6 / Risk V2): when redaction is active AND the step carries `secret:true`
  * (any of fill / select / goto — {@link isSecretStep}), SKIP persisting the frame entirely (the
  * in-memory L3 vision base64 is untouched — resolution still works). Collects the written path into
- * `services.screenshotPaths` and emits an `artifact_created` telemetry event. Never throws — media
- * capture must never break a run.
+ * `services.screenshotPaths` and emits an `artifact_created` telemetry event. Native media is
+ * best-effort; injected storage failures propagate so missing cloud evidence cannot look saved.
  */
 async function maybePersistScreenshot(
   driver: Driver,
@@ -391,14 +394,22 @@ async function maybePersistScreenshot(
   services: RunServices,
   span: SpanHandle,
 ): Promise<void> {
-  if (!services.record || !driver.saveScreenshot) return;
+  if (!services.record || (!services.mediaFs && !driver.saveScreenshot)) return;
   if (services.redactMedia && services.redactor.enabled && isSecretStep(step)) {
     return; // fail-closed: never persist a secret-adjacent frame to disk.
   }
   const idx = services.shotIndex.n++;
   const path = `${services.screenshotsDir}/${String(idx).padStart(3, "0")}-${step.id}.png`;
   try {
-    const saved = await driver.saveScreenshot(path);
+    let saved: string | null;
+    if (services.mediaFs) {
+      const b64 = await driver.screenshot();
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      await services.mediaFs.writeBinaryFile!(path, bytes);
+      saved = path;
+    } else {
+      saved = await driver.saveScreenshot!(path);
+    }
     if (saved) {
       services.screenshotPaths.push(saved);
       span.event(
@@ -406,7 +417,8 @@ async function maybePersistScreenshot(
         artifactCreatedAttrs({ kind: "screenshot", path: saved }),
       );
     }
-  } catch {
+  } catch (error) {
+    if (services.mediaFs) throw error;
     /* media capture is best-effort — never fail the run on a frame persist error */
   }
 }
@@ -945,9 +957,9 @@ async function performStepAction(
           : {}),
       };
       const redactedPayload = services.redactor.redactText(payload);
-      const emitBa = (ok: boolean): void => {
+      const emitBa = async (ok: boolean): Promise<void> => {
         const ba = { action: "emit", selectorOrIntent: redactedPayload, ok, durationMs: 0 };
-        void writers.trace.emitBrowserAction(ba);
+        await writers.trace.emitBrowserAction(ba);
         span.event(
           TELEMETRY_EVENTS.browserAction,
           browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
@@ -962,7 +974,8 @@ async function performStepAction(
       try {
         result = await driver.emitCommand(emitOpts);
       } catch (err) {
-        emitBa(false);
+        if (err instanceof RunInterruptedError) throw err;
+        await emitBa(false);
         const detail = err instanceof Error ? err.message : String(err);
         return {
           ok: false,
@@ -973,7 +986,7 @@ async function performStepAction(
       const awaitedReply = step.await_reply !== undefined;
       const replyMissing = awaitedReply && result.reply === undefined;
       const ok = result.delivered && !replyMissing;
-      emitBa(ok);
+      await emitBa(ok);
       if (!ok) {
         if (!result.delivered) {
           // `delivered: false` with `reason: "dispatched-unconfirmed"` means the frame was SENT
@@ -1040,7 +1053,10 @@ async function performStepAction(
           ? { untrustedContentHint: result.tool.annotations.untrustedContentHint }
           : {}),
       });
-      const emitTrace = (ok: boolean, result: WebMcpCallResult | undefined): void => {
+      const emitTrace = async (
+        ok: boolean,
+        result: WebMcpCallResult | undefined,
+      ): Promise<void> => {
         const ba = {
           action: "webmcp_call",
           selectorOrIntent: services.redactor.redactText(actionLabel),
@@ -1049,7 +1065,7 @@ async function performStepAction(
           ...(result?.dispatchState !== undefined ? { dispatchState: result.dispatchState } : {}),
           ...(result?.retrySafe !== undefined ? { retrySafe: result.retrySafe } : {}),
         };
-        void writers.trace.emitBrowserAction(ba);
+        await writers.trace.emitBrowserAction(ba);
         span.event(
           TELEMETRY_EVENTS.browserAction,
           browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
@@ -1059,7 +1075,8 @@ async function performStepAction(
       try {
         result = await driver.webmcpCall(opts);
       } catch (err) {
-        emitTrace(false, undefined);
+        if (err instanceof RunInterruptedError) throw err;
+        await emitTrace(false, undefined);
         return {
           ok: false,
           error:
@@ -1079,7 +1096,7 @@ async function performStepAction(
           },
         };
       }
-      emitTrace(result.ok, result);
+      await emitTrace(result.ok, result);
       if (!result.ok) {
         return {
           ok: false,
@@ -1115,9 +1132,9 @@ async function performStepAction(
       const redactedIntent = services.redactor.redactText(
         step.frame !== undefined ? `eval in ${step.frame}` : "eval",
       );
-      const evalBa = (ok: boolean): void => {
+      const evalBa = async (ok: boolean): Promise<void> => {
         const ba = { action: "eval", selectorOrIntent: redactedIntent, ok, durationMs: 0 };
-        void writers.trace.emitBrowserAction(ba);
+        await writers.trace.emitBrowserAction(ba);
         span.event(
           TELEMETRY_EVENTS.browserAction,
           browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
@@ -1127,7 +1144,8 @@ async function performStepAction(
       try {
         result = await driver.evalInFrame(evalOpts);
       } catch (err) {
-        evalBa(false);
+        if (err instanceof RunInterruptedError) throw err;
+        await evalBa(false);
         const detail = err instanceof Error ? err.message : String(err);
         return {
           ok: false,
@@ -1136,7 +1154,7 @@ async function performStepAction(
         };
       }
       if (!result.ok) {
-        evalBa(false);
+        await evalBa(false);
         // A frame that could never be entered means NOTHING ran — cleanly `not_dispatched`. A
         // thrown script exception means the frame WAS entered and the script started executing
         // before failing — its side effects (if any) are unknown, so it's `uncertain`, mirroring
@@ -1157,7 +1175,7 @@ async function performStepAction(
         step.expect === "truthy"
           ? Boolean(result.value)
           : JSON.stringify(result.value) === step.expect;
-      evalBa(expectOk);
+      await evalBa(expectOk);
       if (!expectOk) {
         return {
           ok: false,
@@ -1185,9 +1203,9 @@ async function performStepAction(
       const redactedIntent = step.secret
         ? services.redactor.redactText(step.expression)
         : step.expression;
-      const evaluateBa = (ok: boolean): void => {
+      const evaluateBa = async (ok: boolean): Promise<void> => {
         const ba = { action: "evaluate", selectorOrIntent: redactedIntent, ok, durationMs: 0 };
-        void writers.trace.emitBrowserAction(ba);
+        await writers.trace.emitBrowserAction(ba);
         span.event(
           TELEMETRY_EVENTS.browserAction,
           browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
@@ -1196,7 +1214,8 @@ async function performStepAction(
       try {
         await driver.evaluateExpression(step.expression);
       } catch (err) {
-        evaluateBa(false);
+        if (err instanceof RunInterruptedError) throw err;
+        await evaluateBa(false);
         const detail = err instanceof Error ? err.message : String(err);
         return {
           ok: false,
@@ -1204,7 +1223,7 @@ async function performStepAction(
           dispatchState: "not_dispatched",
         };
       }
-      evaluateBa(true);
+      await evaluateBa(true);
       return { ok: true };
     }
     case "run": {
@@ -1734,6 +1753,9 @@ async function executeSteps(
         // A budget overflow propagates from the AI tiers — re-throw so the per-step budget handler
         // (below) maps it to `inconclusive`, NOT to a `runError`/`error`.
         if (isBudgetExceeded(err)) throw err;
+        // A cancellation/deadline is an embedding error, not a step or harness failure — propagate
+        // immediately rather than folding it into `state.runError`.
+        if (err instanceof RunInterruptedError) throw err;
         // Any other driver/ladder throw is an INFRA error → abort the run with verdict `error`.
         const detail = err instanceof Error ? err.message : String(err);
         action = { ok: false, error: detail };
@@ -2130,6 +2152,9 @@ async function runRepairAndSplice(
   } catch (err) {
     // A budget ceiling (`max_model_calls` / `max_cost_usd`) MUST propagate → `inconclusive`.
     if (isBudgetExceeded(err)) throw err;
+    // A cancellation/deadline is an embedding error, not a best-effort planner failure — propagate
+    // immediately rather than degrading to "no repair".
+    if (err instanceof RunInterruptedError) throw err;
     // ANY OTHER planner failure (a malformed model response, a driver hiccup while gathering the
     // page) is BEST-EFFORT recovery — it must NEVER turn a failed/passed run into an `error`. Degrade
     // to "no repair": the diverged/failed step stays as it was.
@@ -2278,17 +2303,19 @@ async function runHookFlow(
   runtime: AiRuntime | undefined,
   lockMode: LockWriteMode,
   services: RunServices,
+  fs: FileSystemPort,
+  cwd: string | undefined,
 ): Promise<void> {
-  const resolvedPath = hookPath.startsWith("/") ? hookPath : `${baseDir}/${hookPath}`;
+  const resolvedPath = resolvePath(baseDir, hookPath);
   // Hooks flatten their own `run` steps too (a setup/teardown module may compose flows).
-  const loaded = await loadFlowFileFlattened(resolvedPath, { env });
+  const loaded = await loadFlowFileFlattened(resolvedPath, { env, fs });
   const inputs = resolveInputs(loaded.flow.inputs, undefined, env, {});
   const { steps } = templateFlow(loaded.flow, inputs, env);
   // Open the hook module's OWN lock session (its sidecar `<module>.lock.toml`). The hook's steps
   // L0-hit + heal against THIS lock; a missing/malformed lock loads fresh (auto-heal default).
   const hookSession = await openLockSession({
     lockPath: defaultLockPath(resolvedPath),
-    source: loaded.path,
+    source: lockSourceOf(loaded.path, cwd),
     sourceHash: loaded.sourceHash,
     ...(loaded.flow.description ? { description: loaded.flow.description } : {}),
     mode: lockMode,
@@ -2296,6 +2323,7 @@ async function runHookFlow(
     now: () => clock.now(),
     // Redact an AI-emitted note before persisting it to the hook module's lock (DESIGN §4).
     redactNote: (note: string) => services.redactor.redactText(note),
+    fs,
   });
   // `max_steps` is a main-flow budget, so hook steps are not counted against it (maxSteps undefined).
   await executeSteps(
@@ -2331,19 +2359,82 @@ async function runHookFlow(
  * writers, connects the driver, walks the steps (resume-trimmed via `fromStep`), runs assertions,
  * computes the verdict + totals, writes the summary, and ALWAYS tears the driver down (finally).
  * Returns the {@link RunResult} (summary + run dir + exit code). Never throws for a flow-level
- * failure — only re-throws a programming error after teardown (it still writes what it can).
+ * failure. Loading/storage errors can reject; cancellation/deadline rejects with
+ * RunInterruptedError after bounded cleanup, without fabricating a successful run summary.
  */
 export async function runFlow(opts: RunOptions): Promise<RunResult> {
+  if (!opts.signal && opts.timeoutMs === undefined && opts.cleanupTimeoutMs === undefined) {
+    return runFlowImpl(opts);
+  }
+  const control = new RunControl(opts);
+  try {
+    const factory =
+      opts.driverFactory ??
+      ((cfg: ConnectConfig) =>
+        defaultDriverFactory(
+          cfg,
+          opts.config.timeouts,
+          opts.config.resolve?.attributes,
+          opts.config.browser?.dialog,
+        ));
+    // Remember whether the CALLER injected a port before we inject the (guarded) default —
+    // `runFlowImpl` routes media through `fs.writeBinaryFile` only for caller-injected ports;
+    // a plain native run must keep the driver-native media path (saveScreenshot/startRecording)
+    // whether or not a signal/timeout is set.
+    const callerInjectedFs = opts.fs !== undefined;
+    const fs = opts.fs ?? (await defaultFileSystem());
+    return await control.wait(() =>
+      runFlowImpl(
+        {
+          ...opts,
+          signal: control.signal,
+          fs: control.guard(fs, "fs"),
+          clock: control.guard(opts.clock ?? systemRunClock, "clock"),
+          driverFactory: (cfg) => {
+            control.check();
+            return control.attach(factory(cfg, { signal: control.signal }));
+          },
+        },
+        control,
+        callerInjectedFs,
+      ),
+    );
+  } catch (error) {
+    if (control.interruptedError) return await control.interrupted(error);
+    throw error;
+  } finally {
+    control.dispose();
+  }
+}
+
+async function runFlowImpl(
+  opts: RunOptions,
+  control?: RunControl,
+  callerInjectedFs?: boolean,
+): Promise<RunResult> {
+  const injectedFs = callerInjectedFs ?? opts.fs !== undefined;
+  if (injectedFs && opts.config.browser?.record && !opts.fs?.writeBinaryFile) {
+    throw new Error(
+      "Recording with an injected filesystem requires fs.writeBinaryFile(path, bytes)",
+    );
+  }
   const clock = opts.clock ?? systemRunClock;
-  const env = opts.env ?? process.env;
+  const env = opts.env ?? ambientEnv();
   const artifactClock: ArtifactClock = () => clock.now();
+  const fs: FileSystemPort = opts.fs ?? (await defaultFileSystem());
 
   // --- (1) load + import-resolve + template ---
   // Load with `run` steps flattened into namespaced child steps (PLAN_v002 v002-8) — the
-  // runner always executes against the final concrete step list.
-  const loaded = await loadFlowFileFlattened(opts.flowPath, { env });
+  // runner always executes against the final concrete step list. When `opts.flowSource` is set,
+  // the root flow is parsed from that in-memory text instead of read from disk (`flowPath` is
+  // still the nominal path for imports/locks/relative resolution).
+  const loaded = await loadFlowFileFlattened(opts.flowPath, {
+    env,
+    fs,
+    ...(opts.flowSource !== undefined ? { flowSource: opts.flowSource } : {}),
+  });
   // Resolve the import graph (root node carries this flow's resolved inputs).
-  const graph = await resolveImports(loaded, { env });
+  const graph = await resolveImports(loaded, { env, fs });
   const rootNode = graph.nodes.get(graph.rootPath);
   const inputs = rootNode?.inputs ?? resolveInputs(loaded.flow.inputs, undefined, env, {});
   const { steps: allSteps } = templateFlow(loaded.flow, inputs, env);
@@ -2353,11 +2444,14 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
 
   // --- (2) connect config + artifact run dir + writers ---
   const connectCfg = resolveConnectConfig(opts.config);
-  const runDir = await createRun({
-    ...(opts.out !== undefined ? { baseDir: opts.out } : {}),
-    ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
-  });
-  const writers = openArtifactWriters(runDir, artifactClock);
+  const runDir = await createRun(
+    {
+      ...(opts.out !== undefined ? { baseDir: opts.out } : {}),
+      ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
+    },
+    fs,
+  );
+  const writers = await openArtifactWriters(runDir, artifactClock, fs);
 
   // --- (2.05) redaction (Phase 5) — secrets + PII masked before anything is logged/traced/sent ---
   // Gather every `secret:true` fill value (+ backing inputs) across the ROOT steps AND the
@@ -2393,6 +2487,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     activeSpan,
     onWarn,
     record: opts.config.browser?.record === true,
+    ...(injectedFs ? { mediaFs: fs } : {}),
     redactMedia: opts.config.redaction.redact_media ?? true,
     screenshotsDir: runDir.screenshotsDir,
     screenshotPaths: [],
@@ -2437,7 +2532,10 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   // unavailable and the run behaves exactly as in P2/P3 (`ctx.ai`/`assertCtx.aiJudge` stay unset).
   // The redactor + the `onAiCall` telemetry bridge are threaded into the runtime so ai.jsonl is
   // redacted and ai_call telemetry lands on the active step span.
-  const runtime = buildAiRuntime(opts, env, writers, clock, redactor, onAiCall);
+  let runtime = await buildAiRuntime(opts, env, writers, clock, redactor, onAiCall);
+  if (runtime && control) {
+    runtime = control.guard(runtime, "ai", ["hooks", "planner"]);
+  }
 
   const state: RunState = freshRunState();
   const artifactProvenance: ArtifactProvenance = {
@@ -2471,7 +2569,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   // matches an imported module's step onto that module's namespace so a root reference can L0-hit a
   // composed import recipe (`<namespace>:<step>`). Empty when there are no imports → behavior is
   // identical to before (the namespaceFor lookup only fires after a bare-key miss).
-  const imported = buildSessionImports(graph);
+  const imported = buildSessionImports(graph, opts.cwd);
   const stepNamespaces = buildStepNamespaceMap(graph);
   // Under `--frozen` the committed lock is authoritative: a malformed `*.lock.toml` is a hard
   // failure (a `LockParseError`) — we must NOT silently re-resolve fresh (which would mask a garbage
@@ -2481,7 +2579,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   try {
     session = await openLockSession({
       lockPath,
-      source: loaded.path,
+      source: lockSourceOf(loaded.path, opts.cwd),
       sourceHash: loaded.sourceHash,
       description: loaded.flow.description,
       mode: lockMode,
@@ -2494,6 +2592,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
       ...(stepNamespaces.size > 0
         ? { hookOptions: { namespaceFor: (step: Step) => stepNamespaces.get(step.id) } }
         : {}),
+      fs,
     });
   } catch (err) {
     if (err instanceof LockParseError) {
@@ -2564,7 +2663,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     // --- (3.5) start opt-in recording (video / per-step frames) into the run's screenshots dir ---
     // Gated on `[browser] record` (default off). Feature-detected — a driver without recording (or
     // a record-off run) never calls it and behaves exactly as before. Never throws into the run.
-    if (!state.aborted && services.record && driver.startRecording) {
+    if (!state.aborted && !injectedFs && services.record && driver.startRecording) {
       try {
         await driver.startRecording({ dir: runDir.screenshotsDir });
       } catch {
@@ -2587,6 +2686,8 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
         runtime,
         lockMode,
         services,
+        fs,
+        opts.cwd,
       );
     }
 
@@ -2610,7 +2711,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     // --- (5.4) act on L4 advisor verdicts (Phase 4): heal-write (only with a validated basis from
     // a deeper acting tier) / materialize an `intent_changed` proposed patch. `bug`/`flake` never
     // write. This NEVER changes the run verdict (the step already failed). ---
-    await processAdvisoryVerdicts(state, runDir, session);
+    await processAdvisoryVerdicts(state, runDir, session, fs);
 
     // --- (5.5) persist learned/healed recipes (auto mode only; frozen/no-write never write) ---
     // Heals are written even when a later step/assertion failed (the recipe is still valid); a
@@ -2645,19 +2746,25 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
           runtime,
           lockMode,
           services,
+          fs,
+          opts.cwd,
         );
       } catch {
         // teardown is best-effort — never let it turn a good run into an error.
       }
     }
   } catch (err) {
+    // A cancellation/deadline is an embedding error, not a harness failure — propagate it so the
+    // `runFlow` wrapper's `control.interruptedError` check maps it to a `RunInterruptedError`,
+    // never a `runError`/`error` verdict.
+    if (err instanceof RunInterruptedError) throw err;
     // connect() or a fatal harness error → verdict `error` (not a flow `failed`).
     const detail = err instanceof Error ? err.message : String(err);
     state.runError = state.runError ?? `connect/harness error: ${detail}`;
   } finally {
     // --- (6.5) stop recording BEFORE teardown so the driver can finalize any video artifact ---
     // `null` (no single webm produced) is the graceful-degrade case — frames may still be on disk.
-    if (!state.aborted && services.record && driver.stopRecording) {
+    if (!state.aborted && !injectedFs && services.record && driver.stopRecording) {
       try {
         videoPath = (await driver.stopRecording()) ?? null;
       } catch {
@@ -2705,7 +2812,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
     },
     ...(state.runError ? { error: state.runError } : {}),
   });
-  await writeSummary(runDir, summary);
+  await writeSummary(runDir, summary, fs);
   await writers.close();
 
   // Close the telemetry run span (verdict + drift_count). NOOP when telemetry is disabled.
@@ -2719,17 +2826,63 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
  * `aiRuntimeFactory` (tests) takes precedence; otherwise the real OpenRouter-backed runtime is
  * built ONLY when the configured API-key env var (`[ai].api_key_env`, default `OPENROUTER_API_KEY`)
  * is present in `env`. No factory + no key → `undefined` (AI tiers stay unwired; P2/P3 behavior).
- * The runner NEVER imports the AI SDK directly — it goes through `ai/`'s `createOpenRouterGenerate`
- * / `createAiRuntime` (PLAN.md §2 dependency direction).
+ * The runner NEVER statically imports the AI SDK — the default-generate branch below reaches
+ * `ai/provider.ts`'s `createOpenRouterGenerate`/`createGoogleGenerate`/`createOpenAiGenerate`
+ * only through a cached computed-specifier dynamic import of `../ai/default-generate.ts`, so
+ * the SDKs (`ai`, `@ai-sdk/*`, `@openrouter/*`) never appear in `runFlow`'s static import graph
+ * (PLAN.md §2 dependency direction; workers-slice-2 §2.8). Import failure (e.g. bundled Worker
+ * without the SDKs) degrades to an AI-less run with a one-time `onWarn`, never a crash.
  */
-function buildAiRuntime(
+/**
+ * The shape of `../ai/default-generate.ts`'s exports, spelled out by hand (rather than
+ * `typeof import("../ai/default-generate.ts")`) so this module never contains even a
+ * TYPE-level reference to the SDK-backed file — the worker-portability fitness gate
+ * conservatively follows type-only edges too (workers-slice-2 §7.1).
+ */
+interface DefaultGenerateModule {
+  createGoogleGenerate(opts: { apiKey: string }): GenerateFn;
+  createOpenAiGenerate(opts: { apiKey: string }): GenerateFn;
+  createOpenRouterGenerate(opts: { apiKey: string }): GenerateFn;
+}
+
+let defaultGenerateModule: Promise<DefaultGenerateModule> | null = null;
+
+/**
+ * TEST-ONLY seam (workers-slice-2 §U6 task 5). Lets a test force `loadDefaultGenerateModule`'s
+ * lazy import to reject (or restore the real loader) without touching module resolution or
+ * `NODE_ENV`. Not part of the public API — never imported from `src/worker.ts` or exported from
+ * `src/index.ts`. Setting a loader (or `undefined` to restore the real one) also clears the
+ * memoized promise so the next `buildAiRuntime` call re-invokes it.
+ */
+export function __setDefaultGenerateLoaderForTests(
+  loader: (() => Promise<DefaultGenerateModule>) | undefined,
+): void {
+  defaultGenerateLoaderOverride = loader;
+  defaultGenerateModule = null;
+}
+
+let defaultGenerateLoaderOverride: (() => Promise<DefaultGenerateModule>) | undefined;
+
+function loadDefaultGenerateModule(): Promise<DefaultGenerateModule> {
+  if (defaultGenerateModule === null) {
+    if (defaultGenerateLoaderOverride) {
+      defaultGenerateModule = defaultGenerateLoaderOverride();
+    } else {
+      const spec = "../ai/default-generate.js";
+      defaultGenerateModule = import(/* @vite-ignore */ spec) as Promise<DefaultGenerateModule>;
+    }
+  }
+  return defaultGenerateModule;
+}
+
+async function buildAiRuntime(
   opts: RunOptions,
   env: Record<string, string | undefined>,
   writers: ArtifactWriters,
   clock: RunClock,
   redactor: Redactor,
   onAiCall: (event: Omit<AiCallEvent, "ts" | "type">) => void,
-): AiRuntime | undefined {
+): Promise<AiRuntime | undefined> {
   if (opts.aiRuntimeFactory) {
     return opts.aiRuntimeFactory({
       config: opts.config,
@@ -2737,18 +2890,31 @@ function buildAiRuntime(
       now: () => clock.now(),
       redactor,
       onAiCall,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
   }
   const keyEnv = opts.config.ai?.api_key_env ?? DEFAULT_API_KEY_ENV;
   const apiKey = env[keyEnv];
   if (!apiKey) return undefined;
   const provider = opts.config.ai?.provider ?? "openrouter";
-  const generate =
-    provider === "google"
-      ? createGoogleGenerate({ apiKey })
-      : provider === "openai"
-        ? createOpenAiGenerate({ apiKey })
-        : createOpenRouterGenerate({ apiKey });
+  let generate: GenerateFn;
+  try {
+    const mod = await loadDefaultGenerateModule();
+    generate =
+      provider === "google"
+        ? mod.createGoogleGenerate({ apiKey })
+        : provider === "openai"
+          ? mod.createOpenAiGenerate({ apiKey })
+          : mod.createOpenRouterGenerate({ apiKey });
+  } catch (cause) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    (opts.onWarn ?? (() => {}))(
+      "flightplan: AI SDK unavailable in this runtime — AI tiers are disabled for this run. " +
+        "Inject `aiRuntimeFactory` to supply AI on hosts without the SDKs bundled. " +
+        `Cause: ${causeMessage}`,
+    );
+    return undefined;
+  }
   return createAiRuntime({
     config: opts.config,
     generate,
@@ -2756,6 +2922,7 @@ function buildAiRuntime(
     now: () => clock.now(),
     redactor,
     onAiCall,
+    ...(opts.signal ? { signal: opts.signal } : {}),
   });
 }
 
@@ -2765,13 +2932,13 @@ function buildAiRuntime(
  * import's recipe is namespaced by its flow id (`<flow.id>:<step>`) and its heals route back to the
  * module's own sidecar `<module>.lock.toml` via provenance.
  */
-function buildSessionImports(graph: ImportGraph): SessionImport[] {
+function buildSessionImports(graph: ImportGraph, cwd: string | undefined): SessionImport[] {
   const out: SessionImport[] = [];
   for (const node of graph.nodes.values()) {
     if (node.path === graph.rootPath || node.relation !== "import") continue;
     out.push({
       lockPath: defaultLockPath(node.path),
-      source: node.loaded.path,
+      source: lockSourceOf(node.loaded.path, cwd),
       sourceHash: node.loaded.sourceHash,
       namespace: node.loaded.flow.id,
       ...(node.loaded.flow.description ? { description: node.loaded.flow.description } : {}),
@@ -2849,6 +3016,7 @@ async function processAdvisoryVerdicts(
   state: RunState,
   runDir: { proposedPatchesDir: string },
   session: LockSession | undefined,
+  fs: FileSystemPort,
 ): Promise<void> {
   for (const adv of state.advisorySteps) {
     try {
@@ -2884,8 +3052,8 @@ async function processAdvisoryVerdicts(
           summary: adv.verdict.summary,
           proposed_patch_path: adv.verdict.proposed_patch_path,
         };
-        await writeTextFile(jsonPath, `${JSON.stringify(body, null, 2)}\n`);
-        await writeTextFile(patchPath, intentChangedPatchBody(adv.step, adv.verdict));
+        await fs.writeTextFile(jsonPath, `${JSON.stringify(body, null, 2)}\n`);
+        await fs.writeTextFile(patchPath, intentChangedPatchBody(adv.step, adv.verdict));
         if (state.proposedPatchPath === null) state.proposedPatchPath = patchPath;
       }
       // `bug` / `flake`: never write (PLAN.md §5 Phase 4 / PROPOSAL "Advisory verdict").
@@ -3013,6 +3181,20 @@ function dirOf(path: string): string {
 }
 
 /**
+ * The `source` recorded in a freshly created/reset lock header (`emptyLock`, via
+ * `openLockSession`) for a loaded flow's path. The CLI absolutizes the operand it passes as
+ * `opts.flowPath` (adapter-cwd independence), which would otherwise bake a machine-absolute path
+ * into a committed lock (every example lock records a repo-relative `source`, e.g.
+ * `examples/flows/vision.toml`). When `cwd` is given and `path` is absolute under it, relativize;
+ * otherwise pass the path through unchanged (matches prior behavior for callers/tests that pass
+ * an already-relative `flowPath` with no `cwd`).
+ */
+function lockSourceOf(path: string, cwd: string | undefined): string {
+  if (cwd === undefined || !isAbsolute(path)) return path;
+  return relativePath(cwd, path);
+}
+
+/**
  * The sidecar lock path for a flow when `--lock` is not given: `<flow>.lock.toml` (the `.toml`
  * suffix replaced, else appended). Mirrors the lint module's lock-discovery convention
  * (`src/lint/lint.ts`) so `lint` and `run` agree on where a flow's lock lives.
@@ -3044,6 +3226,7 @@ function buildSummary(
     ]),
   );
   return {
+    summary_version: 1,
     verdict,
     flow_id: flowId,
     run_id: runDir.runId,

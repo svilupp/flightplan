@@ -44,15 +44,14 @@ export {
   planRepairEscalated,
   shouldEscalate,
 } from "./planner-l5.ts";
-export type { CreateProviderOptions, DefaultGenerateOptions, ProviderFamily } from "./provider.ts";
-// --- the OpenRouter/Google/OpenAI transports (the ONLY SDK-backed surface) ---
-export {
-  createGoogleGenerate,
-  createOpenAiGenerate,
-  createOpenRouterGenerate,
-  createProvider,
-  defaultGenerate,
-} from "./provider.ts";
+// NOTE: `provider.ts` (the ONLY file that statically imports the AI SDK: `ai`, `@ai-sdk/*`,
+// `@openrouter/*`) is deliberately not referenced here AT ALL, not even for types. A
+// worker-portability fitness gate conservatively follows type-only edges too, so even
+// `export type {...} from "./provider.ts"` would pull the SDK-importing file into `runFlow`'s
+// checked graph (this barrel is statically imported by the runner for `createAiRuntime`).
+// `provider.ts`'s own types (`CreateProviderOptions`, `DefaultGenerateOptions`,
+// `ProviderFamily`) and values are available by importing `./provider.ts` directly (tests
+// already do) or `./default-generate.ts` (the runner's lazy-loaded seam).
 export type { ReasoningEffort, ResolvedModelRole, ResolvedRegistry } from "./registry.ts";
 // --- model registry ---
 export {

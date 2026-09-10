@@ -165,6 +165,65 @@ describe("provider.defaultGenerate — reasoning-effort suffix threading", () =>
 });
 
 describe("provider.defaultGenerate — Output API call shape + fallback iteration", () => {
+  test("caller cancellation aborts the active model and never tries a fallback", async () => {
+    const controller = new AbortController();
+    const models: string[] = [];
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let providerSignal: AbortSignal | undefined;
+    const generate = defaultGenerate({
+      resolveModel: (id) => {
+        models.push(id);
+        return new MockLanguageModelV3({
+          doGenerate: async (options) => {
+            providerSignal = options.abortSignal;
+            started();
+            return new Promise<LanguageModelV3GenerateResult>(() => {});
+          },
+        });
+      },
+    });
+    const call = generate({
+      modelRole: "resolver",
+      models: ["primary", "fallback"],
+      schema: JudgeSchema,
+      prompt: "test",
+      maxOutputTokens: 100,
+      signal: controller.signal,
+      timeoutMs: 1000,
+    });
+    const outcome = call.catch((error: unknown) => error);
+    await ready;
+    controller.abort(new Error("owner cancelled"));
+    expect(await outcome).toMatchObject({ message: "owner cancelled" });
+    expect(providerSignal?.aborted).toBe(true);
+    expect(models).toEqual(["primary"]);
+  });
+
+  test("pre-cancelled generation never resolves a model", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled"));
+    let resolved = false;
+    const generate = defaultGenerate({
+      resolveModel: () => {
+        resolved = true;
+        return jsonModel('{"pass":true,"reason":"ok"}');
+      },
+    });
+    await expect(
+      generate({
+        modelRole: "resolver",
+        models: ["primary"],
+        schema: JudgeSchema,
+        maxOutputTokens: 100,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("cancelled");
+    expect(resolved).toBe(false);
+  });
+
   test("output: Output.object({schema}) → validated result.output", async () => {
     const generate = defaultGenerate({
       resolveModel: () => jsonModel('{"pass":true,"reason":"ok"}'),

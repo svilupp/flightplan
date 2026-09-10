@@ -46,6 +46,8 @@ export type AiMessage = AiUserMessage;
  * of `prompt` / `messages` is set (text vs vision).
  */
 export interface GenerateRequest {
+  /** Optional caller cancellation; in-process only, not an RPC wire value. */
+  signal?: AbortSignal;
   /** The model ROLE (resolver/advisor/vision) → selects pricing + cost attribution. */
   modelRole: ModelRoleName;
   /** The ordered model ids to try (primary first, then fallbacks). */
@@ -201,6 +203,8 @@ export interface AiCallResult<T> {
 
 /** Deps to build an {@link AiRuntime}. `generate` is the seam; the rest is config/wiring. */
 export interface AiRuntimeDeps {
+  /** Stop new generation calls and forward cancellation to the injected generator. */
+  signal?: AbortSignal;
   /**
    * The resolved config: `[ai]`/`[run]` budgets + `[ai.models]` overrides, plus `[timeouts]` for the
    * per-AI-call ceiling (`ai_call_ms` → `AiCallRuntime.timeoutMsByRole`, Fix 2). All optional.

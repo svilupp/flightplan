@@ -335,6 +335,13 @@ export interface WebMcpEvidence {
  * fields) so the CLI serializer can pass it through directly.
  */
 export interface RunSummary {
+  /**
+   * Additive schema-version marker for the `summary.json` / `--json` wire shape. Bumped only on
+   * a breaking shape change (never for additive fields); consumers that don't recognize a
+   * value should treat the summary conservatively. Reserved, not-yet-added: an `admission?`
+   * field for frozen-run admission (workers-slice-2 §6/§10).
+   */
+  summary_version: 1;
   verdict: RunVerdict;
   flow_id: string;
   run_id: string;

@@ -16,6 +16,7 @@ import type { AiRuntime, AiRuntimeDeps } from "../ai/index.ts";
 import type { RunSummary } from "../artifacts/index.ts";
 import type { ConnectConfig, ResolvedConfig } from "../config/types.ts";
 import type { Driver } from "../driver/index.ts";
+import type { FileSystemPort } from "../runtime.ts";
 import type { TelemetrySink } from "../telemetry/index.ts";
 
 /**
@@ -23,7 +24,10 @@ import type { TelemetrySink } from "../telemetry/index.ts";
  * `MockDriver` and production passes a `BrowserPilotDriver`. Called exactly once per
  * `runFlow`, BEFORE `connect()`.
  */
-export type DriverFactory = (connectCfg: ConnectConfig) => Driver;
+export type DriverFactory = (
+  connectCfg: ConnectConfig,
+  context?: { signal: AbortSignal },
+) => Driver;
 
 /**
  * A factory that produces the {@link AiRuntime} for one run (the L2/L3/L4 hooks, the `ai_judge`
@@ -56,6 +60,36 @@ export interface RunClock {
 export interface RunOptions {
   /** Absolute or cwd-relative path to the flow .toml to run. */
   flowPath: string;
+  /**
+   * The run's cwd (e.g. the CLI host's `io.cwd`), used ONLY to relativize `flowPath` (and every
+   * imported module's path) for the `source` recorded in a freshly created/reset lock header
+   * (`lock/parse.ts` `emptyLock`), so a committed lock stays portable even when the CALLER
+   * absolutizes `flowPath` first (adapter-cwd independence). Omit when `flowPath` is already the
+   * value you want recorded verbatim (e.g. most unit tests passing a bare relative path) —
+   * behavior is then unchanged (no relativization is attempted).
+   */
+  cwd?: string;
+  /**
+   * When supplied, the ROOT flow is parsed from this in-memory TOML text instead of being read
+   * from disk — `flowPath` is still used as the nominal path for imports/locks/relative resolution
+   * and the run directory/lock naming. Lets `runFlow` execute a flow with no filesystem access to
+   * the flow file itself (e.g. a Worker fetching TOML over the network). Imported/run-referenced
+   * modules and locks still resolve through `fs` (or the real filesystem when `fs` is omitted).
+   */
+  flowSource?: string;
+  /**
+   * Injectable filesystem for every run-path file operation (flow/import loading, lock read/
+   * write, artifact writes). Defaults to the real Node filesystem (`nodeFileSystem`), so default
+   * behavior is byte-for-byte unchanged when omitted. Inject an in-memory implementation to run
+   * `runFlow` somewhere with no `node:fs` (e.g. Cloudflare Workers).
+   */
+  fs?: FileSystemPort;
+  /** Stop the run and reject with RunInterruptedError. Already-dispatched effects may finish. */
+  signal?: AbortSignal;
+  /** Whole-run wall-clock deadline in milliseconds, including loading and artifact writes. */
+  timeoutMs?: number;
+  /** Maximum wait for driver cleanup after interruption (default 1000 ms). */
+  cleanupTimeoutMs?: number;
   /**
    * The fully-resolved config (built-in → global → imported → flow → CLI). The runner reads
    * `run` (budgets / assertion mode / fail_on_assertion / timeout), `connect` (the connect

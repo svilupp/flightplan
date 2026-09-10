@@ -6,7 +6,8 @@
 // (LockFile.source_hash) and §5 (Phase 1).
 
 import { formatIssues, parseToml } from "../config/parse.ts";
-import { readTextFile, sha256Text } from "../runtime.ts";
+import { defaultFileSystem } from "../fs-default.ts";
+import { type FileSystemPort, sha256Text } from "../runtime.ts";
 import { expandForEachInDoc, ForEachError } from "./normalize.ts";
 import { FlowFileSchema } from "./schema.ts";
 import type { FlowFile } from "./types.ts";
@@ -85,7 +86,8 @@ export function parseFlowFile(sourceText: string, path: string): LoadedFlow {
  * (TomlParseError, from parseToml) or a schema violation ({@link FlowValidationError},
  * including a wrong `kind`).
  */
-export async function loadFlowFile(path: string): Promise<LoadedFlow> {
-  const sourceText = await readTextFile(path);
+export async function loadFlowFile(path: string, fs?: FileSystemPort): Promise<LoadedFlow> {
+  const f = fs ?? (await defaultFileSystem());
+  const sourceText = await f.readTextFile(path);
   return parseFlowFile(sourceText, path);
 }

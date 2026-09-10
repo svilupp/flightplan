@@ -17,7 +17,8 @@
 
 import { z } from "zod";
 import { formatIssues, parseToml, TomlParseError } from "../config/parse.ts";
-import { fileExists, readTextFile } from "../runtime.ts";
+import { defaultFileSystem } from "../fs-default.ts";
+import type { FileSystemPort } from "../runtime.ts";
 import { STRATEGIES } from "../types.ts";
 import { normalizeLock } from "./portfolio.ts";
 import type { LockFile } from "./types.ts";
@@ -202,10 +203,12 @@ export async function loadLockFile(
   path: string,
   fresh?: { source?: string; source_hash?: string; description?: string },
   now: () => number = Date.now,
+  fs?: FileSystemPort,
 ): Promise<LockFile> {
-  if (!(await fileExists(path))) {
+  const f = fs ?? (await defaultFileSystem());
+  if (!(await f.fileExists(path))) {
     return emptyLock(fresh?.source ?? path, fresh?.source_hash ?? "", fresh?.description ?? "");
   }
-  const sourceText = await readTextFile(path);
+  const sourceText = await f.readTextFile(path);
   return parseLockFile(sourceText, path, now);
 }

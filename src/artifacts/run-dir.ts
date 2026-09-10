@@ -21,10 +21,21 @@
 // runIds and the directory name are reproducible (this module's brief; PLAN.md determinism
 // note).
 //
-// Dependency-light: only `node:fs/promises` + `node:path`.
+// Portable: no `node:*` imports. Path joining uses `src/paths.ts`; the default filesystem
+// resolves lazily via `src/fs-default.ts` only when no port is injected.
 
-import { mkdir } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { defaultFileSystem } from "../fs-default.ts";
+import { isAbsolute, join, resolve } from "../paths.ts";
+import type { FileSystemPort } from "../runtime.ts";
+
+/**
+ * The ambient cwd when available, `"/"` otherwise (Workers/bundled hosts have no `process`).
+ * Guarded the same way as `ambientEnv` (`runtime.ts`); no bare `process.` token here.
+ */
+function ambientCwd(): string {
+  const g = globalThis as { process?: { cwd?: () => string } };
+  return g.process?.cwd?.() ?? "/";
+}
 
 /** The default base directory for run artifacts. Gitignored by the scaffold. */
 export const DEFAULT_BASE_DIR = ".flightplan-runs";
@@ -128,7 +139,7 @@ export function makeRunId(now: () => number, genId: () => string): string {
  * CLI to display where artifacts WILL go before the run starts.
  */
 export function resolveRunDir(options: CreateRunOptions = {}): RunDir {
-  const cwd = options.cwd ?? process.cwd();
+  const cwd = options.cwd ?? ambientCwd();
   const rawBase = options.baseDir ?? DEFAULT_BASE_DIR;
   const baseDir = isAbsolute(rawBase) ? rawBase : resolve(cwd, rawBase);
   const runId = options.runId ?? makeRunId(options.now ?? Date.now, options.genId ?? defaultGenId);
@@ -153,14 +164,18 @@ export function resolveRunDir(options: CreateRunOptions = {}): RunDir {
  * The JSONL files and `summary.json` are NOT created here — the JSONL writers open them
  * lazily on first write and {@link import("./writers.ts")} writes the summary at the end.
  */
-export async function createRun(options: CreateRunOptions = {}): Promise<RunDir> {
+export async function createRun(
+  options: CreateRunOptions = {},
+  fs?: FileSystemPort,
+): Promise<RunDir> {
+  const f = fs ?? (await defaultFileSystem());
   const runDir = resolveRunDir(options);
   // `recursive: true` creates `<base>` and `<base>/<runId>` in one go and is a no-op if they
   // already exist.
-  await mkdir(runDir.dir, { recursive: true });
+  await f.mkdir(runDir.dir, { recursive: true });
   await Promise.all([
-    mkdir(runDir.screenshotsDir, { recursive: true }),
-    mkdir(runDir.proposedPatchesDir, { recursive: true }),
+    f.mkdir(runDir.screenshotsDir, { recursive: true }),
+    f.mkdir(runDir.proposedPatchesDir, { recursive: true }),
   ]);
   return runDir;
 }

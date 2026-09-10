@@ -19,6 +19,7 @@ export {
   lintFile,
   lintFlowFile,
   lintPaths,
+  lintText,
 } from "./lint.ts";
 export { formatHuman, formatJson } from "./report.ts";
 export { looksLikeUnprefixedSelector, RULE_IDS, RULES } from "./rules.ts";

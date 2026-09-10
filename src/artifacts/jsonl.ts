@@ -1,19 +1,18 @@
 // Flightplan — generic append-only JSONL writer.
 //
 // The shared low-level primitive the run/trace/ai writers build on. One JSON object per line,
-// newline-terminated. The file is opened lazily on the first write and kept open via a
-// Node/Bun `FileHandle` (one append fd) for cheap per-event appends; `close()` flushes and
-// releases it.
+// newline-terminated. Appends go through the injected {@link FileSystemPort} — no `node:fs` fd
+// is opened here, so this writer runs anywhere the port can (e.g. Cloudflare Workers).
 //
 // Async-safety: `write()` chains every append onto a single internal promise so concurrent
-// callers can never interleave bytes or race the lazy open. Each `write()` resolves only once
-// its own line has been handed to the OS, so callers can await durability per event if they
+// callers can never interleave bytes or race the port. Each `write()` resolves only once its
+// own line has been handed to the port, so callers can await durability per event if they
 // want, or fire-and-forget and `close()` at the end.
 //
 // This module is deliberately untyped at the payload level (`JsonlValue`) — the typed event
-// shaping lives in `writers.ts`. Keep it dependency-light: only `node:fs/promises`.
+// shaping lives in `writers.ts`.
 
-import { type FileHandle, open } from "node:fs/promises";
+import type { FileSystemPort } from "../runtime.ts";
 
 /**
  * A JSON-serializable event object. Any non-null object is accepted — the writer only requires
@@ -24,34 +23,26 @@ import { type FileHandle, open } from "node:fs/promises";
 export type JsonlValue = object;
 
 /**
- * An append-only newline-delimited JSON writer over a single file.
- *
- * Construct with a path; the file is created (and opened in append mode) on the first
- * `write()`. Safe to `write()` from concurrent callers. Always `close()` when done.
+ * An append-only newline-delimited JSON writer over a single file, backed by an injected
+ * {@link FileSystemPort}. Safe to `write()` from concurrent callers. `close()` is a no-op
+ * beyond draining the write queue — there is no fd to release (each append round-trips through
+ * `fs.appendTextFile`; accepted perf tradeoff, see PLAN §2.5).
  */
 export class JsonlWriter {
   readonly path: string;
-  private handle: FileHandle | null = null;
-  /** Serializes opens + appends so lines never interleave and the open never races. */
+  /** Serializes appends so lines never interleave. */
   private tail: Promise<void> = Promise.resolve();
   private closed = false;
+  private readonly fs: FileSystemPort;
 
-  constructor(path: string) {
+  constructor(path: string, fs: FileSystemPort) {
     this.path = path;
-  }
-
-  /** Open the append fd if not already open. Called under the serialized `tail`. */
-  private async ensureOpen(): Promise<FileHandle> {
-    if (this.handle === null) {
-      // "a" = append, create if missing. Each writer owns its own fd for its run dir.
-      this.handle = await open(this.path, "a");
-    }
-    return this.handle;
+    this.fs = fs;
   }
 
   /**
-   * Append one event as a single JSONL line. Resolves once the line has been written to the
-   * fd. Rejects if called after {@link close}, or if serialization/IO fails.
+   * Append one event as a single JSONL line. Resolves once the line has been handed to the
+   * port. Rejects if called after {@link close}, or if serialization/IO fails.
    */
   write(event: JsonlValue): Promise<void> {
     if (this.closed) {
@@ -73,8 +64,7 @@ export class JsonlWriter {
     }
 
     const next = this.tail.then(async () => {
-      const handle = await this.ensureOpen();
-      await handle.write(line);
+      await this.fs.appendTextFile(this.path, line);
     });
     // Keep the chain alive even if this write rejects, so later writes still run in order.
     this.tail = next.catch(() => {});
@@ -82,8 +72,8 @@ export class JsonlWriter {
   }
 
   /**
-   * Flush any pending writes and close the fd. Idempotent. After close, `write()` rejects.
-   * Awaits the full write chain so all queued lines are durable before the fd is released.
+   * Flush any pending writes. Idempotent. After close, `write()` rejects. Awaits the full write
+   * chain so all queued lines are durable before resolving.
    */
   async close(): Promise<void> {
     if (this.closed) {
@@ -91,11 +81,6 @@ export class JsonlWriter {
       return;
     }
     this.closed = true;
-    // Wait for all queued appends to drain, then close the fd if it was ever opened.
     await this.tail;
-    if (this.handle !== null) {
-      await this.handle.close();
-      this.handle = null;
-    }
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@svilupp/flightplan",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TOML-defined browser workflows with deterministic assertions, effect-aware retry policy, selector locks, and a layered resolver backed by browser-pilot.",
   "license": "MIT",
   "repository": {
@@ -25,6 +25,31 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js",
+      "default": "./dist/worker.js"
+    },
+    "./adapters/node": {
+      "types": "./dist/adapters/node/index.d.ts",
+      "import": "./dist/adapters/node/index.js",
+      "default": "./dist/adapters/node/index.js"
+    },
+    "./adapters/memory": {
+      "types": "./dist/adapters/memory.d.ts",
+      "import": "./dist/adapters/memory.js",
+      "default": "./dist/adapters/memory.js"
+    },
+    "./shell": {
+      "types": "./dist/shell/index.d.ts",
+      "import": "./dist/shell/index.js",
+      "default": "./dist/shell/index.js"
+    },
+    "./ai-sdk": {
+      "types": "./dist/ai/sdk.d.ts",
+      "import": "./dist/ai/sdk.js",
+      "default": "./dist/ai/sdk.js"
     }
   },
   "type": "module",
@@ -50,14 +75,16 @@
     "lint:fix": "biome check --write . && oxlint --type-aware --fix",
     "format": "biome format --write .",
     "typecheck": "bun run scripts/check.ts typecheck",
-    "test": "bun run scripts/check.ts test"
+    "test": "bun run scripts/check.ts test",
+    "test:package": "node scripts/package-smoke.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.119",
     "@ai-sdk/openai": "3.0.86",
+    "@noble/hashes": "^2.4.0",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "ai": "^6.0.272",
-    "browser-pilot": "^0.4.1",
+    "browser-pilot": "^0.5.0",
     "chrome-launcher": "1.2.1",
     "smol-toml": "^1.4.2",
     "zod": "4.4.3"
@@ -66,6 +93,7 @@
     "@biomejs/biome": "^2.5.2",
     "@types/bun": "latest",
     "@types/node": "^26.0.0",
+    "just-bash": "^3.4.2",
     "oxlint": "^1.72.0",
     "oxlint-tsgolint": "^0.24.0",
     "typescript": "^5"

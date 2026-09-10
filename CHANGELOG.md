@@ -4,11 +4,28 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-09
+
 ### Added
 
+- Generic `./shell` entry for host-provided command dispatch, filesystem, and browser capabilities. Just-bash is a dev dependency used only for consumer integration tests.
+- Embedding API with an exported `FileSystemPort`, in-memory root flows, VFS screenshots, and cancellation/deadlines with bounded cleanup and pending-operation reports.
 - Quiet check wrappers retain per-leg logs, report their paths on success, and print diagnostics on failure.
+- Worker-portability fitness gates: a hardened static-import walker (relative-extension and directory-index resolution, loud failure on an unresolvable specifier), a `browser-pilot` dist chunk gate with a documented expected-offenders snapshot, a `Bun.build({ target: "browser" })` bundle-size gate for `./worker`, and a packed-exports smoke covering `./worker`, `./adapters/node`, `./adapters/memory`, and `./shell`.
+- `./ai-sdk` subpath export (`@svilupp/flightplan/ai-sdk`) for the AI SDK provider-construction helpers, outside the worker-portable graph.
+
+### Removed
+
+- `createProvider`, `defaultGenerate`, `createGoogleGenerate`, `createOpenAiGenerate`, `createOpenRouterGenerate` and the types `CreateProviderOptions`, `DefaultGenerateOptions`, `ProviderFamily` left the AI module barrel (`src/ai/index.ts`, which the worker-portable `runFlow` graph statically reaches) so that graph stays free of `ai`/`@ai-sdk/*`/`@openrouter/*`. They moved to the new `./ai-sdk` subpath export (`@svilupp/flightplan/ai-sdk`) and are still available on the root `.` export — only the AI module barrel dropped them. Worker hosts should inject `RunOptions.aiRuntimeFactory` (or configure a provider + API key env) instead of relying on either surface.
 
 ### Fixed
+
+- Normalize hook paths for virtual filesystems, keep recording artifacts in injected storage, and stop AI fallbacks after cancellation.
+- Depend on browser-pilot ^0.5.0 only (dropped 0.4.x support); the real driver now sources `Page`/`TargetNotFoundError`/`Browser` from the portable `browser-pilot/core` entry and everything else from the root entry, with a packed-package compatibility check for release candidates.
+
+### Changed
+
+- Requires browser-pilot ^0.5.0.
 
 ## [0.1.0] - 2026-08-29
 
