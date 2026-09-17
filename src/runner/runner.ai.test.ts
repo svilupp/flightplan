@@ -845,19 +845,40 @@ target = "Primary action"
 // ---------------------------------------------------------------------------
 
 describe("runFlow AI — explicit classifier fail-fast (D1)", () => {
-  test('classifier="jev" with no TYPESAFE_API_KEY (and no OPENROUTER key) throws ClassifierConfigError naming the env NAME', async () => {
+  test('classifier="jev" with no TYPESAFE_API_KEY (and no OPENROUTER key) throws ClassifierConfigError naming BOTH default env NAMEs', async () => {
     const { flowPath, outDir } = await writeFlow(clickFlow("ai.jev.missingkey", "Create order"));
     const d = new MockDriver();
     const config = resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]);
 
     // No aiRuntimeFactory injected — exercises the REAL buildAiRuntime path. optsFor's env is {}
-    // (hermetic), so neither TYPESAFE_API_KEY nor OPENROUTER_API_KEY is present.
+    // (hermetic), so neither TYPESAFE_API_KEY nor OPENROUTER_API_KEY (nor JEV_API_KEY) is present.
     const run = runFlow(optsFor(flowPath, outDir, d, config));
     await expect(run).rejects.toBeInstanceOf(ClassifierConfigError);
     await run.catch((err) => {
-      expect((err as Error).message).toContain("TYPESAFE_API_KEY");
+      expect((err as Error).message).toContain('"TYPESAFE_API_KEY" (or "JEV_API_KEY")');
       // Never leaks a value, only the env NAME.
       expect((err as Error).message).not.toMatch(/sk-|Bearer/i);
+    });
+  });
+
+  test('classifier="jev" with an explicit jev_api_key_env names only that NAME (no alias) on a missing key', async () => {
+    const { flowPath, outDir } = await writeFlow(clickFlow("ai.jev.explicitenv", "Create order"));
+    const d = new MockDriver();
+    const config = resolveConfigWithDefaults([
+      { ai: { classifier: "jev", jev_api_key_env: "MY_TYPESAFE_KEY" } },
+    ]);
+
+    // TYPESAFE_API_KEY/JEV_API_KEY are both present but MUST be ignored — only the explicit NAME
+    // is consulted, and it's missing here.
+    const run = runFlow(
+      optsFor(flowPath, outDir, d, config, {
+        env: { TYPESAFE_API_KEY: "a", JEV_API_KEY: "b" },
+      }),
+    );
+    await expect(run).rejects.toBeInstanceOf(ClassifierConfigError);
+    await run.catch((err) => {
+      expect((err as Error).message).toContain('"MY_TYPESAFE_KEY"');
+      expect((err as Error).message).not.toContain("JEV_API_KEY");
     });
   });
 

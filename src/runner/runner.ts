@@ -55,6 +55,7 @@ import {
   type AssertionResult,
   runAssertions,
 } from "../assert/index.ts";
+import { jevApiKeyEnvLabel, resolveJevApiKeyEnv } from "../config/resolve.ts";
 import type { CacheConfig, ConnectConfig, ResolvedConfig } from "../config/types.ts";
 import {
   BrowserPilotDriver,
@@ -2944,8 +2945,9 @@ async function buildAiRuntime(
   }
   const keyEnv = opts.config.ai?.api_key_env ?? DEFAULT_API_KEY_ENV;
   const apiKey = env[keyEnv];
-  const jevKeyEnv = opts.config.ai?.jev_api_key_env ?? "TYPESAFE_API_KEY";
-  const jevApiKey = env[jevKeyEnv];
+  // `resolveJevApiKeyEnv` tries BOTH `TYPESAFE_API_KEY` and `JEV_API_KEY` when `jev_api_key_env`
+  // is unset/default; an explicit `jev_api_key_env` consults only that one NAME.
+  const { value: jevApiKey } = resolveJevApiKeyEnv(opts.config.ai?.jev_api_key_env, env);
   const classifier = opts.config.ai?.classifier ?? "auto";
 
   // A runtime is built when an LLM key exists (today's rule) OR the JEV key
@@ -2955,7 +2957,9 @@ async function buildAiRuntime(
   // reserved for `"auto"`'s missing-SDK degradation below. Checked BEFORE the `wantsRuntime` gate
   // so a missing prerequisite is never silently swallowed into an AI-less run.
   if (classifier === "jev" && !jevApiKey) {
-    throw new ClassifierConfigError(`[ai] classifier = "jev" but env "${jevKeyEnv}" is not set`);
+    throw new ClassifierConfigError(
+      `[ai] classifier = "jev" but env ${jevApiKeyEnvLabel(opts.config.ai?.jev_api_key_env)} is not set`,
+    );
   }
   if (classifier === "llm" && !apiKey) {
     throw new ClassifierConfigError(

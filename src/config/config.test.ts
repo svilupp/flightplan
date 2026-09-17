@@ -10,11 +10,14 @@ import {
   BUILTIN_DEFAULTS,
   ConfigSchema,
   ConfigValidationError,
+  DEFAULT_JEV_API_KEY_ENVS,
+  jevApiKeyEnvLabel,
   loadConfigFile,
   mergeConfigLayer,
   parseToml,
   resolveConfig,
   resolveConfigWithDefaults,
+  resolveJevApiKeyEnv,
   TomlParseError,
 } from "./index.ts";
 
@@ -622,5 +625,59 @@ domain = "prodej.wikov.app"
       auth: { cookie_file: "./cookies.json", cookie_file_env: "COOKIE_FILE_PATH" },
     };
     expect(() => ConfigSchema.parse(bad)).toThrow();
+  });
+});
+
+describe("resolveJevApiKeyEnv — TYPESAFE_API_KEY / JEV_API_KEY alias fallback", () => {
+  test("default (unset): TYPESAFE_API_KEY wins when both are present", () => {
+    const resolved = resolveJevApiKeyEnv(undefined, {
+      TYPESAFE_API_KEY: "a",
+      JEV_API_KEY: "b",
+    });
+    expect(resolved).toEqual({ envName: "TYPESAFE_API_KEY", value: "a", isDefault: true });
+  });
+
+  test("default (unset): falls back to JEV_API_KEY when only it is set", () => {
+    const resolved = resolveJevApiKeyEnv(undefined, { JEV_API_KEY: "b" });
+    expect(resolved).toEqual({ envName: "JEV_API_KEY", value: "b", isDefault: true });
+  });
+
+  test("default (unset), neither present: reports the primary NAME with no value", () => {
+    const resolved = resolveJevApiKeyEnv(undefined, {});
+    expect(resolved).toEqual({
+      envName: DEFAULT_JEV_API_KEY_ENVS[0],
+      value: undefined,
+      isDefault: true,
+    });
+  });
+
+  test("explicit jev_api_key_env ignores BOTH default names", () => {
+    const resolved = resolveJevApiKeyEnv("MY_TYPESAFE_KEY", {
+      TYPESAFE_API_KEY: "a",
+      JEV_API_KEY: "b",
+      MY_TYPESAFE_KEY: "c",
+    });
+    expect(resolved).toEqual({ envName: "MY_TYPESAFE_KEY", value: "c", isDefault: false });
+
+    // Even when the explicit name's own env var is unset, the defaults are never consulted.
+    const missing = resolveJevApiKeyEnv("MY_TYPESAFE_KEY", {
+      TYPESAFE_API_KEY: "a",
+      JEV_API_KEY: "b",
+    });
+    expect(missing).toEqual({ envName: "MY_TYPESAFE_KEY", value: undefined, isDefault: false });
+  });
+
+  test("jevApiKeyEnvLabel: default names both env vars; explicit names only its own", () => {
+    expect(jevApiKeyEnvLabel(undefined)).toBe('"TYPESAFE_API_KEY" (or "JEV_API_KEY")');
+    expect(jevApiKeyEnvLabel("TYPESAFE_API_KEY")).toBe('"TYPESAFE_API_KEY" (or "JEV_API_KEY")');
+    expect(jevApiKeyEnvLabel("MY_TYPESAFE_KEY")).toBe('"MY_TYPESAFE_KEY"');
+  });
+
+  test("config defaults survive resolveConfigWithDefaults (jev_api_key_env stays the default NAME)", () => {
+    const resolved = resolveConfigWithDefaults([]);
+    expect(resolved.ai?.jev_api_key_env).toBe("TYPESAFE_API_KEY");
+    // ...and the alias fallback still applies to that default NAME at lookup time.
+    const withAlias = resolveJevApiKeyEnv(resolved.ai?.jev_api_key_env, { JEV_API_KEY: "x" });
+    expect(withAlias).toEqual({ envName: "JEV_API_KEY", value: "x", isDefault: true });
   });
 });

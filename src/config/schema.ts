@@ -77,8 +77,19 @@ export const AiConfigSchema = z
     api_key_env: z.string().min(1).optional(),
     /** L2 element-choice backend. Default `"auto"` (key-availability driven). */
     classifier: z.enum(AI_CLASSIFIERS).optional(),
-    /** Env var NAME holding the TypeSafe key (never a value). Default `"TYPESAFE_API_KEY"`. */
-    jev_api_key_env: z.string().min(1).optional(),
+    /** Env var NAME holding the JEV/TypeSafe key (never a value). Default `"TYPESAFE_API_KEY"`;
+     * JEV is TypeSafe's model, hence that default NAME. When unset, `"JEV_API_KEY"` is also
+     * accepted as an alias (both are tried). Setting this field OVERRIDES the name and disables
+     * the alias fallback — only the configured NAME is then consulted. */
+    jev_api_key_env: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Env var NAME holding the JEV/TypeSafe key (never a value). Default "TYPESAFE_API_KEY" ' +
+          '(JEV is TypeSafe\'s model); "JEV_API_KEY" is accepted as an alias when this is unset. ' +
+          "Setting this overrides the name and disables the alias fallback.",
+      ),
     // budgets may live under [ai] (global) and/or [run] (flow-local). Both are allowed.
     max_model_calls: z.number().int().nonnegative().optional(),
     max_screenshots: z.number().int().nonnegative().optional(),

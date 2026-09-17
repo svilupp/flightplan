@@ -7,7 +7,8 @@
 // latency + choice/confidence for each. Acceptance (phase-1 gate): match the flat-string
 // baseline — 4/4 correct picks + a clean `none_of_the_above` abstain.
 //
-// NEVER prints the API key. Skips (exit 0) when `TYPESAFE_API_KEY` is unset.
+// NEVER prints the API key. Skips (exit 0) when neither `TYPESAFE_API_KEY` nor `JEV_API_KEY`
+// (an accepted alias) is set.
 //
 //   bun --env-file=.env scripts/jev-smoke.ts
 
@@ -15,6 +16,7 @@ import { BudgetTracker } from "../src/ai/budget.ts";
 import { buildSystemOneRequest, JEV_NONE_KEY, jevCall } from "../src/ai/chooser-jev.ts";
 import { CostAccumulator } from "../src/ai/cost.ts";
 import type { CandidatePacketEntry } from "../src/ai/resolve-common.ts";
+import { DEFAULT_JEV_API_KEY_ENVS, resolveJevApiKeyEnv } from "../src/config/resolve.ts";
 
 // The experiment's 20-candidate login page (`.scratch/jev/02_element_picking.ts`), re-encoded
 // as `{role, name, context?}` structured candidates (index-aligned with the flat-string c1..c20).
@@ -55,9 +57,9 @@ const EXPECTED: Record<string, number> = {
 };
 
 async function main(): Promise<void> {
-  const apiKey = process.env.TYPESAFE_API_KEY;
+  const { value: apiKey } = resolveJevApiKeyEnv(undefined, process.env);
   if (!apiKey) {
-    console.log("skipped: TYPESAFE_API_KEY not set");
+    console.log(`skipped: neither ${DEFAULT_JEV_API_KEY_ENVS.join(" nor ")} is set`);
     return;
   }
 

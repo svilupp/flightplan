@@ -13,6 +13,7 @@
 // presence and supplies `provider.defaultGenerate` for real runs (see `provider.ts`).
 
 import type { AiJudgeOptions, AssertionResult } from "../assert/types.ts";
+import { jevApiKeyEnvLabel } from "../config/resolve.ts";
 import type { AiJudgeAssertion } from "../flow/types.ts";
 import type { ModelRoleName } from "../types.ts";
 import { classifyL4 } from "./advisor-l4.ts";
@@ -106,7 +107,7 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
   // build it from the resolved config + key availability. `jevAvailable`/`llmAvailable` are the
   // env/generate-presence booleans `resolveChooserChain` consumes.
   const classifier = deps.config.ai?.classifier ?? "auto";
-  const jevKeyEnv = deps.config.ai?.jev_api_key_env ?? "TYPESAFE_API_KEY";
+  const jevKeyEnv = jevApiKeyEnvLabel(deps.config.ai?.jev_api_key_env);
   const jevAvailable = !!deps.jevApiKey;
   const choosers: CandidateChooser[] =
     deps.choosers ??

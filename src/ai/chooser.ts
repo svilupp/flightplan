@@ -121,7 +121,10 @@ export function resolveChooserChain(opts: {
   classifier: ClassifierName;
   /** `env[jevKeyEnv]` was non-empty at runtime-build time. */
   jevAvailable: boolean;
-  /** Env var NAME (never a value) — used only in the `ClassifierConfigError` message. */
+  /** Env var NAME LABEL (never a value) — used verbatim (already quoted) in the
+   * `ClassifierConfigError` message. Build via `jevApiKeyEnvLabel` (`config/resolve.ts`): the
+   * default case names both `"TYPESAFE_API_KEY"`/`"JEV_API_KEY"`; an explicit `jev_api_key_env`
+   * names only that one NAME. */
   jevKeyEnv: string;
   /** A real `GenerateFn` exists (provider key present / factory-injected). */
   llmAvailable: boolean;
@@ -134,7 +137,7 @@ export function resolveChooserChain(opts: {
     case "jev":
       if (!opts.jevAvailable) {
         throw new ClassifierConfigError(
-          `[ai] classifier = "jev" but env "${opts.jevKeyEnv}" is not set`,
+          `[ai] classifier = "jev" but env ${opts.jevKeyEnv} is not set`,
         );
       }
       return [opts.makeJev()];
