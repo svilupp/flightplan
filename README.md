@@ -630,9 +630,18 @@ provider = "openrouter"               # uses OPENROUTER_API_KEY
   naming the missing env var (never a silent no-op, never a value in the error). `"heuristic"`
   needs no key at all.
 - A **JEV-only setup** (`TYPESAFE_API_KEY` set, no generative provider key) covers L2 element
-  choice only — L3 vision, L4 advisor, the L5 planner, and `ai_judge` are all unavailable, and an
-  `ai_judge` assertion is **skipped with a message**, the same as a fully AI-less run (never
-  failed closed).
+  choice only — L3 vision, L4 advisor, the L5 planner, and `ai_judge` are all unavailable. An
+  `ai_judge` assertion under a JEV-only (or fully AI-less) runtime **fails that assertion** with a
+  clearly-marked "not available" message (`pass: false`) — it is a real, counted assertion
+  failure, never a silent skip. It is still distinct from a judge FAILING CLOSED on a model-call
+  error: no model call is ever attempted or charged, and the message is always the same
+  not-available text, never a judge verdict.
+
+**L0 zero-call replay needs a UNIQUE healed selector.** After an L2 (JEV or LLM) heal, the next
+run replays at L0 with zero model calls ONLY when the learned selector durably resolves to one
+element. A page with several visually/semantically identical candidates (e.g. three unlabelled
+"Save" buttons distinguished only by surrounding context) re-resolves at L2 on EVERY run — there
+is no selector that is durable AND unique for that target, so warm replay never engages.
 
 Keep the planner off for deterministic safety proofs:
 
