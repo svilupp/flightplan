@@ -2,29 +2,6 @@
 
 Semver. Each release gets a short, user-facing note: what changed for someone *using* the platform (operators, API consumers, deployers), not internal refactors. Keep entries minimal - one line where possible, grouped under `Added` / `Changed` / `Fixed` / `Removed` only when needed.
 
-## [0.3.1] - 2026-09-17
-
-### Added
-
-- `[config.ai] classifier = "auto" | "heuristic" | "jev" | "llm"` (default `"auto"`) selects the
-  L2 element-choice backend. New `jev` option calls TypeSafe's non-generative JEV classifier
-  (`jev_api_key_env`, default `TYPESAFE_API_KEY`) for a fast element pick; `"auto"` prefers JEV
-  over the existing LLM resolver by key availability, and an explicit `classifier` with a missing
-  key/provider fails fast at runtime build instead of falling back silently.
-- A deterministic, zero-key heuristic chooser now runs as a fallback rung after JEV/LLM before
-  escalating further, so `"auto"` chains no longer give up as early on an L2 abstain.
-- A JEV-only setup (no generative provider key) can resolve L2 element choices on its own; higher
-  AI tiers and `ai_judge` remain unavailable and an `ai_judge` assertion under that setup fails
-  clearly instead of being silently skipped.
-- `scripts/jev-smoke.ts`: opt-in live smoke check for the JEV classifier, gated on
-  `TYPESAFE_API_KEY`.
-
-### Changed
-
-- L2 escalation/abstain reason strings are now prefixed by the chooser that produced them (e.g.
-  `llm: give_up` instead of `L2: give_up`); cosmetic for log/report consumers that string-match
-  `error`/`reason` text.
-
 ## [0.3.0] - 2026-09-16
 
 ### Added
@@ -35,10 +12,31 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
   snapshot into a warning instead of a fatal error and recaptures the snapshot after a successful
   run.
 - `examples/flows/auth-state-example.toml` demonstrating the `cookie_file` + `cookie_save` shape.
+- `[config.ai] classifier = "auto" | "heuristic" | "jev" | "llm"` (default `"auto"`) selects the
+  L2 element-choice backend. The new `jev` option calls TypeSafe's non-generative JEV classifier
+  (keys: https://console.typesafe.ai/keys) for a fast element pick; the key is read from
+  `jev_api_key_env` (default `TYPESAFE_API_KEY`, with `JEV_API_KEY` accepted as an alias when the
+  field is left unset). `"auto"` prefers JEV over the existing LLM resolver by key availability,
+  and an explicit `classifier` with a missing key/provider fails fast at runtime build instead of
+  falling back silently.
+- A deterministic, zero-key heuristic chooser now runs as a fallback rung after JEV/LLM before
+  escalating further, so `"auto"` chains no longer give up as early on an L2 abstain.
+- A JEV-only setup (no generative provider key) can resolve L2 element choices on its own; higher
+  AI tiers and `ai_judge` remain unavailable and an `ai_judge` assertion under that setup fails
+  clearly instead of being silently skipped.
+- `scripts/jev-smoke.ts`: opt-in live smoke check for the JEV classifier, gated on
+  `TYPESAFE_API_KEY`.
 
 ### Changed
 
 - Requires browser-pilot ^0.6.0.
+- Fatal saved-auth-state errors now include the snapshot path (e.g. invalid format, unsupported
+  version, cookie rejected by the browser).
+- L2 escalation/abstain reason strings are now prefixed by the chooser that produced them (e.g.
+  `llm: give_up` instead of `L2: give_up`); cosmetic for log/report consumers that string-match
+  `error`/`reason` text.
+- `flightplan run` now prints `Error: <reason>` for verdict `error`, and the `--json` output /
+  `summary.json` include an `error` field.
 
 ## [0.2.0] - 2026-09-09
 

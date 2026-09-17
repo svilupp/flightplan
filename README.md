@@ -44,7 +44,7 @@ at `localhost:9222`, so start Chrome/Chromium with remote debugging enabled firs
 `[config.connect]` block with `mode = "launch"`. Deterministic L0/L1 flows need no API key.
 AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY` by default. The L2
 element-choice step can instead (or additionally) use the TypeSafe JEV classifier via
-`TYPESAFE_API_KEY` — see "AI tiers and planner" below.
+`TYPESAFE_API_KEY` (keys available at https://console.typesafe.ai/keys) — see "AI tiers and planner" below.
 
 The simplest way to pick a model is `[config.ai.models.default]`: it seeds every AI role (resolver,
 advisor, vision, planner, planner_capable) at once, so you don't repeat the same block per role:
@@ -612,13 +612,20 @@ L2 ("which candidate element matches this intent") is answered by an ordered cha
 # "auto" (default): JEV -> LLM -> heuristic, by key availability.
 # Explicit "jev" | "llm" | "heuristic": that chooser ONLY; a missing key fails the run at start.
 classifier = "auto"
-jev_api_key_env = "TYPESAFE_API_KEY"  # env var NAME, never a value (default shown)
+jev_api_key_env = "TYPESAFE_API_KEY"  # env var NAME, never a value (default shown); keys at https://console.typesafe.ai/keys
 
 # The generative provider still powers L3 vision / L4 advisor / L5 planner / ai_judge, and (with
 # classifier="auto") is the JEV-abstain fallback for L2 too. With classifier="jev" it never
 # backs L2, only the deeper tiers.
 provider = "openrouter"               # uses OPENROUTER_API_KEY
 ```
+
+**API key**: JEV is TypeSafe's model, hence the default env var NAME `TYPESAFE_API_KEY`. When
+`jev_api_key_env` is left unset, `JEV_API_KEY` is ALSO accepted as an alias (both names are tried,
+`TYPESAFE_API_KEY` first) — useful if you'd rather name the env var after the classifier itself.
+Setting `jev_api_key_env` explicitly OVERRIDES the name and disables the alias: only that one name
+is then consulted. Either way, `[config.ai]` and every error/telemetry surface hold only the env var
+NAME, never the key value.
 
 - **`"auto"`** (default) is a PREFERENCE ORDERING, not a strict requirement: JEV first when
   `TYPESAFE_API_KEY` is set (a ~200-500ms non-generative classification call), then the LLM
