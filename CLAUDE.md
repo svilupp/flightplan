@@ -9,6 +9,8 @@ guide are in `README.md`; contract details are in `docs/`.
 - `src/flow/` — TOML schemas, normalization, templating, imports, and composition.
 - `src/runner/runner.ts` — execution, retries, assertions, artifacts, and teardown.
 - `src/driver/` — the browser-pilot boundary and `MockDriver` test seam.
+- `src/ai/chooser*.ts` — the L2 `CandidateChooser` abstraction (`HeuristicChooser`, `LlmChooser`,
+  the TypeSafe JEV `JevChooser`) and the `[config.ai] classifier` chain-selection rule.
 - `src/artifacts/` and `src/redaction/` — run evidence and fail-closed secret handling.
 - `scripts/check.ts` and `scripts/run-quiet` — quiet development checks and retained per-leg logs.
 - `docs/BROWSER_PILOT_INTEGRATION.md` — recording-to-TOML workflow and browser integration contract.

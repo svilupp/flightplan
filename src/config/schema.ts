@@ -64,10 +64,21 @@ export const ModelRegistrySchema = z
  */
 export const AI_PROVIDERS = ["openrouter", "google", "openai"] as const;
 
+/**
+ * L2 candidate chooser (PLAN_JEV.md §5). `"auto"` = preference ordering: JEV (if its key is
+ * set) → LLM (if a generative provider is available) → heuristic. An explicit value is STRICT:
+ * that single chooser only, and a missing key/provider is a config error at runtime build.
+ */
+export const AI_CLASSIFIERS = ["auto", "heuristic", "jev", "llm"] as const;
+
 export const AiConfigSchema = z
   .object({
     provider: z.enum(AI_PROVIDERS).optional(),
     api_key_env: z.string().min(1).optional(),
+    /** L2 element-choice backend. Default `"auto"` (key-availability driven). */
+    classifier: z.enum(AI_CLASSIFIERS).optional(),
+    /** Env var NAME holding the TypeSafe key (never a value). Default `"TYPESAFE_API_KEY"`. */
+    jev_api_key_env: z.string().min(1).optional(),
     // budgets may live under [ai] (global) and/or [run] (flow-local). Both are allowed.
     max_model_calls: z.number().int().nonnegative().optional(),
     max_screenshots: z.number().int().nonnegative().optional(),

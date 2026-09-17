@@ -70,4 +70,33 @@ describe("AI lazy-load failure resilience", () => {
     expect(aiWarnings).toHaveLength(1);
     expect(aiWarnings[0]).toContain(cause.message);
   });
+
+  test("a JEV-only runtime (classifier=jev, no OPENROUTER_API_KEY) never touches the lazy default-generate loader", async () => {
+    // If `buildAiRuntime` ever called the lazy loader for a JEV-only runtime, this rejection
+    // would surface as an `onWarn` "AI SDK unavailable" message — asserted absent below.
+    __setDefaultGenerateLoaderForTests(() =>
+      Promise.reject(new Error("the lazy loader must not be reached for a JEV-only runtime")),
+    );
+
+    const warnings: string[] = [];
+    const fs = memoryFileSystem();
+    const driver = new MockDriver();
+
+    const result = await runFlow({
+      flowPath: "/virtual/flow.toml",
+      flowSource: FLOW_SOURCE,
+      fs,
+      env: { TYPESAFE_API_KEY: "fixture-jev-key-not-used" },
+      out: "/virtual/runs",
+      runId: "ai-lazy-load-jev",
+      config: resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]),
+      driverFactory: () => driver,
+      noLockWrite: true,
+      onWarn: (message) => warnings.push(message),
+    });
+
+    expect(result.summary.verdict).toBe("passed");
+    const aiWarnings = warnings.filter((w) => w.includes("AI SDK unavailable"));
+    expect(aiWarnings).toHaveLength(0);
+  });
 });

@@ -180,6 +180,23 @@ describe("resolution-order precedence", () => {
     // Opt in explicitly.
     expect(resolveConfigWithDefaults([{ plan: { enabled: true } }]).plan.enabled).toBe(true);
   });
+
+  test("classifier / jev_api_key_env defaults are present when unset (PLAN_JEV.md \u00a77.7)", () => {
+    const resolved = resolveConfigWithDefaults([]);
+    expect(resolved.ai?.classifier).toBe("auto");
+    expect(resolved.ai?.jev_api_key_env).toBe("TYPESAFE_API_KEY");
+  });
+
+  test("a user-set classifier / jev_api_key_env survive the post-merge `ai` rebuild", () => {
+    const resolved = resolveConfigWithDefaults([
+      { ai: { classifier: "jev", jev_api_key_env: "MY_TYPESAFE_KEY" } },
+    ]);
+    expect(resolved.ai?.classifier).toBe("jev");
+    expect(resolved.ai?.jev_api_key_env).toBe("MY_TYPESAFE_KEY");
+    // provider/api_key_env are still filled in as before (the rebuild didn't drop them either).
+    expect(resolved.ai?.provider).toBe("openrouter");
+    expect(resolved.ai?.api_key_env).toBe("OPENROUTER_API_KEY");
+  });
 });
 
 describe("[timeouts] — action/nav ceilings (fixes 30s hangs)", () => {

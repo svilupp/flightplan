@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { memoryFileSystem } from "../adapters/memory.ts";
+import { AuthStateUnavailableError } from "../driver/connect-resolution.ts";
 import { MockDriver } from "../driver/index.ts";
 import { type CommandIO, executeLint, executeRun } from "./commands.ts";
 
@@ -170,5 +171,40 @@ describe("executeRun", () => {
     const { exitCode } = await executeRun(["run"], io);
     expect(exitCode).toBe(2);
     expect(err.join("\n")).toContain("expected one path argument");
+  });
+
+  test("a harness/connect error (verdict error) surfaces the reason: human stderr + --json error field", async () => {
+    const flowWithAuth = `${FLOW_SOURCE}
+[config.auth]
+cookie_file = "cookies.json"
+cookie_save = false
+`;
+    const driver = new MockDriver();
+    driver.setAuthStateUnavailable(
+      new AuthStateUnavailableError("expired", "/virtual/cookies.json"),
+    );
+
+    const { io: humanIo, out: humanOut, err: humanErr } = makeIo({ driverFactory: () => driver });
+    await humanIo.fs.writeTextFile("/virtual/flow.toml", flowWithAuth);
+    const humanResult = await executeRun(["run", "/virtual/flow.toml", "--no-lock-write"], humanIo);
+    expect(humanResult.exitCode).toBe(2);
+    expect(humanOut.join("\n")).toContain("Verdict: ERROR");
+    expect(humanErr.some((l) => l.startsWith("Error: ") && l.includes("expired"))).toBe(true);
+
+    const jsonDriver = new MockDriver();
+    jsonDriver.setAuthStateUnavailable(
+      new AuthStateUnavailableError("expired", "/virtual/cookies.json"),
+    );
+    const { io: jsonIo, out: jsonOut } = makeIo({ driverFactory: () => jsonDriver });
+    await jsonIo.fs.writeTextFile("/virtual/flow.toml", flowWithAuth);
+    const jsonResult = await executeRun(
+      ["run", "/virtual/flow.toml", "--json", "--no-lock-write"],
+      jsonIo,
+    );
+    expect(jsonResult.exitCode).toBe(2);
+    const summary = JSON.parse(jsonOut.join("")) as { verdict: string; error?: string };
+    expect(summary.verdict).toBe("error");
+    expect(summary.error).toBeDefined();
+    expect(summary.error).toContain("expired");
   });
 });

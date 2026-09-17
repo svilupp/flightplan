@@ -478,9 +478,12 @@ function buildAssertContext(
   // keeps its Phase-2 stub and AI-less runs are unchanged. The engine only ever routes a narrowed
   // `ai_judge` assertion here, so the cast to `AiJudgeAssertion` is sound (and sidesteps the
   // contravariant-param mismatch between the seam's `Assertion` slot and `judge`'s narrower param).
-  if (runtime) {
-    const active = runtime;
-    ctx.aiJudge = (assertion, opts) => active.judge(assertion as AiJudgeAssertion, opts);
+  // Wired only when `runtime.judge` exists: a JEV-only runtime (no `generate`) has no `judge`,
+  // so `ai_judge` assertions stay skipped-with-message exactly as in an AI-less run (the
+  // `Phase4NotImplementedError` path) — never failed closed (PLAN_JEV.md §4).
+  if (runtime?.judge) {
+    const activeJudge = runtime.judge;
+    ctx.aiJudge = (assertion, opts) => activeJudge(assertion as AiJudgeAssertion, opts);
   }
   return ctx;
 }
@@ -1712,7 +1715,7 @@ async function executeSteps(
         // `try` so a `BudgetExceededError` from the shared screenshot/vision call maps to
         // `inconclusive` via the same handler as a single-step AI call.
         if (
-          runtime &&
+          runtime?.hooks.resolveBatchL3 &&
           !batchResults.has(step.id) &&
           isVisionBatchable(step) &&
           visionBatchRunLength(steps, cursor) >= 2
@@ -1728,9 +1731,8 @@ async function executeSteps(
           ctx.ai = runtime.hooks;
           // Wrap the bound batch hook in an arrow (the hook is `this`-free, but referencing it bare
           // trips oxlint `unbound-method`); this is the `BatchVisionResolve` the ladder injects.
-          const groupResults = await resolveVisionBatch(group, ctx, (s, c) =>
-            runtime.hooks.resolveBatchL3(s, c),
-          );
+          const resolveBatchL3 = runtime.hooks.resolveBatchL3;
+          const groupResults = await resolveVisionBatch(group, ctx, (s, c) => resolveBatchL3(s, c));
           group.forEach((g, i) => {
             const r = groupResults[i];
             if (r) batchResults.set(g.id, r);
@@ -1935,8 +1937,8 @@ async function executeSteps(
         !state.runError &&
         !transportAmbiguous &&
         step.effect !== "at_most_once" &&
-        stepsAttempted <= steps.length + 1 && // guard is soft; max_steps is the real backstop
-        runtime &&
+        stepsAttempted <= steps.length + 1 &&
+        runtime?.planner &&
         services.plan.enabled &&
         action.advisory?.kind === "intent_changed" &&
         !repairedDivergences.has(step.id)
@@ -1993,7 +1995,7 @@ async function executeSteps(
       if (
         !state.aborted &&
         stepOk &&
-        runtime &&
+        runtime?.planner &&
         services.plan.enabled &&
         isPathMutatingStep(step)
       ) {
@@ -2934,7 +2936,37 @@ async function buildAiRuntime(
   }
   const keyEnv = opts.config.ai?.api_key_env ?? DEFAULT_API_KEY_ENV;
   const apiKey = env[keyEnv];
-  if (!apiKey) return undefined;
+  const jevKeyEnv = opts.config.ai?.jev_api_key_env ?? "TYPESAFE_API_KEY";
+  const jevApiKey = env[jevKeyEnv];
+  const classifier = opts.config.ai?.classifier ?? "auto";
+
+  // PLAN_JEV.md §5/§6: a runtime is built when an LLM key exists (today's rule) OR the JEV key
+  // exists with `classifier` ∈ {auto, jev} OR `classifier === "heuristic"` (no key needed at all).
+  // An explicit `classifier = "jev"`/`"llm"` with a missing prerequisite is a FAIL-FAST config
+  // error (`ClassifierConfigError`) surfaced at run start — never the fail-open `onWarn` path
+  // reserved for `"auto"`'s missing-SDK degradation below.
+  const jevUsable = !!jevApiKey && (classifier === "auto" || classifier === "jev");
+  const wantsRuntime = !!apiKey || jevUsable || classifier === "heuristic";
+  if (!wantsRuntime) return undefined;
+
+  const baseDeps = {
+    config: opts.config,
+    aiWriter: writers.ai,
+    now: () => clock.now(),
+    redactor,
+    onAiCall,
+    ...(opts.signal ? { signal: opts.signal } : {}),
+    ...(jevApiKey ? { jevApiKey } : {}),
+  };
+
+  // JEV-only / heuristic-only runtimes: skip the lazy SDK import entirely (no generative provider
+  // key present). `createAiRuntime` throws `ClassifierConfigError` for a strict explicit setting
+  // with a missing prerequisite (e.g. `classifier="jev"` with no key) — let it propagate as a
+  // run-start config error.
+  if (!apiKey) {
+    return createAiRuntime(baseDeps);
+  }
+
   const provider = opts.config.ai?.provider ?? "openrouter";
   let generate: GenerateFn;
   try {
@@ -2952,16 +2984,14 @@ async function buildAiRuntime(
         "Inject `aiRuntimeFactory` to supply AI on hosts without the SDKs bundled. " +
         `Cause: ${causeMessage}`,
     );
-    return undefined;
+    // Fall through to a JEV/heuristic-only runtime when one is usable without the SDK; only
+    // return `undefined` (today's degrade-to-AI-less behavior) when nothing else is usable.
+    if (!jevUsable && classifier !== "heuristic") return undefined;
+    return createAiRuntime(baseDeps);
   }
   return createAiRuntime({
-    config: opts.config,
+    ...baseDeps,
     generate,
-    aiWriter: writers.ai,
-    now: () => clock.now(),
-    redactor,
-    onAiCall,
-    ...(opts.signal ? { signal: opts.signal } : {}),
   });
 }
 
@@ -3287,6 +3317,7 @@ function buildSummary(
     ...(Object.keys(captures).length > 0 ? { captures } : {}),
     ...(state.pages.length > 0 ? { pages: [...state.pages] } : {}),
     steps: state.stepSummaries,
+    ...(state.runError ? { error: state.runError } : {}),
   };
 }
 

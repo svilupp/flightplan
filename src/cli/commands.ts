@@ -507,6 +507,9 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     io.stdout(JSON.stringify(result.summary, null, 2));
   } else {
     io.stdout(formatRunSummary(result.summary));
+    if (result.summary.verdict === "error" && result.summary.error) {
+      io.stderr(`Error: ${result.summary.error}`);
+    }
   }
   return { exitCode: result.exitCode };
 }

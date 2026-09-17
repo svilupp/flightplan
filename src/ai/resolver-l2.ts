@@ -9,9 +9,7 @@
 
 import type { Step } from "../flow/types.ts";
 import type { ResolveContext, StepExecution } from "../ladder/index.ts";
-import { isBudgetExceeded } from "./budget.ts";
-import type { AiCallRuntime } from "./call.ts";
-import { aiCall } from "./call.ts";
+import type { CandidateChooser } from "./chooser.ts";
 import type { CandidatePacketEntry } from "./resolve-common.ts";
 import {
   actOnPick,
@@ -21,7 +19,6 @@ import {
   gatherCandidates,
   storedNoteForStep,
 } from "./resolve-common.ts";
-import { ResolverDecisionSchema } from "./schemas.ts";
 
 /** Minimum confidence to ACT on a resolver pick; below this we escalate to disambiguate. */
 export const L2_MIN_CONFIDENCE = 0.5;
@@ -77,9 +74,16 @@ export function buildResolverPrompt(
   return lines.join("\n");
 }
 
-/** L2 resolver: consume the L1 escalation, pick by index, act. */
+/**
+ * L2 resolver: consume the L1 escalation, walk the ordered {@link CandidateChooser} chain, pick
+ * by index, act. On a chooser `abstain`/`error` the next chooser in the chain runs (inside the
+ * SAME L2 invocation, no re-snapshot); an `escalateTo: "vision"` result and an exhausted chain
+ * both escalate — the orchestrator's `nextAiHook` routes an L2 escalation to L3 when wired
+ * (`escalateTo` is documentation of intent; no special-cased routing is needed here). Behavior
+ * with a single-element `[LlmChooser]` chain is byte-identical to the pre-extraction `resolveL2`.
+ */
 export async function resolveL2(
-  rt: AiCallRuntime,
+  choosers: CandidateChooser[],
   step: Step,
   _prior: StepExecution,
   ctx: ResolveContext,
@@ -89,58 +93,38 @@ export async function resolveL2(
   const packet = buildCandidatePacket(ranked, contextByRef);
   // note_in: the FRESH stored note (advisory context) for this target, if any (DESIGN §4).
   const noteIn = await storedNoteForStep(step, ctx);
+  const chooseCtx = { step, action, ...(noteIn !== undefined ? { note: noteIn } : {}) };
 
-  let decision: Awaited<ReturnType<typeof aiCall<typeof ResolverDecisionSchema>>>;
-  try {
-    decision = await aiCall(rt, {
-      modelRole: "resolver",
-      callRole: "resolver",
-      purpose: `resolve:${step.id}`,
-      schema: ResolverDecisionSchema,
-      maxOutputTokens: AI_DEFAULT_OUTPUT_TOKENS,
-      prompt: buildResolverPrompt(intentText, action, packet, noteIn),
-    });
-  } catch (err) {
-    if (isBudgetExceeded(err)) throw err; // budgets fail the run fast — never swallowed
-    return escalateExecution("L2", {
-      ranked,
-      intentText,
-      action,
-      error: `L2 resolver call failed: ${err instanceof Error ? err.message : String(err)}`,
-    });
+  let lastReason = "L2: no chooser available";
+  for (const chooser of choosers) {
+    const result = await chooser.choose(intentText, packet, chooseCtx);
+    if (result.kind === "pick") {
+      if (!ranked[result.index]) {
+        lastReason = `${chooser.kind}: pick index ${result.index} out of range`;
+        continue;
+      }
+      const exec = await actOnPick(step, ctx, {
+        tier: "L2",
+        chosen: ranked[result.index]!,
+        elements,
+        ranked,
+        signatureBasis,
+        intentText,
+        action,
+      });
+      // note_out: attach the model's emitted note (if any) so the write-back can sanitize +
+      // redact + persist it. Confidence-gated (PLAN_v003 §6 v003-4): a note survives only from a
+      // CORROBORATED pick (the model chose the deterministic fuzzy #1) OR a HIGH-CONFIDENCE pick.
+      // `ranked` is sorted best-first, so `index === 0` with a real fuzzy score means text ranking
+      // and the model agree. Only a generative chooser (LLM) ever sets `note`.
+      const corroborated = result.index === 0 && (ranked[0]?.score ?? 0) > 0;
+      return attachEmittedNote(exec, result.note, {
+        corroborated,
+        confidence: result.confidence,
+      });
+    }
+    lastReason = `${chooser.kind}: ${result.reason}`;
   }
 
-  const d = decision.output;
-  if (
-    d.decision !== "pick" ||
-    d.index === undefined ||
-    (d.confidence ?? 0) < L2_MIN_CONFIDENCE ||
-    !ranked[d.index]
-  ) {
-    return escalateExecution("L2", {
-      ranked,
-      intentText,
-      action,
-      error: `L2: ${d.decision}${d.reason ? ` — ${d.reason}` : ""} (confidence ${d.confidence ?? 0})`,
-    });
-  }
-
-  const exec = await actOnPick(step, ctx, {
-    tier: "L2",
-    chosen: ranked[d.index]!,
-    elements,
-    ranked,
-    signatureBasis,
-    intentText,
-    action,
-  });
-  // note_out: attach the model's emitted note (if any) so the write-back can sanitize + redact +
-  // persist it. Confidence-gated (PLAN_v003 §6 v003-4): a note survives only from a CORROBORATED
-  // pick (the model chose the deterministic fuzzy #1) OR a HIGH-CONFIDENCE pick. `ranked` is sorted
-  // best-first, so `index === 0` with a real fuzzy score means text ranking and the model agree.
-  const corroborated = d.index === 0 && (ranked[0]?.score ?? 0) > 0;
-  return attachEmittedNote(exec, d.note, {
-    corroborated,
-    ...(d.confidence !== undefined ? { confidence: d.confidence } : {}),
-  });
+  return escalateExecution("L2", { ranked, intentText, action, error: lastReason });
 }

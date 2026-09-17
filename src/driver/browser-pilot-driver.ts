@@ -330,7 +330,8 @@ export class BrowserPilotDriver implements Driver {
    * restore a session. With `cookie_save` on, the rest of `[config.auth]` (mint / headers /
    * literal cookies) is still applied before that error is thrown, so a fresh snapshot can be
    * captured after a successful run; with `cookie_save` off, it throws immediately and applies
-   * nothing else. Other snapshot errors (`invalid_format`, `io_error`, …) propagate raw.
+   * nothing else. Other snapshot errors (`invalid_format`, `io_error`, …) are wrapped in a plain
+   * `Error` naming the snapshot file, with the original error kept as `cause`.
    */
   async applyAuth(
     auth: AuthConfig | undefined,
@@ -1262,9 +1263,12 @@ function dedupeAttributeNames(
  * Map a `CookieStateError` thrown while loading/restoring a saved-auth-state cookie snapshot
  * into the driver's public `AuthStateUnavailableError`, for the codes the `Driver.applyAuth`
  * contract documents as caller-recoverable (`not_found`/`expired`/`empty`/`nothing_restored`).
- * Any other error (a different `CookieStateError` code, or a non-`CookieStateError` at all —
- * e.g. an `io_error`/`invalid_format`/`invalid_cookie` bug in the snapshot) propagates unchanged,
- * since the contract only promises `AuthStateUnavailableError` for the four documented codes.
+ * Any other error (a different `CookieStateError` code — e.g. `invalid_format`, `io_error`,
+ * `invalid_cookie` — or a non-`CookieStateError` at all, such as a raw CDP error) is NOT
+ * caller-recoverable, so it is wrapped in a plain `Error` that names the snapshot file and
+ * keeps the original as `cause` (so `error.cause instanceof CookieStateError` still works for
+ * callers that want the code). The wrapped message only reuses the original error's `message`,
+ * which browser-pilot guarantees is free of cookie values.
  */
 function mapCookieStateError(err: unknown, ref: string): unknown {
   if (
@@ -1276,7 +1280,11 @@ function mapCookieStateError(err: unknown, ref: string): unknown {
   ) {
     return new AuthStateUnavailableError(err.code, ref);
   }
-  return err;
+  const message = err instanceof Error ? err.message : String(err);
+  return new Error(
+    `[config.auth] saved auth state at ${ref} could not be loaded/restored: ${message}`,
+    { cause: err },
+  );
 }
 
 /** The action verbs that can trigger navigation and so get the settle default. */

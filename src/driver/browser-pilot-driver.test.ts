@@ -654,7 +654,7 @@ describe("BrowserPilotDriver saveAuthState + applyAuth cookie_file (real browser
     expect(page.headerCalls).toEqual([]);
   });
 
-  test("garbage-JSON snapshot + cookie_save=true throws a raw CookieStateError, not AuthStateUnavailableError", async () => {
+  test("garbage-JSON snapshot + cookie_save=true throws a wrapped error naming the file, with CookieStateError as cause", async () => {
     const filePath = join(dir, "garbage.json");
     await writeFile(filePath, "{ not valid json", "utf8");
     const driver = new BrowserPilotDriver();
@@ -668,7 +668,12 @@ describe("BrowserPilotDriver saveAuthState + applyAuth cookie_file (real browser
       caught = err;
     }
     expect(caught).not.toBeInstanceOf(AuthStateUnavailableError);
-    expect(caught).toBeInstanceOf(CookieStateError);
+    expect(caught).not.toBeInstanceOf(CookieStateError);
+    expect(caught).toBeInstanceOf(Error);
+    const err = caught as Error;
+    expect(err.message).toContain(filePath);
+    expect(err.message).toContain("[config.auth] saved auth state at");
+    expect(err.cause).toBeInstanceOf(CookieStateError);
   });
 
   test("paths.flowDir resolves a relative cookie_file", async () => {

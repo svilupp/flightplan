@@ -62,7 +62,7 @@ function buildVisionRuntime(generate: GenerateFn, sink: AiCallSink) {
     registry: ai.registry,
     budget: ai.budget,
     cost: ai.cost,
-    generate: ai.generate,
+    generate: ai.generate!,
     aiWriter: ai.aiWriter,
   };
   return { rt, ai };

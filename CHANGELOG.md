@@ -4,6 +4,31 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ## [Unreleased]
 
+### Added
+
+- `[config.ai] classifier = "auto" | "heuristic" | "jev" | "llm"` (default `"auto"`) selects the
+  L2 element-choice backend. New `jev` chooser calls TypeSafe's non-generative "JEV" System One
+  Choice API (`jev_api_key_env`, default `TYPESAFE_API_KEY`) for a ~200-500ms element pick with
+  calibrated probabilities, ahead of the existing LLM resolver in `"auto"` mode. A JEV-only setup
+  (no generative provider key) covers L2 only — L3/L4/L5/`ai_judge` stay unavailable and
+  `ai_judge` assertions are skipped-with-message, same as a fully AI-less run.
+- `scripts/jev-smoke.ts`: opt-in live smoke for the JEV classifier (`bun --env-file=.env
+  scripts/jev-smoke.ts`), gated on `TYPESAFE_API_KEY`.
+
+### Changed
+
+- **Breaking (internal API) for direct importers of `src/ai/resolver-l2.ts`**: `resolveL2`'s
+  signature changed from `(rt, step, prior, ctx)` to `(choosers, step, prior, ctx)` — it now
+  walks an ordered `CandidateChooser[]` chain instead of calling one hardcoded LLM path. Behavior
+  with the default `[LlmChooser]` chain is unchanged.
+- A JEV call counts as one `max_model_calls` budget unit and is logged to `ai.jsonl` under the
+  new `AiCallRole` value `"classifier"`, attributed to the `resolver` cost role in
+  `model_usage` (JEV pricing is unpublished, so `cost_usd` is `0` — only `max_model_calls`
+  bounds JEV spend today).
+- With `classifier = "auto"` and both an LLM and a JEV key present, a deterministic
+  zero-key `HeuristicChooser` now also runs as the terminal chain rung before an L2 escalation
+  to L3 (previously an LLM-only run escalated straight to L3 on an L2 abstain).
+
 ## [0.3.0] - 2026-09-16
 
 ### Added
@@ -17,9 +42,7 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Changed
 
-- Requires browser-pilot ^0.6.0. Until it is published to npm, browser-pilot 0.6.0 is vendored at
-  `.vendor/browser-pilot-0.6.0.tgz` (a `file:` dependency); the dependency will be restored to
-  `^0.6.0` once it's published.
+- Requires browser-pilot ^0.6.0.
 
 ## [0.2.0] - 2026-09-09
 
