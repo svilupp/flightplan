@@ -107,7 +107,7 @@ export const DEFAULT_TIMEOUTS = {
  * did not set `api_key_env` explicitly. */
 export const DEFAULT_AI = {
   provider: "openrouter",
-  // PLAN_JEV.md §5: provider-independent (unlike `api_key_env`), so these go straight into the
+  // Provider-independent (unlike `api_key_env`), so these go straight into the
   // built-in defaults layer rather than being filled in post-merge.
   classifier: "auto",
   jev_api_key_env: "TYPESAFE_API_KEY",

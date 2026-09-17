@@ -181,7 +181,7 @@ export interface RunPathRepairOpts {
 export async function runPathRepair(opts: RunPathRepairOpts): Promise<PathRepairResult> {
   const { runtime, goal, divergence, ctx, recent } = opts;
   // Callers (`runRepairAndSplice`) only invoke this after confirming `runtime.planner` exists
-  // (guarded on `runtime && runtime.planner` at both trigger sites in runner.ts — PLAN_JEV.md §6).
+  // (guarded on `runtime && runtime.planner` at both trigger sites in runner.ts).
   const planner = runtime.planner!;
   let escalated = false;
 

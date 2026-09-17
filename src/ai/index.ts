@@ -47,6 +47,7 @@ export type {
 } from "./chooser-jev.ts";
 export {
   buildSystemOneRequest,
+  dedupeCandidatesForJev,
   JEV_API_URL,
   JEV_MAX_CANDIDATES,
   JEV_MAX_RETRIES,
@@ -55,6 +56,7 @@ export {
   JEV_MODEL,
   JEV_NONE_KEY,
   JEV_OPTION_ENCODING,
+  JEV_PICK_INSTRUCTIONS,
   JEV_RETRY_DELAY_MS,
   JEV_TIMEOUT_MS,
   JevChooser,

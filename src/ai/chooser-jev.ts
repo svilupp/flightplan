@@ -1,5 +1,5 @@
 // Flightplan — `JevChooser`: the TypeSafe "JEV" System One Choice classifier as a
-// `CandidateChooser` (PLAN_JEV.md §4). Plain injected `fetch` — no AI SDK, no `node:` imports, so
+// `CandidateChooser`. Plain injected `fetch` — no AI SDK, no `node:` imports, so
 // this file stays worker-portable by construction (fitness: `src/fitness/worker-portability.test.ts`).
 //
 // One JEV call == one `budget.noteModelCall()` unit == one `ai_call` event (`role: "classifier"`)
@@ -14,7 +14,7 @@ import type { CandidatePacketEntry } from "./resolve-common.ts";
 import type { AiCallSink } from "./types.ts";
 
 // ---------------------------------------------------------------------------
-// Constants (all in one reviewable block, per docs/jev/JEV_SKILL.md)
+// Constants (all in one reviewable block)
 // ---------------------------------------------------------------------------
 
 export const JEV_API_URL = "https://api.typesafe.ai/v1/systemone";
@@ -34,6 +34,22 @@ export const JEV_MAX_CANDIDATES = 200;
 /** The candidate-option encoding sent to JEV. `"structured"` is the phase-1 default (§4/§7.6). */
 export type JevOptionEncoding = "structured" | "flat";
 export const JEV_OPTION_ENCODING: JevOptionEncoding = "structured";
+/**
+ * The `pick` question's `instructions` (§4/§7.6, B1 live comparison). Live data (structured
+ * encoding, 20-candidate login set, 7 intents × 3 reps): the ORIGINAL bare instructions scored
+ * 20/21 with one flaky near-threshold abstain on an action-describing intent ("submit the form"
+ * → c10/c10/none_of_the_above, confidence 0.50/0.48/0.55 — straddling `JEV_MIN_CONFIDENCE`); the
+ * FLAT encoding scored WORSE on the same case (18/21, 0/3 on "submit the form"). Telling the
+ * model the intent may describe PURPOSE rather than a literal label — and naming "submit the
+ * form" as the running example — made that exact case robust (3/3, confidence 0.93–0.95, top-two
+ * probability gap ~0.9) with the SAME structured encoding: 21/21 across all 7 intents × 3 reps.
+ * `JEV_OPTION_ENCODING` therefore stays `"structured"`; only the instructions text changed.
+ */
+export const JEV_PICK_INSTRUCTIONS =
+  "Which UI element does the user intent in state.intent refer to? The intent may describe the " +
+  'element\'s purpose or action rather than its literal label (e.g. "submit the form" means the ' +
+  'primary submit/confirm button for the current form, usually a "Sign in"/"Continue"/"Submit" ' +
+  "button, not a generic link). Consider state.action.";
 
 // ---------------------------------------------------------------------------
 // Request/response types (SDK-free — no `zod` needed, this is our own wire contract)
@@ -85,6 +101,34 @@ function parseOptionKey(key: string): number | undefined {
   return Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
+/** The (role,name,context) identity key two candidates are indistinguishable to JEV under. */
+function dedupeKey(c: CandidatePacketEntry): string {
+  return `${c.role}\u0000${c.name}\u0000${c.context ?? ""}`;
+}
+
+/**
+ * Group candidates by identical `(role,name,context)` and keep only the FIRST (highest-scored,
+ * since the packet arrives best-first) representative per group (B3). Two entries JEV cannot
+ * distinguish (identical role/name/context — the only signals it ever sees) split probability
+ * mass across duplicate options instead of concentrating it on one, which can push a genuinely
+ * confident pick under `JEV_MIN_CONFIDENCE`/`JEV_MIN_PROB_GAP` and cause a false abstain. This is
+ * a defense-in-depth on top of `buildCandidatePacket`'s `ref`-based dedup (`resolve-common.ts`) —
+ * it also catches `ref`-less duplicates (synthetic candidates, direct `resolveL2` callers/tests)
+ * that dedup never sees. The representative's `index` is one of the ORIGINAL candidate indices,
+ * so `ranked[index]` (the `actOnPick` lookup contract) resolves exactly as before.
+ */
+export function dedupeCandidatesForJev(candidates: CandidatePacketEntry[]): CandidatePacketEntry[] {
+  const seen = new Set<string>();
+  const deduped: CandidatePacketEntry[] = [];
+  for (const c of candidates) {
+    const key = dedupeKey(c);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(c);
+  }
+  return deduped;
+}
+
 function criterionValue(c: CandidatePacketEntry): JevCriterionValue | string {
   if (JEV_OPTION_ENCODING === "flat") {
     return c.context ? `${c.role} '${c.name}' (${c.context})` : `${c.role} '${c.name}'`;
@@ -120,8 +164,7 @@ export function buildSystemOneRequest(
     questions: {
       pick: {
         type: "choice",
-        instructions:
-          "Which UI element does the user intent in state.intent refer to? Consider state.action.",
+        instructions: JEV_PICK_INSTRUCTIONS,
         criteria,
       },
     },
@@ -152,6 +195,8 @@ export interface JevCallRuntime {
   fetchFn?: typeof fetch;
   /** The env var holding the TypeSafe API key value (never logged). */
   apiKey: string;
+  /** Runtime-level abort signal (D5) — combined per attempt with that attempt's fetch timeout. */
+  signal?: AbortSignal;
 }
 
 export interface JevCallResult {
@@ -160,6 +205,37 @@ export interface JevCallResult {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Type-guard the shape `JevChooser`/`jevCall` depend on (§4 decision rule). */
+function isValidChoiceAnswer(a: unknown): a is ChoiceAnswer {
+  if (!a || typeof a !== "object") return false;
+  const r = a as Record<string, unknown>;
+  return (
+    typeof r.choice === "string" &&
+    typeof r.confidence === "number" &&
+    Number.isFinite(r.confidence) &&
+    !!r.probabilities &&
+    typeof r.probabilities === "object" &&
+    !Array.isArray(r.probabilities)
+  );
+}
+
+/**
+ * Validate a parsed 200 response body against the `SystemOneResponse` shape (§4). A non-object
+ * body (e.g. a non-JSON response, or valid JSON that isn't an object — `null`, a string, an
+ * array), a missing `model`, a missing `answers.pick`, or a `pick` answer missing/mistyped
+ * `choice`/`confidence`/`probabilities` are all rejected here so a malformed 200 can NEVER throw
+ * an uncaught TypeError deeper in `JevChooser.choose` (D2: a malformed response must degrade to
+ * `{ kind: "error" }`, never crash the whole run).
+ */
+function isValidSystemOneResponse(json: unknown): json is SystemOneResponse {
+  if (!json || typeof json !== "object") return false;
+  const r = json as Record<string, unknown>;
+  if (typeof r.model !== "string") return false;
+  const answers = r.answers;
+  if (!answers || typeof answers !== "object" || Array.isArray(answers)) return false;
+  return isValidChoiceAnswer((answers as Record<string, unknown>).pick);
 }
 
 async function doFetch(
@@ -203,17 +279,26 @@ export async function jevCall(
   rt.budget.noteModelCall();
 
   const fetchFn = rt.fetchFn ?? globalThis.fetch;
-  const timeoutSignal = AbortSignal.timeout(JEV_TIMEOUT_MS);
-  const combined = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
+  // D5: the runtime-level abort signal is combined with the per-call `signal` (both external to
+  // any one fetch attempt) so either can cancel every attempt, not just the first.
+  const externalSignal: AbortSignal | undefined =
+    rt.signal && signal ? AbortSignal.any([rt.signal, signal]) : (rt.signal ?? signal);
 
   let attempt = 0;
   let lastErr: unknown;
   let statusJson: { status: number; json: unknown } | undefined;
   while (attempt <= JEV_MAX_RETRIES) {
+    // D4: a FRESH per-attempt fetch timeout — a slow/timed-out first attempt must not also start
+    // its retry already expired (a single shared `AbortSignal.timeout` covering every attempt).
+    const timeoutSignal = AbortSignal.timeout(JEV_TIMEOUT_MS);
+    const attemptSignal = externalSignal
+      ? AbortSignal.any([timeoutSignal, externalSignal])
+      : timeoutSignal;
     try {
-      statusJson = await doFetch(fetchFn, rt.apiKey, body, combined);
-      // Retry only on 5xx; never on 4xx.
-      if (statusJson.status >= 500 && attempt < JEV_MAX_RETRIES) {
+      statusJson = await doFetch(fetchFn, rt.apiKey, body, attemptSignal);
+      // Retry only on 5xx; never on 4xx; never when the EXTERNAL signal (not the per-attempt
+      // timeout) already fired — a caller cancellation must not spend another attempt (D4).
+      if (statusJson.status >= 500 && attempt < JEV_MAX_RETRIES && !externalSignal?.aborted) {
         attempt += 1;
         await sleep(JEV_RETRY_DELAY_MS);
         continue;
@@ -221,7 +306,7 @@ export async function jevCall(
       break;
     } catch (err) {
       lastErr = err;
-      if (attempt < JEV_MAX_RETRIES) {
+      if (attempt < JEV_MAX_RETRIES && !externalSignal?.aborted) {
         attempt += 1;
         await sleep(JEV_RETRY_DELAY_MS);
         continue;
@@ -266,7 +351,26 @@ export async function jevCall(
     throw new Error(`jev: ${detail}`);
   }
 
-  const response = statusJson.json as SystemOneResponse;
+  // A 200 with an unparseable/malformed body (non-JSON response, JSON that isn't an object, a
+  // missing/mistyped `answers.pick`) must degrade to an error result, NEVER throw an uncaught
+  // TypeError deeper in `JevChooser.choose` (D2). The event is still emitted — the call happened.
+  if (!isValidSystemOneResponse(statusJson.json)) {
+    const outcome = "error";
+    const payload = {
+      role: "classifier" as const,
+      model: JEV_MODEL,
+      purpose,
+      inputTokens: 0,
+      outputTokens: 0,
+      cost_usd: 0,
+      outcome,
+    };
+    await rt.aiWriter.emitAiCall(payload);
+    notifyJevCall(rt, payload);
+    throw new Error("jev: malformed response body");
+  }
+
+  const response = statusJson.json;
   const usage = response.usage ?? { input_tokens: 0, output_tokens: 0 };
   // cost_usd: 0 — JEV pricing is unpublished (§8 open question); tokens are still recorded.
   rt.cost.add("resolver", response.model, {
@@ -275,7 +379,7 @@ export async function jevCall(
     cost_usd: 0,
   });
 
-  const outcome = classifyOutcome(response.answers?.pick);
+  const outcome = classifyOutcome(response.answers.pick);
   const payload = {
     role: "classifier" as const,
     model: response.model,
@@ -337,7 +441,17 @@ export class JevChooser implements CandidateChooser {
     candidates: CandidatePacketEntry[],
     ctx: ChooseContext,
   ): Promise<ChooseResult> {
-    const body = buildSystemOneRequest(intent, ctx.action, candidates, ctx.note);
+    // D6: an empty packet abstains LOCALLY — no candidate could ever be chosen, so there's
+    // nothing for JEV to reason about. Never spend a JEV call (budget/network/event) on it.
+    if (candidates.length === 0) {
+      return { kind: "abstain", reason: "jev: no candidates" };
+    }
+
+    // B3: collapse indistinguishable duplicate options BEFORE building the request — send JEV
+    // one option per distinct (role,name,context) group instead of splitting its probability
+    // mass across identical-looking decoys.
+    const deduped = dedupeCandidatesForJev(candidates);
+    const body = buildSystemOneRequest(intent, ctx.action, deduped, ctx.note);
     let result: JevCallResult;
     try {
       result = await jevCall(this.rt, `resolve:${ctx.step.id}`, body, ctx.signal);
@@ -346,10 +460,7 @@ export class JevChooser implements CandidateChooser {
       return { kind: "error", reason: `jev: ${err instanceof Error ? err.message : String(err)}` };
     }
 
-    const answer = result.response.answers?.pick;
-    if (!answer) {
-      return { kind: "error", reason: "jev: malformed response (missing pick answer)" };
-    }
+    const answer = result.response.answers.pick;
 
     if (answer.choice === JEV_NONE_KEY) {
       return { kind: "abstain", reason: "jev: none_of_the_above" };

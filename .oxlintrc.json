@@ -12,7 +12,13 @@
     "correctness": "error",
     "suspicious": "warn"
   },
-  "ignorePatterns": ["node_modules/**", ".flightplan-runs/**", "docs/**", "**/*.tsbuildinfo"],
+  "ignorePatterns": [
+    "node_modules/**",
+    ".flightplan-runs/**",
+    "docs/**",
+    ".scratch/**",
+    "**/*.tsbuildinfo"
+  ],
   "overrides": [
     {
       "files": ["**/*.test.ts"],

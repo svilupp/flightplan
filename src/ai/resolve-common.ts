@@ -182,12 +182,34 @@ export function buildAncestorContextMap(tree: SnapshotNode[]): Map<string, strin
   return map;
 }
 
-/** Project ranked candidates into the index-numbered packet, attaching ancestor context by `ref`. */
+/**
+ * Project ranked candidates into the index-numbered packet, attaching ancestor context by `ref`.
+ *
+ * De-duplicates by `ref` (B3): native ranking (`Driver.resolveAll`) legitimately returns MULTIPLE
+ * strategy matches for the SAME physical element — e.g. `role_name` + `label` + `scoped_text` all
+ * resolving the SAME `ref` — because that diversity is a genuine, wanted fallback for LOCK
+ * SEEDING (`ranked` itself, and `StepExecution.candidates`, are left untouched — this dedup only
+ * affects the AI-facing PACKET). To every AI-tier chooser, though, two packet entries sharing a
+ * `ref` are the SAME candidate (choosers never see raw selectors, so they cannot tell the
+ * strategies apart) — repeating it just dilutes probability mass / skews a top-two-gap check
+ * without adding a real option. Kept ONLY the FIRST occurrence per `ref` (the highest-scored one,
+ * since `ranked` is sorted best-first). A `ref`-less entry (synthetic candidates, tests) is never
+ * deduplicated here — there's no unambiguous identity signal to dedupe it by at this layer (see
+ * `JevChooser.choose`'s (role,name,context) dedupe for a `ref`-independent defense-in-depth).
+ * `entry.index` stays the candidate's ORIGINAL position in `ranked` (not renumbered), so
+ * `ranked[entry.index]` (the `actOnPick` / resolveL2 lookup contract) is unaffected.
+ */
 export function buildCandidatePacket(
   ranked: RankedCandidate[],
   contextByRef?: Map<string, string>,
 ): CandidatePacketEntry[] {
-  return ranked.map((c, index) => {
+  const seenRefs = new Set<string>();
+  const packet: CandidatePacketEntry[] = [];
+  ranked.forEach((c, index) => {
+    if (c.ref) {
+      if (seenRefs.has(c.ref)) return;
+      seenRefs.add(c.ref);
+    }
     const entry: CandidatePacketEntry = {
       index,
       role: c.role,
@@ -196,8 +218,9 @@ export function buildCandidatePacket(
     };
     const context = c.ref ? contextByRef?.get(c.ref) : undefined;
     if (context) entry.context = context;
-    return entry;
+    packet.push(entry);
   });
+  return packet;
 }
 
 /** The freshly-gathered resolution inputs for an AI tier. */

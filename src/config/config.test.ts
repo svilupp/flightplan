@@ -181,7 +181,7 @@ describe("resolution-order precedence", () => {
     expect(resolveConfigWithDefaults([{ plan: { enabled: true } }]).plan.enabled).toBe(true);
   });
 
-  test("classifier / jev_api_key_env defaults are present when unset (PLAN_JEV.md \u00a77.7)", () => {
+  test("classifier / jev_api_key_env defaults are present when unset", () => {
     const resolved = resolveConfigWithDefaults([]);
     expect(resolved.ai?.classifier).toBe("auto");
     expect(resolved.ai?.jev_api_key_env).toBe("TYPESAFE_API_KEY");

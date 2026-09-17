@@ -65,7 +65,7 @@ export const ModelRegistrySchema = z
 export const AI_PROVIDERS = ["openrouter", "google", "openai"] as const;
 
 /**
- * L2 candidate chooser (PLAN_JEV.md §5). `"auto"` = preference ordering: JEV (if its key is
+ * L2 candidate chooser. `"auto"` = preference ordering: JEV (if its key is
  * set) → LLM (if a generative provider is available) → heuristic. An explicit value is STRICT:
  * that single chooser only, and a missing key/provider is a config error at runtime build.
  */

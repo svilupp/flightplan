@@ -1,5 +1,5 @@
 // Flightplan — `LlmChooser`: the generative resolver text pick as a `CandidateChooser`
-// (PLAN_JEV.md §3, extracted from the pre-Phase-0 body of `resolveL2`).
+// (extracted from the pre-Phase-0 body of `resolveL2`).
 //
 // Behavior-identical to the original `resolveL2`: `buildResolverPrompt` + `aiCall` with
 // `ResolverDecisionSchema` + the `L2_MIN_CONFIDENCE` gate. `decision === "screenshot_needed"` →

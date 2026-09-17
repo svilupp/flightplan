@@ -156,6 +156,86 @@ describe("buildCandidatePacket", () => {
     const packet = buildCandidatePacket([noRef], contextByRef);
     expect("context" in packet[0]!).toBe(false);
   });
+
+  // B3: native ranking (`Driver.resolveAll`) legitimately returns MULTIPLE strategy matches for
+  // the SAME physical element (e.g. role_name + label + scoped_text all resolving the same
+  // `ref`) — a genuine fallback-selector diversity for lock seeding, but an AI-facing decoy that
+  // dilutes probability mass / skews a top-two-gap check. `buildCandidatePacket` must collapse
+  // same-`ref` duplicates to ONE packet entry while leaving `ranked` itself untouched.
+  test("de-duplicates multiple strategy matches for the SAME ref into one packet entry", () => {
+    const ranked: RankedCandidate[] = [
+      {
+        ref: "e2",
+        role: "button",
+        name: "Save",
+        selector: "role:button:Save",
+        strategy: "role_name",
+        score: 0.9,
+      },
+      {
+        ref: "e4",
+        role: "button",
+        name: "Save",
+        selector: "role:button:Save",
+        strategy: "role_name",
+        score: 0.7,
+      },
+      // Same physical element as the first (e2), matched via a DIFFERENT strategy — the
+      // real-world shape observed in the gauntlet fixture (role_name + label + scoped_text,
+      // all ref:e2).
+      {
+        ref: "e2",
+        role: "button",
+        name: "Save",
+        selector: '[aria-label="Save"]',
+        strategy: "label",
+        score: 0.86,
+      },
+      {
+        ref: "e2",
+        role: "button",
+        name: "Save",
+        selector: 'text:"Save"',
+        strategy: "scoped_text",
+        score: 0.8,
+      },
+    ];
+    const contextByRef = buildAncestorContextMap(GAUNTLET_TREE);
+    const packet = buildCandidatePacket(ranked, contextByRef);
+
+    // Only TWO distinct physical elements (e2, e4) survive, not four.
+    expect(packet).toHaveLength(2);
+    // The FIRST (highest-scored, since `ranked` is sorted best-first) occurrence per ref wins —
+    // `index` stays the ORIGINAL position in `ranked` (0 and 1), NOT renumbered/compacted.
+    expect(packet[0]).toEqual({
+      index: 0,
+      role: "button",
+      name: "Save",
+      score: 0.9,
+      context: "Billing address",
+    });
+    expect(packet[1]).toEqual({
+      index: 1,
+      role: "button",
+      name: "Save",
+      score: 0.7,
+      context: "Search filters",
+    });
+    // `ranked` itself is untouched — the fallback-selector diversity survives for lock seeding.
+    expect(ranked).toHaveLength(4);
+  });
+
+  test("ref-less duplicates are NOT collapsed by buildCandidatePacket (no unambiguous identity signal)", () => {
+    const noRef: RankedCandidate = {
+      role: "button",
+      name: "Save",
+      selector: "text:Save",
+      strategy: "css",
+      score: 0.5,
+    };
+    const packet = buildCandidatePacket([noRef, { ...noRef }]);
+    expect(packet).toHaveLength(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

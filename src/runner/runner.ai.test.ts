@@ -20,7 +20,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GenerateFn, GenerateRequest } from "../ai/index.ts";
-import { createAiRuntime } from "../ai/index.ts";
+import { ClassifierConfigError, createAiRuntime } from "../ai/index.ts";
 import { FakeClock } from "../assert/clock.ts";
 import type { ConnectConfig, ResolvedConfig } from "../config/index.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
@@ -674,7 +674,7 @@ describe("runFlow AI — cost totals", () => {
 });
 
 // ---------------------------------------------------------------------------
-// JEV classifier (PLAN_JEV.md §7.4) — fake fetch, no network
+// JEV classifier — fake fetch, no network
 // ---------------------------------------------------------------------------
 
 function jevResponse(choice: string, confidence: number, probabilities: Record<string, number>) {
@@ -790,10 +790,92 @@ describe("runFlow AI — JEV classifier (fake fetch)", () => {
     );
     expect(result.summary.verdict).toBe("inconclusive");
   });
+
+  test("a JEV pick on an ai_pick step produces a pinned_choice in the lock", async () => {
+    const PICK_URL = "http://localhost:3000/pick";
+    const AIPICK_FLOW = `
+version = 1
+kind = "flow"
+id = "ai.jev.pick"
+description = "ai_pick pin via JEV"
+
+[[steps]]
+id = "act"
+do = "ai_pick"
+target = "Primary action"
+`;
+    const { flowPath, outDir } = await writeFlow(AIPICK_FLOW);
+    const lockPath = flowPath.replace(/\.toml$/i, ".lock.toml");
+
+    const d = new MockDriver();
+    d.setSnapshot(
+      makeSnapshot({
+        url: PICK_URL,
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "button", name: "Primary action" }),
+        ],
+      }),
+    );
+    d.setResolveAll([makeRankedCandidate({ ref: "e1", role: "button", name: "Primary action" })]);
+    d.setSignature(`${PICK_URL}|jevpicksig`);
+    d.enqueueBatchResult(makeFailureBatch("hidden")); // L1 fails → escalate to L2
+    d.enqueueBatchResult(makeSuccessBatch("role:button:Primary action")); // L2 (JEV pick) acts
+
+    const fetchFn = fakeJevFetch([jevResponse("c0", 0.97, { c0: 0.97, none_of_the_above: 0.03 })]);
+    const config = resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]);
+    const factory: AiRuntimeFactory = (deps) =>
+      createAiRuntime({ ...deps, jevApiKey: "fixture-jev-key", fetchFn });
+
+    const result = await runFlow(
+      optsFor(flowPath, outDir, d, config, { aiRuntimeFactory: factory }),
+    );
+
+    expect(result.summary.verdict).toBe("passed");
+    expect(result.summary.steps[0]?.tier).toBe("L2");
+
+    const pinned = await loadLockFile(lockPath);
+    expect(pinned.targets[0]?.kind).toBe("ai_pick");
+    expect(pinned.targets[0]?.pinned_choice?.selector).toBe("role:button:Primary action");
+    expect(pinned.targets[0]?.pinned_choice?.label).toBe("Primary action");
+  });
 });
 
 // ---------------------------------------------------------------------------
-// JEV-only runtime (no `generate`) — partial runtime (PLAN_JEV.md §4/§7.4)
+// D1: explicit classifier with a missing prerequisite fails the run at start
+// ---------------------------------------------------------------------------
+
+describe("runFlow AI — explicit classifier fail-fast (D1)", () => {
+  test('classifier="jev" with no TYPESAFE_API_KEY (and no OPENROUTER key) throws ClassifierConfigError naming the env NAME', async () => {
+    const { flowPath, outDir } = await writeFlow(clickFlow("ai.jev.missingkey", "Create order"));
+    const d = new MockDriver();
+    const config = resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]);
+
+    // No aiRuntimeFactory injected — exercises the REAL buildAiRuntime path. optsFor's env is {}
+    // (hermetic), so neither TYPESAFE_API_KEY nor OPENROUTER_API_KEY is present.
+    const run = runFlow(optsFor(flowPath, outDir, d, config));
+    await expect(run).rejects.toBeInstanceOf(ClassifierConfigError);
+    await run.catch((err) => {
+      expect((err as Error).message).toContain("TYPESAFE_API_KEY");
+      // Never leaks a value, only the env NAME.
+      expect((err as Error).message).not.toMatch(/sk-|Bearer/i);
+    });
+  });
+
+  test('classifier="llm" with no generative provider key throws ClassifierConfigError', async () => {
+    const { flowPath, outDir } = await writeFlow(clickFlow("ai.llm.missingkey", "Create order"));
+    const d = new MockDriver();
+    const config = resolveConfigWithDefaults([{ ai: { classifier: "llm" } }]);
+
+    const run = runFlow(optsFor(flowPath, outDir, d, config));
+    await expect(run).rejects.toBeInstanceOf(ClassifierConfigError);
+    await run.catch((err) => {
+      expect((err as Error).message).toContain("no generative provider key is available");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JEV-only runtime (no `generate`) — partial runtime
 // ---------------------------------------------------------------------------
 
 describe("runFlow AI — JEV-only runtime (partial, no generate)", () => {
@@ -824,7 +906,7 @@ describe("runFlow AI — JEV-only runtime (partial, no generate)", () => {
     expect(aiCalls[0]!.role).toBe("classifier");
   });
 
-  test("an ai_judge assertion is skipped-with-message (not failed closed) on a JEV-only runtime", async () => {
+  test("an ai_judge assertion fails with the not-available message (never judge-fail-closed) on a JEV-only runtime", async () => {
     const flowSource = `
 version = 1
 kind = "flow"

@@ -1,4 +1,4 @@
-// Flightplan — `resolveChooserChain` matrix + `HeuristicChooser` unit tests (PLAN_JEV.md §7.2).
+// Flightplan — `resolveChooserChain` matrix + `HeuristicChooser` unit tests.
 
 import { describe, expect, test } from "bun:test";
 import type { CandidateChooser } from "./chooser.ts";

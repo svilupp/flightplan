@@ -1,4 +1,4 @@
-// Flightplan — the `CandidateChooser` abstraction (PLAN_JEV.md §3).
+// Flightplan — the `CandidateChooser` abstraction.
 //
 // `resolveL2` (`resolver-l2.ts`) walks an ORDERED chain of `CandidateChooser`s: on an `abstain`/
 // `error` result it falls through to the next chooser; a `pick` acts immediately; an

@@ -55,7 +55,7 @@ export function timeoutMsByRoleFromConfig(
  */
 export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
   const hasGenerate = !!deps.generate;
-  // OPTIONAL: absent for a JEV-only runtime (PLAN_JEV.md §4 "JEV-only runtime") — NEVER a
+  // OPTIONAL: absent for a JEV-only runtime — NEVER a
   // rejecting stub. When present, wraps the injected `deps.generate` with the shared signal
   // combination (unchanged from before this file supported a partial runtime).
   const generate: AiRuntimeDeps["generate"] = deps.generate
@@ -104,7 +104,7 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
 
   // The chooser chain: test seam `deps.choosers` bypasses `resolveChooserChain` entirely; otherwise
   // build it from the resolved config + key availability. `jevAvailable`/`llmAvailable` are the
-  // env/generate-presence booleans PLAN_JEV.md §3 `resolveChooserChain` consumes.
+  // env/generate-presence booleans `resolveChooserChain` consumes.
   const classifier = deps.config.ai?.classifier ?? "auto";
   const jevKeyEnv = deps.config.ai?.jev_api_key_env ?? "TYPESAFE_API_KEY";
   const jevAvailable = !!deps.jevApiKey;
@@ -123,6 +123,7 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
           ...(deps.onAiCall ? { onAiCall: deps.onAiCall } : {}),
           ...(deps.redactor ? { redactor: deps.redactor } : {}),
           ...(deps.fetchFn ? { fetchFn: deps.fetchFn } : {}),
+          ...(deps.signal ? { signal: deps.signal } : {}),
           apiKey: deps.jevApiKey ?? "",
         }),
       makeLlm: () => new LlmChooser(rt!),

@@ -213,7 +213,7 @@ export interface AiRuntimeDeps {
   /**
    * The model-call seam (real = `provider.defaultGenerate`, tests = a fake). OPTIONAL: a
    * JEV-only runtime (only `TYPESAFE_API_KEY` present, no generative provider key) is built with
-   * NO `generate` at all — never a rejecting stub (PLAN_JEV.md §4 "JEV-only runtime"). When
+   * NO `generate` at all — never a rejecting stub (a "JEV-only runtime"). When
    * absent, `createAiRuntime` wires ONLY the `resolveL2` hook; `judge`/`planner`/L3/L4 are absent.
    */
   generate?: GenerateFn;
@@ -257,7 +257,7 @@ export interface AiRuntime {
   /** The per-role/model cost accumulator. */
   cost: import("./cost.ts").CostAccumulator;
   /**
-   * The model-call seam. OPTIONAL — absent for a JEV-only runtime (PLAN_JEV.md §4); see
+   * The model-call seam. OPTIONAL — absent for a JEV-only runtime; see
    * {@link hasGenerate}.
    */
   generate?: GenerateFn;
@@ -309,7 +309,7 @@ export interface PlannerRuntime {
 
 /**
  * The Ai hooks the runtime exposes (the orchestrator's `AiHooks`). Only `resolveL2` is
- * GUARANTEED (a JEV-only runtime with no `generate` wires only this one, per PLAN_JEV.md §4 —
+ * GUARANTEED (a JEV-only runtime with no `generate` wires only this one —
  * `resolveL3`/`classifyL4`/`resolveBatchL3` are absent so the orchestrator's `nextAiHook`
  * (which already tolerates absent hooks) never reaches for a generative tier).
  */

@@ -29,6 +29,7 @@
 import {
   type AiRuntime,
   type BudgetLimitName,
+  ClassifierConfigError,
   createAiRuntime,
   type GenerateFn,
   isBudgetExceeded,
@@ -479,11 +480,16 @@ function buildAssertContext(
   // `ai_judge` assertion here, so the cast to `AiJudgeAssertion` is sound (and sidesteps the
   // contravariant-param mismatch between the seam's `Assertion` slot and `judge`'s narrower param).
   // Wired only when `runtime.judge` exists: a JEV-only runtime (no `generate`) has no `judge`,
-  // so `ai_judge` assertions stay skipped-with-message exactly as in an AI-less run (the
-  // `Phase4NotImplementedError` path) — never failed closed (PLAN_JEV.md §4).
+  // so `ai_judge` assertions take the SAME path as an AI-less run — the engine's
+  // `Phase4NotImplementedError` stub is caught by `runAssertions` and turned into a clearly-marked
+  // FAILING assertion result (`pass: false`, message "ai_judge assertions are implemented in
+  // Phase 4 (not available in Phase 2)"). This is a real, counted assertion failure, NOT a silent
+  // skip — but it is distinct from "failed closed": no model call was ever attempted or charged,
+  // and the failure is always the SAME clearly-marked not-available message, never a judge verdict
+  // (JEV-only runtime — no `generate`).
   if (runtime?.judge) {
-    const activeJudge = runtime.judge;
-    ctx.aiJudge = (assertion, opts) => activeJudge(assertion as AiJudgeAssertion, opts);
+    const active = runtime;
+    ctx.aiJudge = (assertion, opts) => active.judge!(assertion as AiJudgeAssertion, opts);
   }
   return ctx;
 }
@@ -1731,8 +1737,10 @@ async function executeSteps(
           ctx.ai = runtime.hooks;
           // Wrap the bound batch hook in an arrow (the hook is `this`-free, but referencing it bare
           // trips oxlint `unbound-method`); this is the `BatchVisionResolve` the ladder injects.
-          const resolveBatchL3 = runtime.hooks.resolveBatchL3;
-          const groupResults = await resolveVisionBatch(group, ctx, (s, c) => resolveBatchL3(s, c));
+          const activeRuntime = runtime;
+          const groupResults = await resolveVisionBatch(group, ctx, (s, c) =>
+            activeRuntime.hooks.resolveBatchL3!(s, c),
+          );
           group.forEach((g, i) => {
             const r = groupResults[i];
             if (r) batchResults.set(g.id, r);
@@ -2940,11 +2948,21 @@ async function buildAiRuntime(
   const jevApiKey = env[jevKeyEnv];
   const classifier = opts.config.ai?.classifier ?? "auto";
 
-  // PLAN_JEV.md §5/§6: a runtime is built when an LLM key exists (today's rule) OR the JEV key
+  // A runtime is built when an LLM key exists (today's rule) OR the JEV key
   // exists with `classifier` ∈ {auto, jev} OR `classifier === "heuristic"` (no key needed at all).
   // An explicit `classifier = "jev"`/`"llm"` with a missing prerequisite is a FAIL-FAST config
   // error (`ClassifierConfigError`) surfaced at run start — never the fail-open `onWarn` path
-  // reserved for `"auto"`'s missing-SDK degradation below.
+  // reserved for `"auto"`'s missing-SDK degradation below. Checked BEFORE the `wantsRuntime` gate
+  // so a missing prerequisite is never silently swallowed into an AI-less run.
+  if (classifier === "jev" && !jevApiKey) {
+    throw new ClassifierConfigError(`[ai] classifier = "jev" but env "${jevKeyEnv}" is not set`);
+  }
+  if (classifier === "llm" && !apiKey) {
+    throw new ClassifierConfigError(
+      '[ai] classifier = "llm" but no generative provider key is available',
+    );
+  }
+
   const jevUsable = !!jevApiKey && (classifier === "auto" || classifier === "jev");
   const wantsRuntime = !!apiKey || jevUsable || classifier === "heuristic";
   if (!wantsRuntime) return undefined;
@@ -2978,6 +2996,11 @@ async function buildAiRuntime(
           ? mod.createOpenAiGenerate({ apiKey })
           : mod.createOpenRouterGenerate({ apiKey });
   } catch (cause) {
+    // An explicit `classifier = "llm"` REQUIRES the generative provider to be usable — an SDK
+    // load failure here is a fatal config/environment error for that strict setting, not a
+    // degrade-to-AI-less situation. Rethrow rather than fail open via `onWarn` (only `"auto"`
+    // degrades gracefully).
+    if (classifier === "llm") throw cause;
     const causeMessage = cause instanceof Error ? cause.message : String(cause);
     (opts.onWarn ?? (() => {}))(
       "flightplan: AI SDK unavailable in this runtime — AI tiers are disabled for this run. " +

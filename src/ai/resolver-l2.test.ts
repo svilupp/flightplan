@@ -53,7 +53,7 @@ describe("buildResolverPrompt", () => {
 });
 
 // ---------------------------------------------------------------------------
-// resolveL2 chain walking (PLAN_JEV.md §7.3, extended for the chooser chain)
+// resolveL2 chain walking (extended for the chooser chain)
 // ---------------------------------------------------------------------------
 
 function scriptedChooser(
@@ -131,6 +131,28 @@ describe("resolveL2 — chooser chain", () => {
     expect(exec.ok).toBe(false);
     expect(exec.escalate).toBe(true);
     expect(exec.tier).toBe("L2");
+  });
+
+  test('escalateTo: "vision" short-circuits the chain — a later chooser is NEVER consulted (D3)', async () => {
+    const d = new MockDriver();
+    d.setSnapshot(makeSnapshot({ interactiveElements: [] }));
+    d.setResolveAll([makeRankedCandidate({ role: "button", name: "Go" })]);
+    const llm = scriptedChooser("llm", [
+      { kind: "abstain", reason: "llm: screenshot_needed", escalateTo: "vision" },
+    ]);
+    let heuristicCalls = 0;
+    const heuristic: CandidateChooser = {
+      kind: "heuristic",
+      choose: () => {
+        heuristicCalls += 1;
+        return Promise.resolve({ kind: "pick", index: 0, confidence: 0.9 });
+      },
+    };
+
+    const exec = await resolveL2([llm, heuristic], clickStep(), prior(), ctxFor(d));
+    expect(exec.ok).toBe(false);
+    expect(exec.escalate).toBe(true);
+    expect(heuristicCalls).toBe(0); // the heuristic must never be consulted after screenshot_needed
   });
 
   test("a note is attached only when the picking chooser (LLM) returns one", async () => {

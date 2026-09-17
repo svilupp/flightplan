@@ -124,6 +124,11 @@ export async function resolveL2(
       });
     }
     lastReason = `${chooser.kind}: ${result.reason}`;
+    // `escalateTo: "vision"` short-circuits the chain immediately (D3): a chooser that explicitly
+    // asks for a screenshot (the LLM's `screenshot_needed`) must NOT be second-guessed by a later
+    // chooser (e.g. the heuristic) in this same invocation — go straight to the L2 escalation so
+    // the orchestrator's `nextAiHook` routes to L3.
+    if (result.kind === "abstain" && result.escalateTo === "vision") break;
   }
 
   return escalateExecution("L2", { ranked, intentText, action, error: lastReason });
