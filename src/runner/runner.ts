@@ -60,6 +60,7 @@ import {
   type DialogPolicy,
   getBrowserPilotProvenance,
 } from "../driver/browser-pilot-driver.ts";
+import { AuthStateUnavailableError, resolveAuthPlan } from "../driver/connect-resolution.ts";
 import type {
   ActionReceipt,
   DispatchState,
@@ -2647,7 +2648,19 @@ async function runFlowImpl(
     // `state.runError` (verdict `error`, matching connect()'s own failure handling) — auth must be
     // in place, or the run must fail, before any navigation.
     if (!state.aborted && opts.config.auth && driver.applyAuth) {
-      await driver.applyAuth(opts.config.auth, env);
+      const authPaths = { flowDir: dirOf(loaded.path), cwd: opts.cwd };
+      try {
+        await driver.applyAuth(opts.config.auth, env, authPaths);
+      } catch (err) {
+        if (err instanceof AuthStateUnavailableError && opts.config.auth.cookie_save) {
+          onWarn(
+            `flightplan: saved auth state ${err.code} at ${err.path}; continuing without it ` +
+              `(cookie_save is on — a fresh snapshot will be written after a successful run)`,
+          );
+        } else {
+          throw err;
+        }
+      }
     }
     if (!state.aborted && driver.pageState) {
       try {
@@ -2724,6 +2737,32 @@ async function runFlowImpl(
         }
       } catch {
         // A lock-write failure is non-fatal to the run verdict (the resolution already happened).
+      }
+    }
+
+    // --- (5.6) re-save the saved-auth-state cookie snapshot after a successful run, when
+    // `[config.auth].cookie_save` is on (SAME success gate as the lock flush above, PLUS
+    // `!state.aborted` — deliberately: an aborted run never even connected/applied auth, so there
+    // is nothing fresh worth capturing) ---
+    // Runs BEFORE the flow `teardown` hook (6), since teardown may log out / clear cookies.
+    if (
+      !state.aborted &&
+      !state.runError &&
+      !state.inconclusiveReason &&
+      !state.verdictFailed &&
+      opts.config.auth?.cookie_save &&
+      driver.saveAuthState
+    ) {
+      try {
+        const authPaths = { flowDir: dirOf(loaded.path), cwd: opts.cwd };
+        const cookieFileRef = resolveAuthPlan(opts.config.auth, env, authPaths).cookieFileRef;
+        if (cookieFileRef) {
+          const saved = await driver.saveAuthState(cookieFileRef);
+          onWarn(`flightplan: saved auth state (${saved.cookieCount} cookies) to ${saved.path}`);
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        onWarn(`flightplan: auth state save failed (non-fatal): ${detail}`);
       }
     }
 

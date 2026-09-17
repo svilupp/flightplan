@@ -34,9 +34,18 @@ import {
   type PageSnapshot,
   type Step,
 } from "browser-pilot";
-import { type Browser, type Page, TargetNotFoundError } from "browser-pilot/core";
+import {
+  type Browser,
+  type CookieState,
+  CookieStateError,
+  captureCookieState,
+  type Page,
+  restoreCookieState,
+  TargetNotFoundError,
+} from "browser-pilot/core";
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
 import {
+  AuthStateUnavailableError,
   buildAttachConnectArgs,
   buildLaunchPlan,
   normalizeBrowserUrl,
@@ -315,14 +324,63 @@ export class BrowserPilotDriver implements Driver {
    * `cf_access` in the default `"cookie"` mode — the cookie minted by browser-pilot's
    * `mintCfAccessJwt`. A rejected mint surfaces its error unchanged (it already omits secret
    * values). Applying an empty/undefined `auth` is a no-op (no CDP calls at all).
+   *
+   * Throws `AuthStateUnavailableError` (exactly the four codes `not_found`/`expired`/`empty`/
+   * `nothing_restored`) when the `cookie_file`/`cookie_file_env` snapshot can't be used to
+   * restore a session. With `cookie_save` on, the rest of `[config.auth]` (mint / headers /
+   * literal cookies) is still applied before that error is thrown, so a fresh snapshot can be
+   * captured after a successful run; with `cookie_save` off, it throws immediately and applies
+   * nothing else. Other snapshot errors (`invalid_format`, `io_error`, …) propagate raw.
    */
   async applyAuth(
     auth: AuthConfig | undefined,
     env: Record<string, string | undefined>,
+    paths?: { flowDir?: string; cwd?: string },
   ): Promise<void> {
     if (!auth) return;
     const page = this.requirePage();
-    const plan = resolveAuthPlan(auth, env);
+    const plan = resolveAuthPlan(auth, env, paths);
+    // A recoverable restore failure (mapped to `AuthStateUnavailableError`) is remembered here
+    // instead of thrown immediately when `cookie_save` is on: the rest of `[config.auth]` (mint /
+    // headers / literal cookies) must still be applied before the run proceeds without the stale
+    // snapshot, so a fresh one can be captured after a successful run. `cookie_save` off keeps the
+    // old fail-fast behavior (throw immediately, apply nothing else).
+    let deferredAuthStateError: unknown;
+
+    if (plan.cookieFileRef) {
+      if (typeof restoreCookieState !== "function") {
+        throw new Error(
+          "[config.auth] cookie_file/cookie_file_env requires browser-pilot's " +
+            "restoreCookieState export, which the connected browser-pilot build does not " +
+            "provide. Upgrade browser-pilot to use saved-auth-state restore.",
+        );
+      }
+      const { loadCookieStateFile } = await this.loadCookieStateNodeAdapter();
+      const ref = plan.cookieFileRef;
+      let state: CookieState | undefined;
+      try {
+        state = await loadCookieStateFile(ref);
+      } catch (err) {
+        const mapped = mapCookieStateError(err, ref);
+        if (mapped instanceof AuthStateUnavailableError && plan.cookieSave) {
+          deferredAuthStateError = mapped;
+        } else {
+          throw mapped;
+        }
+      }
+      if (state !== undefined) {
+        try {
+          await restoreCookieState(page, state);
+        } catch (err) {
+          const mapped = mapCookieStateError(err, ref);
+          if (mapped instanceof AuthStateUnavailableError && plan.cookieSave) {
+            deferredAuthStateError = mapped;
+          } else {
+            throw mapped;
+          }
+        }
+      }
+    }
 
     if (plan.cfAccessMint) {
       if (typeof mintCfAccessJwt !== "function") {
@@ -342,6 +400,65 @@ export class BrowserPilotDriver implements Driver {
     }
     for (const cookie of plan.cookies) {
       await page.setCookie(cookie);
+    }
+
+    if (deferredAuthStateError !== undefined) throw deferredAuthStateError;
+  }
+
+  /**
+   * Capture the active page's cookie state and persist (overwrite) it to `filePath`, per
+   * `Driver.saveAuthState`. Feature-detects browser-pilot's `captureCookieState` (throws a clear
+   * upgrade error when unavailable, matching the `applyAuth` cookie-restore path) and loads the
+   * Node-only file adapter lazily (see {@link loadCookieStateNodeAdapter}) so non-Node hosts never
+   * pull it into their bundle. Never returns cookie values — only the path and a count.
+   */
+  async saveAuthState(filePath: string): Promise<{ path: string; cookieCount: number }> {
+    const page = this.requirePage();
+    if (typeof captureCookieState !== "function") {
+      throw new Error(
+        "[config.auth] cookie_save requires browser-pilot's captureCookieState export, " +
+          "which the connected browser-pilot build does not provide. Upgrade browser-pilot to " +
+          "use saved-auth-state capture.",
+      );
+    }
+    const { saveCookieStateFile } = await this.loadCookieStateNodeAdapter();
+    const state = await captureCookieState(page);
+    const result = await saveCookieStateFile(filePath, state, { overwrite: true });
+    return { path: result.path, cookieCount: state.cookies.length };
+  }
+
+  /**
+   * Lazily load `browser-pilot/adapters/node`'s cookie-state file helpers via a
+   * computed-specifier dynamic import — mirroring the chrome-launcher pattern in
+   * {@link connectLaunch} — so a static import never lands in a non-Node bundle (the
+   * worker-bundle fitness gate would fail otherwise). Only the IMPORT failure gets the
+   * "unavailable" message; a real load/save failure (bad file, IO error) propagates as-is.
+   */
+  private async loadCookieStateNodeAdapter(): Promise<{
+    loadCookieStateFile: (ref: string) => Promise<CookieState>;
+    saveCookieStateFile: (
+      ref: string,
+      state: CookieState,
+      opts?: { overwrite?: boolean },
+    ) => Promise<{ path: string }>;
+  }> {
+    try {
+      const spec = "browser-pilot/adapters/node";
+      const adapter = (await import(/* @vite-ignore */ spec)) as {
+        loadCookieStateFile: (ref: string) => Promise<CookieState>;
+        saveCookieStateFile: (
+          ref: string,
+          state: CookieState,
+          opts?: { overwrite?: boolean },
+        ) => Promise<{ path: string }>;
+      };
+      return adapter;
+    } catch (err) {
+      throw new Error(
+        "[config.auth] cookie_file requires a Node/Bun host (browser-pilot/adapters/node " +
+          `unavailable): ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
     }
   }
 
@@ -1139,6 +1256,27 @@ function dedupeAttributeNames(
     out.push(n);
   }
   return out;
+}
+
+/**
+ * Map a `CookieStateError` thrown while loading/restoring a saved-auth-state cookie snapshot
+ * into the driver's public `AuthStateUnavailableError`, for the codes the `Driver.applyAuth`
+ * contract documents as caller-recoverable (`not_found`/`expired`/`empty`/`nothing_restored`).
+ * Any other error (a different `CookieStateError` code, or a non-`CookieStateError` at all —
+ * e.g. an `io_error`/`invalid_format`/`invalid_cookie` bug in the snapshot) propagates unchanged,
+ * since the contract only promises `AuthStateUnavailableError` for the four documented codes.
+ */
+function mapCookieStateError(err: unknown, ref: string): unknown {
+  if (
+    err instanceof CookieStateError &&
+    (err.code === "not_found" ||
+      err.code === "expired" ||
+      err.code === "empty" ||
+      err.code === "nothing_restored")
+  ) {
+    return new AuthStateUnavailableError(err.code, ref);
+  }
+  return err;
 }
 
 /** The action verbs that can trigger navigation and so get the settle default. */

@@ -4,6 +4,23 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-16
+
+### Added
+
+- `[config.auth]` now accepts a saved browser-pilot cookie snapshot via `cookie_file` /
+  `cookie_file_env`, restored right after connect and before the first navigation (before
+  Cloudflare Access minting and literal `cookies`). `cookie_save = true` turns a missing/expired
+  snapshot into a warning instead of a fatal error and recaptures the snapshot after a successful
+  run.
+- `examples/flows/auth-state-example.toml` demonstrating the `cookie_file` + `cookie_save` shape.
+
+### Changed
+
+- Requires browser-pilot ^0.6.0. Until it is published to npm, browser-pilot 0.6.0 is vendored at
+  `.vendor/browser-pilot-0.6.0.tgz` (a `file:` dependency); the dependency will be restored to
+  `^0.6.0` once it's published.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added

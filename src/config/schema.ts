@@ -406,8 +406,25 @@ export const AuthConfigSchema = z
     extra_headers: ExtraHeadersConfigSchema.optional(),
     /** Array — replaced wholesale by a later config layer (arrays are never concatenated). */
     cookies: z.array(AuthCookieConfigSchema).optional(),
+    /** Path to a browser-pilot cookie snapshot JSON, resolved relative to the flow file's
+     * directory. Mutually exclusive with `cookie_file_env`. */
+    cookie_file: z.string().min(1).optional(),
+    /** Name of an env var holding the cookie snapshot path, resolved against the CWD.
+     * Mutually exclusive with `cookie_file`. */
+    cookie_file_env: z.string().min(1).optional(),
+    /** After a successful run, re-capture cookies and overwrite the snapshot file. Default false. */
+    cookie_save: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((auth, ctx) => {
+    if (auth.cookie_file !== undefined && auth.cookie_file_env !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "set at most one of `cookie_file` / `cookie_file_env`",
+        path: ["cookie_file"],
+      });
+    }
+  });
 
 // ---------------------------------------------------------------------------
 // The full Config object (all sections optional; built-in defaults fill the gaps).

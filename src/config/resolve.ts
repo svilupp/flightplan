@@ -24,11 +24,15 @@
 //     - `ai` scalar fields           — provider, api_key_env, etc. merged key-by-key.
 //     - `browser`, `telemetry.logfire`, `artifacts`, `redaction` — merged key-by-key.
 //     - `auth`                       — merged key-by-key like `browser` / `telemetry.logfire`
-//                                       (`cf_access`, `extra_headers` merge key-by-key too, via
-//                                       the generic `deepMerge` below); `auth.cookies` is an
-//                                       array, so it is REPLACED WHOLESALE per the array rule
-//                                       (no special-case code needed — `deepMerge` already never
-//                                       concatenates arrays).
+//                                       (`cf_access`, `extra_headers`, and the saved-auth-state
+//                                       fields `cookie_file` / `cookie_file_env` / `cookie_save`
+//                                       merge key-by-key too, via the generic `deepMerge` below);
+//                                       `auth.cookies` is an array, so it is REPLACED WHOLESALE
+//                                       per the array rule (no special-case code needed —
+//                                       `deepMerge` already never concatenates arrays). The
+//                                       merged result is re-validated against `ConfigSchema` in
+//                                       `resolveConfigWithDefaults`, so the `cookie_file` /
+//                                       `cookie_file_env` XOR is enforced post-merge too.
 //     - `connect`                    — see special-case note below.
 //
 //   REPLACEABLE (a later layer that sets the field replaces the whole object; chosen so a

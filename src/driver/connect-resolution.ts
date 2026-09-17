@@ -9,6 +9,7 @@
 // in-process `ConnectOptions` has NO `browserURL` field — the driver resolves it itself).
 
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
+import { isAbsolute, resolve as resolvePath } from "../paths.ts";
 
 /**
  * The browser-pilot `connect()` argument the driver will build for an ATTACH config once the
@@ -157,6 +158,32 @@ export interface ResolvedAuthPlan {
     clientId: string;
     clientSecret: string;
   };
+  /** Absolute path to the saved-auth-state cookie snapshot, resolved from `cookie_file`
+   * (against `paths.flowDir`) or `cookie_file_env` (against `paths.cwd`). Undefined when
+   * neither is set. */
+  cookieFileRef?: string;
+  /** Whether to re-capture cookies and overwrite `cookieFileRef` after a successful run.
+   * Mirrors `[config.auth].cookie_save` (default false). */
+  cookieSave: boolean;
+}
+
+/**
+ * Thrown when a saved-auth-state cookie snapshot cannot be used to restore a session:
+ *   - `not_found`         — the file does not exist.
+ *   - `expired`           — every cookie in the snapshot is past its expiry.
+ *   - `empty`             — the snapshot contains no cookies.
+ *   - `nothing_restored`  — browser-pilot restored zero cookies from an otherwise valid snapshot.
+ * The message carries only the code and the path — never cookie names/values — so it is safe
+ * to surface verbatim in run errors/logs.
+ */
+export class AuthStateUnavailableError extends Error {
+  constructor(
+    public readonly code: "not_found" | "expired" | "empty" | "nothing_restored",
+    public readonly path: string,
+  ) {
+    super(`[config.auth] saved auth state unavailable (${code}): ${path}`);
+    this.name = "AuthStateUnavailableError";
+  }
 }
 
 /**
@@ -196,9 +223,25 @@ function requireEnvVar(name: string, env: Record<string, string | undefined>): s
 export function resolveAuthPlan(
   auth: AuthConfig | undefined,
   env: Record<string, string | undefined>,
+  paths?: { flowDir?: string; cwd?: string },
 ): ResolvedAuthPlan {
-  const plan: ResolvedAuthPlan = { headers: {}, cookies: [] };
+  const plan: ResolvedAuthPlan = {
+    headers: {},
+    cookies: [],
+    cookieSave: auth?.cookie_save ?? false,
+  };
   if (!auth) return plan;
+
+  if (auth.cookie_file !== undefined) {
+    const base = paths?.flowDir ?? ".";
+    plan.cookieFileRef = isAbsolute(auth.cookie_file)
+      ? auth.cookie_file
+      : resolvePath(base, auth.cookie_file);
+  } else if (auth.cookie_file_env !== undefined) {
+    const value = requireEnvVar(auth.cookie_file_env, env);
+    const base = paths?.cwd ?? ".";
+    plan.cookieFileRef = isAbsolute(value) ? value : resolvePath(base, value);
+  }
 
   if (auth.cf_access) {
     const { url, client_id_env, client_secret_env, mode } = auth.cf_access;

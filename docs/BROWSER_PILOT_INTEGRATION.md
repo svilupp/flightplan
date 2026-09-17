@@ -228,6 +228,35 @@ These capabilities are feature-detected; when an optional API is unavailable the
 rejected service token fails the run before any navigation happens. See `README.md`'s "Cloudflare
 Access auth" section and `src/config/schema.ts` for the full field reference.
 
+### Saved auth state (cookie snapshots)
+
+`resolveAuthPlan` emits `cookieFileRef` (resolved to an absolute path) and `cookieSave` on the
+auth plan when `[config.auth].cookie_file` / `cookie_file_env` is set. The driver feature-detects
+`restoreCookieState` and `captureCookieState` from `browser-pilot/core` (imports `CookieStateError`
+directly rather than feature-detecting it, and maps its thrown errors via `instanceof
+CookieStateError`), and reaches `loadCookieStateFile` / `saveCookieStateFile` in
+`browser-pilot/adapters/node` via a
+computed-specifier dynamic import so the worker bundle graph stays untouched (Node/Bun host only;
+MockDriver and worker hosts never resolve the import and never touch the filesystem).
+
+Restore runs once, right after `connect()` and before the setup hook / first `goto` — before
+Cloudflare Access minting and literal `[[config.auth.cookies]]`, both of which still win on
+conflict. A new optional `Driver` method, `saveAuthState?(filePath): Promise<{ path; cookieCount
+}>`, lets the driver recapture and overwrite the snapshot after a successful run (the same gate as
+lock flush), before the flow's `teardown` hook runs; it is only called when `cookie_save = true`.
+
+Errors from bp's `CookieStateError` map onto Flightplan's `AuthStateUnavailableError`:
+
+| bp `CookieStateError` code | Flightplan handling |
+| --- | --- |
+| `not_found` | `AuthStateUnavailableError` — skipped with a warning when `cookie_save = true`, fatal otherwise |
+| `expired` | `AuthStateUnavailableError` — skipped with a warning when `cookie_save = true`, fatal otherwise |
+| `empty` | `AuthStateUnavailableError` — skipped with a warning when `cookie_save = true`, fatal otherwise |
+| `nothing_restored` | `AuthStateUnavailableError` — skipped with a warning when `cookie_save = true`, fatal otherwise |
+| any other code (invalid format, I/O) | fatal regardless of `cookie_save` |
+
+Save failures (`saveAuthState` rejecting) are always a non-fatal warning, never fatal.
+
 ## API-key conditions
 
 No key is needed when a run resolves at L0/L1 and performs no AI-backed assertion or step. A warm

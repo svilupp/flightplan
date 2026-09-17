@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
 import {
   AuthEnvVarMissingError,
+  AuthStateUnavailableError,
   attachWsResolutionSource,
   buildAttachConnectArgs,
   buildLaunchPlan,
@@ -302,5 +303,88 @@ describe("resolveAuthPlan", () => {
       "X-Api-Key": "key-value",
     });
     expect(plan.cookies).toEqual([{ name: "session", value: "literal" }]);
+  });
+
+  test("cookieSave defaults to false when [config.auth] is set but cookie_save is unset", () => {
+    const auth: AuthConfig = { extra_headers: { from_env: { "X-Api-Key": "MY_API_KEY" } } };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.cookieSave).toBe(false);
+  });
+
+  test("cookieSave defaults to false when [config.auth] is undefined", () => {
+    expect(resolveAuthPlan(undefined, env).cookieSave).toBe(false);
+  });
+
+  test("cookieSave reflects [config.auth].cookie_save = true", () => {
+    const auth: AuthConfig = { cookie_file: "cookies.json", cookie_save: true };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.cookieSave).toBe(true);
+  });
+
+  test("relative cookie_file resolves against paths.flowDir", () => {
+    const auth: AuthConfig = { cookie_file: "auth/cookies.json" };
+    const plan = resolveAuthPlan(auth, env, { flowDir: "/flows/checkout" });
+    expect(plan.cookieFileRef).toBe("/flows/checkout/auth/cookies.json");
+  });
+
+  test("cookie_file resolves against '.' when paths.flowDir is not given", () => {
+    const auth: AuthConfig = { cookie_file: "auth/cookies.json" };
+    const plan = resolveAuthPlan(auth, env);
+    expect(plan.cookieFileRef).toBe("auth/cookies.json");
+  });
+
+  test("an absolute cookie_file passes through unchanged, ignoring paths.flowDir", () => {
+    const auth: AuthConfig = { cookie_file: "/abs/cookies.json" };
+    const plan = resolveAuthPlan(auth, env, { flowDir: "/flows/checkout" });
+    expect(plan.cookieFileRef).toBe("/abs/cookies.json");
+  });
+
+  test("cookie_file_env resolves its value against paths.cwd", () => {
+    const auth: AuthConfig = { cookie_file_env: "COOKIE_FILE_PATH" };
+    const withEnv = { ...env, COOKIE_FILE_PATH: "state/cookies.json" };
+    const plan = resolveAuthPlan(auth, withEnv, { cwd: "/home/runner" });
+    expect(plan.cookieFileRef).toBe("/home/runner/state/cookies.json");
+  });
+
+  test("an absolute cookie_file_env value passes through unchanged, ignoring paths.cwd", () => {
+    const auth: AuthConfig = { cookie_file_env: "COOKIE_FILE_PATH" };
+    const withEnv = { ...env, COOKIE_FILE_PATH: "/abs/state/cookies.json" };
+    const plan = resolveAuthPlan(auth, withEnv, { cwd: "/home/runner" });
+    expect(plan.cookieFileRef).toBe("/abs/state/cookies.json");
+  });
+
+  test("a missing cookie_file_env var throws AuthEnvVarMissingError naming the var", () => {
+    const auth: AuthConfig = { cookie_file_env: "UNSET_COOKIE_FILE_PATH" };
+    expect(() => resolveAuthPlan(auth, env)).toThrow(AuthEnvVarMissingError);
+    try {
+      resolveAuthPlan(auth, env);
+      throw new Error("expected resolveAuthPlan to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AuthEnvVarMissingError);
+      expect((err as AuthEnvVarMissingError).envVarName).toBe("UNSET_COOKIE_FILE_PATH");
+    }
+  });
+
+  test("cookieFileRef is undefined when neither cookie_file nor cookie_file_env is set", () => {
+    const plan = resolveAuthPlan({ cf_access: undefined }, env);
+    expect(plan.cookieFileRef).toBeUndefined();
+  });
+});
+
+describe("AuthStateUnavailableError", () => {
+  test("carries the code and path, and never leaks cookie values in the message", () => {
+    const err = new AuthStateUnavailableError("expired", "/state/cookies.json");
+    expect(err.code).toBe("expired");
+    expect(err.path).toBe("/state/cookies.json");
+    expect(err.name).toBe("AuthStateUnavailableError");
+    expect(err.message).toContain("expired");
+    expect(err.message).toContain("/state/cookies.json");
+  });
+
+  test("supports all four codes: not_found, expired, empty, nothing_restored", () => {
+    for (const code of ["not_found", "expired", "empty", "nothing_restored"] as const) {
+      const err = new AuthStateUnavailableError(code, "/x/cookies.json");
+      expect(err.code).toBe(code);
+    }
   });
 });

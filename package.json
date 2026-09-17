@@ -1,6 +1,6 @@
 {
   "name": "@svilupp/flightplan",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TOML-defined browser workflows with deterministic assertions, effect-aware retry policy, selector locks, and a layered resolver backed by browser-pilot.",
   "license": "MIT",
   "repository": {
@@ -84,7 +84,7 @@
     "@noble/hashes": "^2.4.0",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "ai": "^6.0.272",
-    "browser-pilot": "^0.5.0",
+    "browser-pilot": "file:.vendor/browser-pilot-0.6.0.tgz",
     "chrome-launcher": "1.2.1",
     "smol-toml": "^1.4.2",
     "zod": "4.4.3"

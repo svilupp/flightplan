@@ -61,6 +61,7 @@ web_modules/
 
 # Output of 'npm pack'
 *.tgz
+!.vendor/*.tgz
 
 # Yarn Integrity file
 .yarn-integrity
@@ -164,4 +165,7 @@ spikes/
 .private/
 
 # Local flow definitions
-flows/
+/flows/
+
+# Saved-auth-state cookie snapshots ([config.auth] cookie_file/cookie_save)
+*.cookies.json

@@ -583,4 +583,27 @@ domain = "prodej.wikov.app"
     // cookies REPLACED wholesale — the base-layer "old" cookie must NOT survive.
     expect(merged.auth?.cookies).toEqual([{ name: "new", value_from_env: "NEW_COOKIE_ENV" }]);
   });
+
+  test("accepts [config.auth] with a saved-auth-state cookie_file", () => {
+    const ok: Config = { auth: { cookie_file: "./auth/cookies.json" } };
+    expect(() => ConfigSchema.parse(ok)).not.toThrow();
+  });
+
+  test("accepts [config.auth] with a saved-auth-state cookie_file_env", () => {
+    const ok: Config = { auth: { cookie_file_env: "COOKIE_FILE_PATH" } };
+    expect(() => ConfigSchema.parse(ok)).not.toThrow();
+  });
+
+  test("accepts [config.auth].cookie_save", () => {
+    const ok: Config = { auth: { cookie_file: "./cookies.json", cookie_save: true } };
+    const parsed = ConfigSchema.parse(ok);
+    expect(parsed.auth?.cookie_save).toBe(true);
+  });
+
+  test("rejects [config.auth] setting BOTH cookie_file and cookie_file_env (XOR)", () => {
+    const bad: Config = {
+      auth: { cookie_file: "./cookies.json", cookie_file_env: "COOKIE_FILE_PATH" },
+    };
+    expect(() => ConfigSchema.parse(bad)).toThrow();
+  });
 });

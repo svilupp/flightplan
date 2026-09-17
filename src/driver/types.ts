@@ -620,8 +620,24 @@ export interface Driver {
    * `setExtraHTTPHeaders`/`mintCfAccessJwt` degrades gracefully: callers MUST feature-detect
    * (`driver.applyAuth?.(...)`) and skip auth application (or fail loudly, per the caller's
    * policy) when it is undefined. `undefined`/empty `auth` is always a no-op.
+   *
+   * `paths` (optional) resolves `cookie_file` (against `paths.flowDir`) / `cookie_file_env`
+   * (against `paths.cwd`) into an absolute saved-auth-state snapshot path, per
+   * `resolveAuthPlan`; before the first navigation the implementation restores that snapshot's
+   * cookies onto the page. Throws `AuthStateUnavailableError` (exactly the four codes
+   * `not_found`/`expired`/`empty`/`nothing_restored`) when the snapshot can't be used to restore
+   * a session; with `cookie_save` on, the remaining auth (mint / headers / literal cookies) is
+   * still applied before that error is thrown, so a fresh snapshot can be captured after a
+   * successful run. Other snapshot errors (`invalid_format`, `io_error`, …) propagate raw.
    */
-  applyAuth?(auth: AuthConfig | undefined, env: Record<string, string | undefined>): Promise<void>;
+  applyAuth?(
+    auth: AuthConfig | undefined,
+    env: Record<string, string | undefined>,
+    paths?: { flowDir?: string; cwd?: string },
+  ): Promise<void>;
+
+  /** Capture the active page's cookie state and persist (overwrite) it to filePath. Node-only. Never returns cookie values. */
+  saveAuthState?(filePath: string): Promise<{ path: string; cookieCount: number }>;
 
   /** Runtime browser-pilot package/source/build identity for run artifacts. */
   provenance?(): BrowserPilotProvenance | undefined;

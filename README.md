@@ -649,12 +649,45 @@ token fails the run before any navigation happens. Requires a browser-pilot buil
 `Page.setExtraHTTPHeaders` and `mintCfAccessJwt`; an older browser-pilot leaves `[config.auth]`
 parsed but un-applied (the driver feature-detects the capability).
 
+### Saved auth state (cookie snapshots)
+
+`[config.auth]` also accepts a browser-pilot cookie snapshot (format `browser-pilot-cookie-auth`
+v1 JSON), produced by `bp env auth save <name>` on the browser-pilot side:
+
+```toml
+[config.auth]
+# Exactly one of (optional):
+cookie_file = "./secrets/app.cookies.json"   # path, relative to this flow file's directory
+# cookie_file_env = "APP_COOKIE_FILE"        # env var NAME holding the path (relative → resolved against CWD)
+cookie_save = false                          # optional, default false
+```
+
+The snapshot is loaded and restored into the browser right after `connect()` and before the first
+navigation — before Cloudflare Access minting and literal `[[config.auth.cookies]]` (those still
+win on conflict). With `cookie_save = false` (the default), any load/restore failure (file
+missing, expired, empty, nothing restored, invalid format) is fatal: the run verdict is `error`
+and no steps execute. With `cookie_save = true` (warm-cache mode), a missing/expired/empty/
+nothing-restored snapshot is only a warning — restore is skipped and the flow is expected to log
+in itself; after a **successful** run (the same gate as lock flush) cookies are recaptured and the
+file is overwritten before the flow's `teardown` hook runs. A save failure is a non-fatal warning;
+an invalid-format or I/O error is still fatal either way.
+
+This requires a Node/Bun host (the browser-pilot node adapter) and browser-pilot ^0.6.0; a
+MockDriver or worker host never touches the file. The snapshot holds live session cookies — treat
+it as a credential: gitignore it (e.g. `*.cookies.json`), it is never copied into
+`.flightplan-runs/` artifacts (only counts/path appear in warnings), and "restored ≠
+logged in" — assert on real page state, don't trust the snapshot blindly. If you attach to a page
+that already has a URL, cookies still land context-wide, but the "no unauthenticated request"
+guarantee only holds when the flow does its own first `goto`.
+
 ## Development reference
 
 Run `bun run test:package` before release to build and test the npm tarball's public types,
 CLI, VFS artifacts, and cancellation. To check an unpublished browser-pilot candidate without
 installing it into this checkout, run `bun run test:package /absolute/path/browser-pilot.tgz`.
-Only browser-pilot ^0.5.0 is supported.
+Only browser-pilot ^0.6.0 is supported. Until browser-pilot 0.6.0 is published to npm, this repo
+depends on it via a vendored tarball, `.vendor/browser-pilot-0.6.0.tgz` (a `file:` dependency in
+`package.json`); the dependency will be restored to `^0.6.0` once it's published.
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.
