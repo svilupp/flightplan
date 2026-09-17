@@ -42,7 +42,9 @@ bun run flightplan run examples/flows/wizard.toml --frozen --no-lock-write --jso
 The fixture server listens on `http://localhost:3000`. The example flows use the default CDP attach
 at `localhost:9222`, so start Chrome/Chromium with remote debugging enabled first, or add a
 `[config.connect]` block with `mode = "launch"`. Deterministic L0/L1 flows need no API key.
-AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY` by default.
+AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY` by default. The L2
+element-choice step can instead (or additionally) use the TypeSafe JEV classifier via
+`TYPESAFE_API_KEY` (keys available at https://console.typesafe.ai/keys) — see "AI tiers and planner" below.
 
 The simplest way to pick a model is `[config.ai.models.default]`: it seeds every AI role (resolver,
 advisor, vision, planner, planner_capable) at once, so you don't repeat the same block per role:
@@ -600,6 +602,54 @@ behavior.
 L0 lock replay and L1 deterministic DOM resolution are the default path. L2 resolver, L3 vision, L4
 advisor, AI assertions, and the L5 path-repair planner need an AI runtime when invoked.
 
+### L2 classifier: JEV vs LLM vs heuristic
+
+L2 ("which candidate element matches this intent") is answered by an ordered chain of
+**choosers**, selected by `[config.ai] classifier`:
+
+```toml
+[config.ai]
+# "auto" (default): JEV -> LLM -> heuristic, by key availability.
+# Explicit "jev" | "llm" | "heuristic": that chooser ONLY; a missing key fails the run at start.
+classifier = "auto"
+jev_api_key_env = "TYPESAFE_API_KEY"  # env var NAME, never a value (default shown); keys at https://console.typesafe.ai/keys
+
+# The generative provider still powers L3 vision / L4 advisor / L5 planner / ai_judge, and (with
+# classifier="auto") is the JEV-abstain fallback for L2 too. With classifier="jev" it never
+# backs L2, only the deeper tiers.
+provider = "openrouter"               # uses OPENROUTER_API_KEY
+```
+
+**API key**: JEV is TypeSafe's model, hence the default env var NAME `TYPESAFE_API_KEY`. When
+`jev_api_key_env` is left unset, `JEV_API_KEY` is ALSO accepted as an alias (both names are tried,
+`TYPESAFE_API_KEY` first) — useful if you'd rather name the env var after the classifier itself.
+Setting `jev_api_key_env` explicitly OVERRIDES the name and disables the alias: only that one name
+is then consulted. Either way, `[config.ai]` and every error/telemetry surface hold only the env var
+NAME, never the key value.
+
+- **`"auto"`** (default) is a PREFERENCE ORDERING, not a strict requirement: JEV first when
+  `TYPESAFE_API_KEY` is set (a ~200-500ms non-generative classification call), then the LLM
+  resolver when a generative provider key is available, then a deterministic zero-key heuristic
+  as the terminal safety net. Any subset of keys still produces a working `"auto"` chain; zero
+  keys still builds no AI runtime at all (today's rule — AI-less runs stay byte-identical).
+- **An explicit value is STRICT**: `classifier = "jev"` or `"llm"` selects exactly that one
+  chooser, and a missing prerequisite key **fails the run at start** with a clear config error
+  naming the missing env var (never a silent no-op, never a value in the error). `"heuristic"`
+  needs no key at all.
+- A **JEV-only setup** (`TYPESAFE_API_KEY` set, no generative provider key) covers L2 element
+  choice only — L3 vision, L4 advisor, the L5 planner, and `ai_judge` are all unavailable. An
+  `ai_judge` assertion under a JEV-only (or fully AI-less) runtime **fails that assertion** with a
+  clearly-marked "not available" message (`pass: false`) — it is a real, counted assertion
+  failure, never a silent skip. It is still distinct from a judge FAILING CLOSED on a model-call
+  error: no model call is ever attempted or charged, and the message is always the same
+  not-available text, never a judge verdict.
+
+**L0 zero-call replay needs a UNIQUE healed selector.** After an L2 (JEV or LLM) heal, the next
+run replays at L0 with zero model calls ONLY when the learned selector durably resolves to one
+element. A page with several visually/semantically identical candidates (e.g. three unlabelled
+"Save" buttons distinguished only by surrounding context) re-resolves at L2 on EVERY run — there
+is no selector that is durable AND unique for that target, so warm replay never engages.
+
 Keep the planner off for deterministic safety proofs:
 
 ```toml
@@ -649,12 +699,54 @@ token fails the run before any navigation happens. Requires a browser-pilot buil
 `Page.setExtraHTTPHeaders` and `mintCfAccessJwt`; an older browser-pilot leaves `[config.auth]`
 parsed but un-applied (the driver feature-detects the capability).
 
+### Saved auth state (cookie snapshots)
+
+`[config.auth]` also accepts a browser-pilot cookie snapshot (format `browser-pilot-cookie-auth`
+v1 JSON), produced by `bp env auth save <name>` on the browser-pilot side:
+
+```toml
+[config.auth]
+# Exactly one of (optional):
+cookie_file = "./secrets/app.cookies.json"   # path, relative to this flow file's directory
+# cookie_file_env = "APP_COOKIE_FILE"        # env var NAME holding the path (relative → resolved against CWD)
+cookie_save = false                          # optional, default false
+```
+
+The snapshot is loaded and restored into the browser right after `connect()` and before the first
+navigation — before Cloudflare Access minting and literal `[[config.auth.cookies]]` (those still
+win on conflict). With `cookie_save = false` (the default), any load/restore failure (file
+missing, expired, empty, nothing restored, invalid format) is fatal: the run verdict is `error`
+and no steps execute. With `cookie_save = true` (warm-cache mode), a missing/expired/empty/
+nothing-restored snapshot is only a warning — restore is skipped and the flow is expected to log
+in itself; after a **successful** run (the same gate as lock flush) cookies are recaptured and the
+file is overwritten before the flow's `teardown` hook runs. A save failure is a non-fatal warning;
+an invalid-format or I/O error is still fatal either way.
+
+This requires a Node/Bun host (the browser-pilot node adapter) and browser-pilot ^0.6.0; a
+MockDriver or worker host never touches the file. The snapshot holds live session cookies — treat
+it as a credential: gitignore it (e.g. `*.cookies.json`), it is never copied into
+`.flightplan-runs/` artifacts (only counts/path appear in warnings), and "restored ≠
+logged in" — assert on real page state, don't trust the snapshot blindly. If you attach to a page
+that already has a URL, cookies still land context-wide, but the "no unauthenticated request"
+guarantee only holds when the flow does its own first `goto`.
+
+Notes:
+
+- `cookie_file` must be a regular file — symlinks and directories are reported as `not_found`
+  (browser-pilot refuses to follow symlinks or write through them).
+- `~` is **not** expanded — use an absolute path, or `cookie_file_env` with an already-expanded
+  value.
+- On save, the parent directory is created automatically (`0700` dirs, `0600` file).
+- Browsers cap cookie lifetime (~400 days in Chrome), so snapshots expire by then regardless of
+  the server's `Expires`/`Max-Age`.
+- A cookie that expires mid-run yields a non-fatal "save failed" warning, not a run failure.
+
 ## Development reference
 
 Run `bun run test:package` before release to build and test the npm tarball's public types,
 CLI, VFS artifacts, and cancellation. To check an unpublished browser-pilot candidate without
 installing it into this checkout, run `bun run test:package /absolute/path/browser-pilot.tgz`.
-Only browser-pilot ^0.5.0 is supported.
+Only browser-pilot ^0.6.0 is supported.
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.

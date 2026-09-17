@@ -164,4 +164,10 @@ spikes/
 .private/
 
 # Local flow definitions
-flows/
+/flows/
+
+# Saved-auth-state cookie snapshots ([config.auth] cookie_file/cookie_save)
+*.cookies.json
+
+# Throwaway learning-test scripts (never linted/formatted; see the learning-test skill)
+.scratch/

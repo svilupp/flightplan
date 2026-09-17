@@ -83,7 +83,7 @@
 // `./mock-fixtures.ts`.
 
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
-import { resolveAuthPlan } from "./connect-resolution.ts";
+import { AuthStateUnavailableError, resolveAuthPlan } from "./connect-resolution.ts";
 import type {
   ActionOpts,
   BatchOptions,
@@ -125,6 +125,7 @@ export interface DriverCall {
     | "teardown"
     | "setDialogPolicy"
     | "applyAuth"
+    | "saveAuthState"
     | "expectNewPage"
     | "pageState"
     | "clearBrowserState"
@@ -287,6 +288,11 @@ export class MockDriver implements Driver {
   private evaluateErrorQueue: Error[] = [];
   private evaluateProvider?: (expression: string, callIndex: number) => unknown;
   private defaultEvaluateResult: unknown = undefined;
+
+  // --- applyAuth / saveAuthState (auth cookie-snapshot restore/save; opt-in scripting) ---
+  private authStateUnavailableError: AuthStateUnavailableError | undefined;
+  private saveAuthStateValue: { path: string; cookieCount: number } | undefined;
+  private saveAuthStateError: Error | undefined;
 
   // --- evalInFrame (required; mirrors browser-pilot's Page.evaluate escape hatch) ---
   private evalResultQueue: EvalResult[] = [];
@@ -772,18 +778,66 @@ export class MockDriver implements Driver {
 
   /**
    * Logs the call (args included, for a test to assert `applyAuth` was invoked with the
-   * resolved `[config.auth]` + env), then runs the SAME pure {@link resolveAuthPlan} the real
-   * driver uses — so a runner-level test can exercise the unset-`*_env`-throws-before-navigation
-   * contract hermetically, without any real page/CDP session. Never performs the `cf_access`
-   * mint itself (no network in the mock); a `cf_access` in `"cookie"` mode therefore only
-   * validates its `*_env` names here, matching the pure resolver's scope.
+   * resolved `[config.auth]` + env + `paths`), then runs the SAME pure {@link resolveAuthPlan}
+   * the real driver uses — so a runner-level test can exercise the unset-`*_env`-throws-before-
+   * navigation contract hermetically, without any real page/CDP session. Never performs the
+   * `cf_access` mint itself (no network in the mock); a `cf_access` in `"cookie"` mode therefore
+   * only validates its `*_env` names here, matching the pure resolver's scope.
+   *
+   * When {@link setAuthStateUnavailable} has been scripted and the resolved plan has a
+   * `cookieFileRef`, records the configured `AuthStateUnavailableError` (simulating a cache miss
+   * / restore failure). The mock has no real page/CDP side effects to "apply", so headers/cookies
+   * are represented only by the recorded call args above; mirroring the real driver's contract,
+   * the error is thrown at the END (after that recording), never immediately — so a test can
+   * assert the call happened before asserting the throw, matching `cookie_save`'s continue-then-
+   * throw behavior. `cookie_save` off vs on makes no observable difference here since the mock
+   * never applies real side effects either way; it exists so tests can exercise the runner's
+   * non-fatal `cookie_save`-on continuation path without any real filesystem/CDP I/O.
    */
   async applyAuth(
     auth: AuthConfig | undefined,
     env: Record<string, string | undefined>,
+    paths?: { flowDir?: string; cwd?: string },
   ): Promise<void> {
-    this.record("applyAuth", [auth, env]);
-    resolveAuthPlan(auth, env);
+    this.record("applyAuth", [auth, env, paths]);
+    const plan = resolveAuthPlan(auth, env, paths);
+    if (this.authStateUnavailableError && plan.cookieFileRef) {
+      const err = this.authStateUnavailableError;
+      throw err;
+    }
+  }
+
+  /**
+   * Script `applyAuth` to throw `err` (an {@link AuthStateUnavailableError}) whenever the
+   * resolved `[config.auth]` plan has a `cookieFileRef` — simulates a saved-auth-state cache
+   * miss/restore failure so tests can exercise the runner's `cookie_save`-on continuation path.
+   */
+  setAuthStateUnavailable(err: AuthStateUnavailableError): this {
+    this.authStateUnavailableError = err;
+    return this;
+  }
+
+  /**
+   * Logs the call and returns the configured `saveAuthState()` result (default
+   * `{ path: filePath, cookieCount: 1 }`), or throws the configured error — see
+   * {@link setSaveAuthStateValue} / {@link setSaveAuthStateError}. Never returns cookie values.
+   */
+  async saveAuthState(filePath: string): Promise<{ path: string; cookieCount: number }> {
+    this.record("saveAuthState", [filePath]);
+    if (this.saveAuthStateError) throw this.saveAuthStateError;
+    return this.saveAuthStateValue ?? { path: filePath, cookieCount: 1 };
+  }
+
+  /** Script the value `saveAuthState()` returns (default `{ path: filePath, cookieCount: 1 }`). */
+  setSaveAuthStateValue(value: { path: string; cookieCount: number }): this {
+    this.saveAuthStateValue = value;
+    return this;
+  }
+
+  /** Script `saveAuthState()` to reject with `err`. */
+  setSaveAuthStateError(err: Error): this {
+    this.saveAuthStateError = err;
+    return this;
   }
 
   async expectNewPage(

@@ -64,10 +64,32 @@ export const ModelRegistrySchema = z
  */
 export const AI_PROVIDERS = ["openrouter", "google", "openai"] as const;
 
+/**
+ * L2 candidate chooser. `"auto"` = preference ordering: JEV (if its key is
+ * set) → LLM (if a generative provider is available) → heuristic. An explicit value is STRICT:
+ * that single chooser only, and a missing key/provider is a config error at runtime build.
+ */
+export const AI_CLASSIFIERS = ["auto", "heuristic", "jev", "llm"] as const;
+
 export const AiConfigSchema = z
   .object({
     provider: z.enum(AI_PROVIDERS).optional(),
     api_key_env: z.string().min(1).optional(),
+    /** L2 element-choice backend. Default `"auto"` (key-availability driven). */
+    classifier: z.enum(AI_CLASSIFIERS).optional(),
+    /** Env var NAME holding the JEV/TypeSafe key (never a value). Default `"TYPESAFE_API_KEY"`;
+     * JEV is TypeSafe's model, hence that default NAME. When unset, `"JEV_API_KEY"` is also
+     * accepted as an alias (both are tried). Setting this field OVERRIDES the name and disables
+     * the alias fallback — only the configured NAME is then consulted. */
+    jev_api_key_env: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Env var NAME holding the JEV/TypeSafe key (never a value). Default "TYPESAFE_API_KEY" ' +
+          '(JEV is TypeSafe\'s model); "JEV_API_KEY" is accepted as an alias when this is unset. ' +
+          "Setting this overrides the name and disables the alias fallback.",
+      ),
     // budgets may live under [ai] (global) and/or [run] (flow-local). Both are allowed.
     max_model_calls: z.number().int().nonnegative().optional(),
     max_screenshots: z.number().int().nonnegative().optional(),
@@ -406,8 +428,25 @@ export const AuthConfigSchema = z
     extra_headers: ExtraHeadersConfigSchema.optional(),
     /** Array — replaced wholesale by a later config layer (arrays are never concatenated). */
     cookies: z.array(AuthCookieConfigSchema).optional(),
+    /** Path to a browser-pilot cookie snapshot JSON, resolved relative to the flow file's
+     * directory. Mutually exclusive with `cookie_file_env`. */
+    cookie_file: z.string().min(1).optional(),
+    /** Name of an env var holding the cookie snapshot path, resolved against the CWD.
+     * Mutually exclusive with `cookie_file`. */
+    cookie_file_env: z.string().min(1).optional(),
+    /** After a successful run, re-capture cookies and overwrite the snapshot file. Default false. */
+    cookie_save: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((auth, ctx) => {
+    if (auth.cookie_file !== undefined && auth.cookie_file_env !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "set at most one of `cookie_file` / `cookie_file_env`",
+        path: ["cookie_file"],
+      });
+    }
+  });
 
 // ---------------------------------------------------------------------------
 // The full Config object (all sections optional; built-in defaults fill the gaps).

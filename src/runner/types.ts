@@ -61,12 +61,14 @@ export interface RunOptions {
   /** Absolute or cwd-relative path to the flow .toml to run. */
   flowPath: string;
   /**
-   * The run's cwd (e.g. the CLI host's `io.cwd`), used ONLY to relativize `flowPath` (and every
+   * The run's cwd (e.g. the CLI host's `io.cwd`), used to relativize `flowPath` (and every
    * imported module's path) for the `source` recorded in a freshly created/reset lock header
    * (`lock/parse.ts` `emptyLock`), so a committed lock stays portable even when the CALLER
    * absolutizes `flowPath` first (adapter-cwd independence). Omit when `flowPath` is already the
    * value you want recorded verbatim (e.g. most unit tests passing a bare relative path) —
-   * behavior is then unchanged (no relativization is attempted).
+   * behavior is then unchanged (no relativization is attempted). Also the resolution base for
+   * `[config.auth] cookie_file_env` values (a relative path from that env var resolves against
+   * this `cwd`, mirroring `cookie_file`'s flow-directory-relative resolution).
    */
   cwd?: string;
   /**

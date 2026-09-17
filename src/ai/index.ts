@@ -20,6 +20,49 @@ export {
 export type { AiCallRuntime } from "./call.ts";
 // --- the single model-call choke point ---
 export { aiCall } from "./call.ts";
+// --- chooser abstraction (CandidateChooser / HeuristicChooser / resolveChooserChain) ---
+export type {
+  CandidateChooser,
+  ChooseContext,
+  ChooseResult,
+  ChooserKind,
+  ClassifierName,
+} from "./chooser.ts";
+export {
+  AI_CLASSIFIERS,
+  ClassifierConfigError,
+  HEURISTIC_MIN_GAP,
+  HEURISTIC_MIN_SCORE,
+  HeuristicChooser,
+  resolveChooserChain,
+} from "./chooser.ts";
+// --- JEV (TypeSafe System One) classifier chooser ---
+export type {
+  ChoiceAnswer,
+  JevCallResult,
+  JevCallRuntime,
+  JevOptionEncoding,
+  SystemOneRequest,
+  SystemOneResponse,
+} from "./chooser-jev.ts";
+export {
+  buildSystemOneRequest,
+  dedupeCandidatesForJev,
+  JEV_API_URL,
+  JEV_MAX_CANDIDATES,
+  JEV_MAX_RETRIES,
+  JEV_MIN_CONFIDENCE,
+  JEV_MIN_PROB_GAP,
+  JEV_MODEL,
+  JEV_NONE_KEY,
+  JEV_OPTION_ENCODING,
+  JEV_PICK_INSTRUCTIONS,
+  JEV_RETRY_DELAY_MS,
+  JEV_TIMEOUT_MS,
+  JevChooser,
+  jevCall,
+} from "./chooser-jev.ts";
+export { LlmChooser } from "./chooser-llm.ts";
 export type { UsageCost } from "./cost.ts";
 // --- cost ---
 export { CostAccumulator, extractUsageCost } from "./cost.ts";

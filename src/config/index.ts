@@ -17,12 +17,15 @@ export {
   BUILTIN_DEFAULTS,
   DEFAULT_AI,
   DEFAULT_BROWSER,
+  DEFAULT_JEV_API_KEY_ENVS,
   DEFAULT_PLAN,
   DEFAULT_REDACTION,
   DEFAULT_RUN_LIMITS,
+  jevApiKeyEnvLabel,
   mergeConfigLayer,
   resolveConfig,
   resolveConfigWithDefaults,
+  resolveJevApiKeyEnv,
 } from "./resolve.ts";
 // Schemas (zod 4) — exported so the linter / downstream phases can re-validate.
 export {

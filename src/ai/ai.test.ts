@@ -227,7 +227,7 @@ describe("L4 advisor — produces each verdict kind, terminal + attached", () =>
       const { fn } = makeFakeGenerate([{ output: verdict }]);
       const rt = buildRuntime(fn, sink);
 
-      const exec = await rt.hooks.classifyL4(clickStep(), priorL1, ctxFor(d, rt.hooks));
+      const exec = await rt.hooks.classifyL4!(clickStep(), priorL1, ctxFor(d, rt.hooks));
 
       expect(exec.ok).toBe(false);
       expect(exec.tier).toBe("L4");
@@ -261,7 +261,7 @@ describe("L4 advisor — a malformed model response degrades to a safe flake, ne
     const rt = buildRuntime(noObjectGenerate(), sink);
 
     // Must resolve (not reject) — the run continues; the advisor never aborts it.
-    const exec = await rt.hooks.classifyL4(clickStep(), priorL1, ctxFor(d, rt.hooks));
+    const exec = await rt.hooks.classifyL4!(clickStep(), priorL1, ctxFor(d, rt.hooks));
 
     expect(exec.ok).toBe(false);
     expect(exec.tier).toBe("L4");
@@ -281,7 +281,7 @@ describe("L4 advisor — a malformed model response degrades to a safe flake, ne
     const { fn } = makeFakeGenerate([{ output: { kind: "not-a-real-kind", nonsense: true } }]);
     const rt = buildRuntime(fn, sink);
 
-    const exec = await rt.hooks.classifyL4(clickStep(), priorL1, ctxFor(d, rt.hooks));
+    const exec = await rt.hooks.classifyL4!(clickStep(), priorL1, ctxFor(d, rt.hooks));
 
     expect(exec.advisory?.kind).toBe("flake");
     expect(exec.tier).toBe("L4");
@@ -311,7 +311,7 @@ describe("ai_judge — routing follows the modality", () => {
     ]);
     const rt = buildRuntime(fn, sink);
 
-    const result = await rt.judge(judgeAssertion({ inputs: ["text", "screenshot"] }), {
+    const result = await rt.judge!(judgeAssertion({ inputs: ["text", "screenshot"] }), {
       driver: d,
       timeoutMs: 1000,
       stepId: "s3",
@@ -337,7 +337,7 @@ describe("ai_judge — routing follows the modality", () => {
     ]);
     const rt = buildRuntime(fn, sink);
 
-    const result = await rt.judge(judgeAssertion({ inputs: ["text"] }), {
+    const result = await rt.judge!(judgeAssertion({ inputs: ["text"] }), {
       driver: d,
       timeoutMs: 1000,
       stepId: "s4",
@@ -357,7 +357,7 @@ describe("ai_judge — routing follows the modality", () => {
     const { fn } = makeFakeGenerate([{ output: { verdict: "maybe", nope: 1 } }]);
     const rt = buildRuntime(fn, sink);
 
-    const result = await rt.judge(judgeAssertion({ inputs: ["text"] }), {
+    const result = await rt.judge!(judgeAssertion({ inputs: ["text"] }), {
       driver: d,
       timeoutMs: 1000,
       stepId: "s5",
@@ -379,7 +379,7 @@ describe("ai_judge — routing follows the modality", () => {
     const sink = new RecordingSink();
     const rt = buildRuntime(noObjectGenerate(), sink);
 
-    const result = await rt.judge(judgeAssertion({ inputs: ["text"] }), {
+    const result = await rt.judge!(judgeAssertion({ inputs: ["text"] }), {
       driver: d,
       timeoutMs: 1000,
       stepId: "s6",
@@ -432,7 +432,7 @@ describe("budgets — each ceiling throws from the right choke point", () => {
 
     let err: unknown;
     try {
-      await rt.hooks.resolveL3(clickStep({ target: "Go" }), priorL1, ctxFor(d, rt.hooks));
+      await rt.hooks.resolveL3!(clickStep({ target: "Go" }), priorL1, ctxFor(d, rt.hooks));
     } catch (e) {
       err = e;
     }
@@ -492,7 +492,7 @@ describe("cost aggregation — usageTotals matches fake tokens × registry prici
     const rt = buildRuntime(fn, sink);
 
     await rt.hooks.resolveL2(clickStep({ target: "Go" }), priorL1, ctxFor(d, rt.hooks));
-    await rt.hooks.classifyL4(clickStep({ target: "Go" }), priorL1, ctxFor(d, rt.hooks));
+    await rt.hooks.classifyL4!(clickStep({ target: "Go" }), priorL1, ctxFor(d, rt.hooks));
 
     const resolverCost = (10 / 1e6) * 0.09 + (5 / 1e6) * 0.18; // 0.0000018
     const advisorCost = (20 / 1e6) * 0.94 + (10 / 1e6) * 3.0; // 0.0000488

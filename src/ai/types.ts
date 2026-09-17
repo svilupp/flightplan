@@ -210,10 +210,21 @@ export interface AiRuntimeDeps {
    * per-AI-call ceiling (`ai_call_ms` → `AiCallRuntime.timeoutMsByRole`, Fix 2). All optional.
    */
   config: Pick<Config, "ai" | "run" | "timeouts">;
-  /** The model-call seam (real = `provider.defaultGenerate`, tests = a fake). */
-  generate: GenerateFn;
+  /**
+   * The model-call seam (real = `provider.defaultGenerate`, tests = a fake). OPTIONAL: a
+   * JEV-only runtime (only `TYPESAFE_API_KEY` present, no generative provider key) is built with
+   * NO `generate` at all — never a rejecting stub (a "JEV-only runtime"). When
+   * absent, `createAiRuntime` wires ONLY the `resolveL2` hook; `judge`/`planner`/L3/L4 are absent.
+   */
+  generate?: GenerateFn;
   /** The `ai_call` event sink (the run's `AiWriter`, or a test recorder). */
   aiWriter: AiCallSink;
+  /** Env var VALUE for the TypeSafe JEV API key (never a name-only placeholder), when available. */
+  jevApiKey?: string;
+  /** Injected fetch for the JEV client (test seam) — defaults to `globalThis.fetch`. */
+  fetchFn?: typeof fetch;
+  /** Test-only seam: inject the exact chooser chain, bypassing `resolveChooserChain`. */
+  choosers?: import("./chooser.ts").CandidateChooser[];
   /**
    * Optional redaction policy. When present and `enabled`, `aiCall` populates the
    * `redactedPrompt`/`redactedResponse` fields on every `ai_call` event (secrets + PII masked
@@ -245,22 +256,31 @@ export interface AiRuntime {
   budget: import("./budget.ts").BudgetTracker;
   /** The per-role/model cost accumulator. */
   cost: import("./cost.ts").CostAccumulator;
-  /** The model-call seam. */
-  generate: GenerateFn;
+  /**
+   * The model-call seam. OPTIONAL — absent for a JEV-only runtime; see
+   * {@link hasGenerate}.
+   */
+  generate?: GenerateFn;
+  /** True iff a real `GenerateFn` was supplied (i.e. `generate`/`judge`/`planner` are present). */
+  hasGenerate: boolean;
   /** The `ai_call` sink. */
   aiWriter: AiCallSink;
-  /** The L2/L3/L4 hooks the orchestrator calls via `ctx.ai`. */
+  /** The L2/L3/L4 hooks the orchestrator calls via `ctx.ai`. Only `resolveL2` is guaranteed. */
   hooks: AiHooksImpl;
-  /** The `ai_judge` oracle wired into `assertCtx.aiJudge`. */
-  judge(assertion: AiJudgeAssertion, opts: AiJudgeOptions): Promise<AssertionResult>;
+  /**
+   * The `ai_judge` oracle wired into `assertCtx.aiJudge`. OPTIONAL: absent for a JEV-only runtime
+   * (no `generate`), so `ai_judge` assertions are skipped-with-message exactly as in an AI-less run
+   * (the `Phase4NotImplementedError` stub) — never failed closed.
+   */
+  judge?(assertion: AiJudgeAssertion, opts: AiJudgeOptions): Promise<AssertionResult>;
   /**
    * The L5 path-repair planner (PLAN_v003 v003-6). Bound to `planner-l5.ts` around the same runtime
    * slice `aiCall` uses, so the runner's `runPathRepair` can gather the current page + call the
    * cheap arm + (on the escalation signal) the capable arm — all offline-testable through the
-   * `generate` seam. Present whenever a runtime exists; the runner gates its USE on
-   * `[plan].enabled` + a real divergence, so a deterministic (no-AI-runtime) run never touches it.
+   * `generate` seam. Present only when `hasGenerate` — the runner additionally gates its USE on
+   * `[plan].enabled` + a real divergence.
    */
-  planner: PlannerRuntime;
+  planner?: PlannerRuntime;
   /** The run-level cost rollup Round 2 folds into `run_end` totals + `buildSummary`. */
   usageTotals(): { total_cost_usd: number; model_usage: ModelUsage[] };
 }
@@ -287,17 +307,22 @@ export interface PlannerRuntime {
   ): Promise<import("./planner-l5.ts").PlanRepairResult>;
 }
 
-/** The concrete (all-present) Ai hooks the runtime exposes (the orchestrator's `AiHooks`). */
+/**
+ * The Ai hooks the runtime exposes (the orchestrator's `AiHooks`). Only `resolveL2` is
+ * GUARANTEED (a JEV-only runtime with no `generate` wires only this one —
+ * `resolveL3`/`classifyL4`/`resolveBatchL3` are absent so the orchestrator's `nextAiHook`
+ * (which already tolerates absent hooks) never reaches for a generative tier).
+ */
 export interface AiHooksImpl {
   resolveL2(step: Step, prior: StepExecution, ctx: ResolveContext): Promise<StepExecution>;
-  resolveL3(step: Step, prior: StepExecution, ctx: ResolveContext): Promise<StepExecution>;
-  classifyL4(step: Step, prior: StepExecution, ctx: ResolveContext): Promise<StepExecution>;
+  resolveL3?(step: Step, prior: StepExecution, ctx: ResolveContext): Promise<StepExecution>;
+  classifyL4?(step: Step, prior: StepExecution, ctx: ResolveContext): Promise<StepExecution>;
   /**
    * L3 vision BATCH (PLAN_v003 §4 v003-3): resolve ≥2 same-page vision targets from ONE screenshot
    * + ONE vision call, returning one `StepExecution` per input step (same order) with per-target
    * fallback to a single {@link resolveL3} inside the callback. Bound to `vision-l3.ts`'s
    * `resolveBatchL3`, this is the `BatchVisionResolve` the runner injects into `resolveVisionBatch`
-   * so the ladder keeps importing NOTHING from `ai/`.
+   * so the ladder keeps importing NOTHING from `ai/`. Absent for a JEV-only runtime.
    */
-  resolveBatchL3(steps: Step[], ctx: ResolveContext): Promise<StepExecution[]>;
+  resolveBatchL3?(steps: Step[], ctx: ResolveContext): Promise<StepExecution[]>;
 }

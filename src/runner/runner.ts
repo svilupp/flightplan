@@ -29,6 +29,7 @@
 import {
   type AiRuntime,
   type BudgetLimitName,
+  ClassifierConfigError,
   createAiRuntime,
   type GenerateFn,
   isBudgetExceeded,
@@ -54,12 +55,14 @@ import {
   type AssertionResult,
   runAssertions,
 } from "../assert/index.ts";
+import { jevApiKeyEnvLabel, resolveJevApiKeyEnv } from "../config/resolve.ts";
 import type { CacheConfig, ConnectConfig, ResolvedConfig } from "../config/types.ts";
 import {
   BrowserPilotDriver,
   type DialogPolicy,
   getBrowserPilotProvenance,
 } from "../driver/browser-pilot-driver.ts";
+import { AuthStateUnavailableError, resolveAuthPlan } from "../driver/connect-resolution.ts";
 import type {
   ActionReceipt,
   DispatchState,
@@ -477,9 +480,17 @@ function buildAssertContext(
   // keeps its Phase-2 stub and AI-less runs are unchanged. The engine only ever routes a narrowed
   // `ai_judge` assertion here, so the cast to `AiJudgeAssertion` is sound (and sidesteps the
   // contravariant-param mismatch between the seam's `Assertion` slot and `judge`'s narrower param).
-  if (runtime) {
+  // Wired only when `runtime.judge` exists: a JEV-only runtime (no `generate`) has no `judge`,
+  // so `ai_judge` assertions take the SAME path as an AI-less run — the engine's
+  // `Phase4NotImplementedError` stub is caught by `runAssertions` and turned into a clearly-marked
+  // FAILING assertion result (`pass: false`, message "ai_judge assertions are implemented in
+  // Phase 4 (not available in Phase 2)"). This is a real, counted assertion failure, NOT a silent
+  // skip — but it is distinct from "failed closed": no model call was ever attempted or charged,
+  // and the failure is always the SAME clearly-marked not-available message, never a judge verdict
+  // (JEV-only runtime — no `generate`).
+  if (runtime?.judge) {
     const active = runtime;
-    ctx.aiJudge = (assertion, opts) => active.judge(assertion as AiJudgeAssertion, opts);
+    ctx.aiJudge = (assertion, opts) => active.judge!(assertion as AiJudgeAssertion, opts);
   }
   return ctx;
 }
@@ -1711,7 +1722,7 @@ async function executeSteps(
         // `try` so a `BudgetExceededError` from the shared screenshot/vision call maps to
         // `inconclusive` via the same handler as a single-step AI call.
         if (
-          runtime &&
+          runtime?.hooks.resolveBatchL3 &&
           !batchResults.has(step.id) &&
           isVisionBatchable(step) &&
           visionBatchRunLength(steps, cursor) >= 2
@@ -1727,8 +1738,9 @@ async function executeSteps(
           ctx.ai = runtime.hooks;
           // Wrap the bound batch hook in an arrow (the hook is `this`-free, but referencing it bare
           // trips oxlint `unbound-method`); this is the `BatchVisionResolve` the ladder injects.
+          const activeRuntime = runtime;
           const groupResults = await resolveVisionBatch(group, ctx, (s, c) =>
-            runtime.hooks.resolveBatchL3(s, c),
+            activeRuntime.hooks.resolveBatchL3!(s, c),
           );
           group.forEach((g, i) => {
             const r = groupResults[i];
@@ -1934,8 +1946,8 @@ async function executeSteps(
         !state.runError &&
         !transportAmbiguous &&
         step.effect !== "at_most_once" &&
-        stepsAttempted <= steps.length + 1 && // guard is soft; max_steps is the real backstop
-        runtime &&
+        stepsAttempted <= steps.length + 1 &&
+        runtime?.planner &&
         services.plan.enabled &&
         action.advisory?.kind === "intent_changed" &&
         !repairedDivergences.has(step.id)
@@ -1992,7 +2004,7 @@ async function executeSteps(
       if (
         !state.aborted &&
         stepOk &&
-        runtime &&
+        runtime?.planner &&
         services.plan.enabled &&
         isPathMutatingStep(step)
       ) {
@@ -2647,7 +2659,19 @@ async function runFlowImpl(
     // `state.runError` (verdict `error`, matching connect()'s own failure handling) — auth must be
     // in place, or the run must fail, before any navigation.
     if (!state.aborted && opts.config.auth && driver.applyAuth) {
-      await driver.applyAuth(opts.config.auth, env);
+      const authPaths = { flowDir: dirOf(loaded.path), cwd: opts.cwd };
+      try {
+        await driver.applyAuth(opts.config.auth, env, authPaths);
+      } catch (err) {
+        if (err instanceof AuthStateUnavailableError && opts.config.auth.cookie_save) {
+          onWarn(
+            `flightplan: saved auth state ${err.code} at ${err.path}; continuing without it ` +
+              `(cookie_save is on — a fresh snapshot will be written after a successful run)`,
+          );
+        } else {
+          throw err;
+        }
+      }
     }
     if (!state.aborted && driver.pageState) {
       try {
@@ -2724,6 +2748,32 @@ async function runFlowImpl(
         }
       } catch {
         // A lock-write failure is non-fatal to the run verdict (the resolution already happened).
+      }
+    }
+
+    // --- (5.6) re-save the saved-auth-state cookie snapshot after a successful run, when
+    // `[config.auth].cookie_save` is on (SAME success gate as the lock flush above, PLUS
+    // `!state.aborted` — deliberately: an aborted run never even connected/applied auth, so there
+    // is nothing fresh worth capturing) ---
+    // Runs BEFORE the flow `teardown` hook (6), since teardown may log out / clear cookies.
+    if (
+      !state.aborted &&
+      !state.runError &&
+      !state.inconclusiveReason &&
+      !state.verdictFailed &&
+      opts.config.auth?.cookie_save &&
+      driver.saveAuthState
+    ) {
+      try {
+        const authPaths = { flowDir: dirOf(loaded.path), cwd: opts.cwd };
+        const cookieFileRef = resolveAuthPlan(opts.config.auth, env, authPaths).cookieFileRef;
+        if (cookieFileRef) {
+          const saved = await driver.saveAuthState(cookieFileRef);
+          onWarn(`flightplan: saved auth state (${saved.cookieCount} cookies) to ${saved.path}`);
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        onWarn(`flightplan: auth state save failed (non-fatal): ${detail}`);
       }
     }
 
@@ -2895,7 +2945,50 @@ async function buildAiRuntime(
   }
   const keyEnv = opts.config.ai?.api_key_env ?? DEFAULT_API_KEY_ENV;
   const apiKey = env[keyEnv];
-  if (!apiKey) return undefined;
+  // `resolveJevApiKeyEnv` tries BOTH `TYPESAFE_API_KEY` and `JEV_API_KEY` when `jev_api_key_env`
+  // is unset/default; an explicit `jev_api_key_env` consults only that one NAME.
+  const { value: jevApiKey } = resolveJevApiKeyEnv(opts.config.ai?.jev_api_key_env, env);
+  const classifier = opts.config.ai?.classifier ?? "auto";
+
+  // A runtime is built when an LLM key exists (today's rule) OR the JEV key
+  // exists with `classifier` ∈ {auto, jev} OR `classifier === "heuristic"` (no key needed at all).
+  // An explicit `classifier = "jev"`/`"llm"` with a missing prerequisite is a FAIL-FAST config
+  // error (`ClassifierConfigError`) surfaced at run start — never the fail-open `onWarn` path
+  // reserved for `"auto"`'s missing-SDK degradation below. Checked BEFORE the `wantsRuntime` gate
+  // so a missing prerequisite is never silently swallowed into an AI-less run.
+  if (classifier === "jev" && !jevApiKey) {
+    throw new ClassifierConfigError(
+      `[ai] classifier = "jev" but env ${jevApiKeyEnvLabel(opts.config.ai?.jev_api_key_env)} is not set`,
+    );
+  }
+  if (classifier === "llm" && !apiKey) {
+    throw new ClassifierConfigError(
+      '[ai] classifier = "llm" but no generative provider key is available',
+    );
+  }
+
+  const jevUsable = !!jevApiKey && (classifier === "auto" || classifier === "jev");
+  const wantsRuntime = !!apiKey || jevUsable || classifier === "heuristic";
+  if (!wantsRuntime) return undefined;
+
+  const baseDeps = {
+    config: opts.config,
+    aiWriter: writers.ai,
+    now: () => clock.now(),
+    redactor,
+    onAiCall,
+    ...(opts.signal ? { signal: opts.signal } : {}),
+    ...(jevApiKey ? { jevApiKey } : {}),
+  };
+
+  // JEV-only / heuristic-only runtimes: skip the lazy SDK import entirely (no generative provider
+  // key present). `createAiRuntime` throws `ClassifierConfigError` for a strict explicit setting
+  // with a missing prerequisite (e.g. `classifier="jev"` with no key) — let it propagate as a
+  // run-start config error.
+  if (!apiKey) {
+    return createAiRuntime(baseDeps);
+  }
+
   const provider = opts.config.ai?.provider ?? "openrouter";
   let generate: GenerateFn;
   try {
@@ -2907,22 +3000,25 @@ async function buildAiRuntime(
           ? mod.createOpenAiGenerate({ apiKey })
           : mod.createOpenRouterGenerate({ apiKey });
   } catch (cause) {
+    // An explicit `classifier = "llm"` REQUIRES the generative provider to be usable — an SDK
+    // load failure here is a fatal config/environment error for that strict setting, not a
+    // degrade-to-AI-less situation. Rethrow rather than fail open via `onWarn` (only `"auto"`
+    // degrades gracefully).
+    if (classifier === "llm") throw cause;
     const causeMessage = cause instanceof Error ? cause.message : String(cause);
     (opts.onWarn ?? (() => {}))(
       "flightplan: AI SDK unavailable in this runtime — AI tiers are disabled for this run. " +
         "Inject `aiRuntimeFactory` to supply AI on hosts without the SDKs bundled. " +
         `Cause: ${causeMessage}`,
     );
-    return undefined;
+    // Fall through to a JEV/heuristic-only runtime when one is usable without the SDK; only
+    // return `undefined` (today's degrade-to-AI-less behavior) when nothing else is usable.
+    if (!jevUsable && classifier !== "heuristic") return undefined;
+    return createAiRuntime(baseDeps);
   }
   return createAiRuntime({
-    config: opts.config,
+    ...baseDeps,
     generate,
-    aiWriter: writers.ai,
-    now: () => clock.now(),
-    redactor,
-    onAiCall,
-    ...(opts.signal ? { signal: opts.signal } : {}),
   });
 }
 
@@ -3248,6 +3344,7 @@ function buildSummary(
     ...(Object.keys(captures).length > 0 ? { captures } : {}),
     ...(state.pages.length > 0 ? { pages: [...state.pages] } : {}),
     steps: state.stepSummaries,
+    ...(state.runError ? { error: state.runError } : {}),
   };
 }
 

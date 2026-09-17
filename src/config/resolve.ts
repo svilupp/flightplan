@@ -24,11 +24,15 @@
 //     - `ai` scalar fields           — provider, api_key_env, etc. merged key-by-key.
 //     - `browser`, `telemetry.logfire`, `artifacts`, `redaction` — merged key-by-key.
 //     - `auth`                       — merged key-by-key like `browser` / `telemetry.logfire`
-//                                       (`cf_access`, `extra_headers` merge key-by-key too, via
-//                                       the generic `deepMerge` below); `auth.cookies` is an
-//                                       array, so it is REPLACED WHOLESALE per the array rule
-//                                       (no special-case code needed — `deepMerge` already never
-//                                       concatenates arrays).
+//                                       (`cf_access`, `extra_headers`, and the saved-auth-state
+//                                       fields `cookie_file` / `cookie_file_env` / `cookie_save`
+//                                       merge key-by-key too, via the generic `deepMerge` below);
+//                                       `auth.cookies` is an array, so it is REPLACED WHOLESALE
+//                                       per the array rule (no special-case code needed —
+//                                       `deepMerge` already never concatenates arrays). The
+//                                       merged result is re-validated against `ConfigSchema` in
+//                                       `resolveConfigWithDefaults`, so the `cookie_file` /
+//                                       `cookie_file_env` XOR is enforced post-merge too.
 //     - `connect`                    — see special-case note below.
 //
 //   REPLACEABLE (a later layer that sets the field replaces the whole object; chosen so a
@@ -103,6 +107,10 @@ export const DEFAULT_TIMEOUTS = {
  * did not set `api_key_env` explicitly. */
 export const DEFAULT_AI = {
   provider: "openrouter",
+  // Provider-independent (unlike `api_key_env`), so these go straight into the
+  // built-in defaults layer rather than being filled in post-merge.
+  classifier: "auto",
+  jev_api_key_env: "TYPESAFE_API_KEY",
 } as const;
 
 /** The default `[ai].api_key_env` per `[ai].provider`, applied post-merge (see {@link DEFAULT_AI}). */
@@ -111,6 +119,62 @@ export const DEFAULT_API_KEY_ENV_BY_PROVIDER: Record<(typeof AI_PROVIDERS)[numbe
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   openai: "OPENAI_API_KEY",
 };
+
+/**
+ * The default JEV classifier API-key env var NAMES, tried in this order when `[config.ai]
+ * jev_api_key_env` is unset (or still equal to `DEFAULT_AI.jev_api_key_env`, i.e. not explicitly
+ * overridden). JEV is TypeSafe's model, hence `TYPESAFE_API_KEY` as the primary NAME —
+ * `JEV_API_KEY` is accepted as an alias for anyone who expects the classifier's own name to match
+ * its env var. An EXPLICIT `jev_api_key_env` (any other name) disables this fallback: only that
+ * one NAME is consulted. Only NAMES are ever recorded (for errors/telemetry) — never the value.
+ */
+export const DEFAULT_JEV_API_KEY_ENVS = ["TYPESAFE_API_KEY", "JEV_API_KEY"] as const;
+
+export interface ResolvedJevApiKeyEnv {
+  /** Env var NAME actually consulted (never a value). In the default case this is the first
+   * {@link DEFAULT_JEV_API_KEY_ENVS} name found present in `env`, or `DEFAULT_JEV_API_KEY_ENVS[0]`
+   * when neither is set (kept for a stable default error message). */
+  envName: string;
+  /** The looked-up key value, if present. NEVER store or log this — NAME only past this point. */
+  value: string | undefined;
+  /** `true` iff `configuredEnvName` was unset or still the baked-in default (see the module doc
+   * above) — i.e. this resolution consulted BOTH default names rather than one explicit name. */
+  isDefault: boolean;
+}
+
+/**
+ * Resolve the JEV classifier API key from `env`, honoring an explicit `[config.ai]
+ * jev_api_key_env` while defaulting to trying BOTH `TYPESAFE_API_KEY` and `JEV_API_KEY`
+ * ({@link DEFAULT_JEV_API_KEY_ENVS}) when unset. Used by `buildAiRuntime` (`runner/runner.ts`) and
+ * mirrored (via {@link jevApiKeyEnvLabel}) by `resolveChooserChain` (`ai/chooser.ts`) for the
+ * `ClassifierConfigError` message.
+ */
+export function resolveJevApiKeyEnv(
+  configuredEnvName: string | undefined,
+  env: Record<string, string | undefined>,
+): ResolvedJevApiKeyEnv {
+  const isDefault = !configuredEnvName || configuredEnvName === DEFAULT_JEV_API_KEY_ENVS[0];
+  if (!isDefault) {
+    return { envName: configuredEnvName, value: env[configuredEnvName], isDefault: false };
+  }
+  for (const envName of DEFAULT_JEV_API_KEY_ENVS) {
+    const value = env[envName];
+    if (value) return { envName, value, isDefault: true };
+  }
+  return { envName: DEFAULT_JEV_API_KEY_ENVS[0], value: undefined, isDefault: true };
+}
+
+/**
+ * The human-readable env-NAME label for a `ClassifierConfigError` message: the default case names
+ * BOTH env vars (`"TYPESAFE_API_KEY" (or "JEV_API_KEY")`); an explicit `jev_api_key_env` names
+ * only that one NAME.
+ */
+export function jevApiKeyEnvLabel(configuredEnvName: string | undefined): string {
+  const isDefault = !configuredEnvName || configuredEnvName === DEFAULT_JEV_API_KEY_ENVS[0];
+  return isDefault
+    ? `"${DEFAULT_JEV_API_KEY_ENVS[0]}" (or "${DEFAULT_JEV_API_KEY_ENVS[1]}")`
+    : `"${configuredEnvName}"`;
+}
 
 /** Default browser wiring: attach to an existing window (PROPOSAL "Global config example"). */
 export const DEFAULT_BROWSER = {

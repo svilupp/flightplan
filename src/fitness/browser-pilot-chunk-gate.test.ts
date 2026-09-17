@@ -126,7 +126,9 @@ describe("browser-pilot dist chunk gate", () => {
     // Sanity bound so a future bp release that collapses to a single monolithic file (or one
     // that suddenly explodes to hundreds of chunks) is visible as a deliberate change, not
     // silently accepted. workers-slice-2 §4 measured 8 (index.mjs + 7 relative chunks) on 0.4.1;
-    // 0.5.0 measures 16 (index.mjs + 15 relative chunks, incl. the new `/core` split).
+    // 0.5.0 measured 16 (index.mjs + 15 relative chunks, incl. the new `/core` split); 0.6.0
+    // measures 17 (index.mjs + 16 relative chunks) — one additional chunk, no new offenders
+    // (re-verified below; see EXPECTED_OFFENDERS).
     expect(chunks.length).toBeGreaterThan(0);
     expect(chunks.length).toBeLessThan(50);
   });

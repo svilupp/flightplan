@@ -243,8 +243,15 @@ export type TraceEvent = BrowserActionEvent | ResolutionAttemptEvent;
  * is still logged as `planner`). An L5 path-repair planner call (PLAN_v003 v003-6) is logged as
  * `planner` regardless of which arm — cheap or capable — produced it.
  */
-export type AiCallRole = "resolver" | "advisor" | "vision" | "judge" | "planner";
-export const AI_CALL_ROLES = ["resolver", "advisor", "vision", "judge", "planner"] as const;
+export type AiCallRole = "resolver" | "advisor" | "vision" | "judge" | "planner" | "classifier";
+export const AI_CALL_ROLES = [
+  "resolver",
+  "advisor",
+  "vision",
+  "judge",
+  "planner",
+  "classifier",
+] as const;
 
 /**
  * A single model call.
@@ -383,4 +390,9 @@ export interface RunSummary {
   }>;
   /** Per-step rollup (the addition over the wire RunSummary; consumed by `explain`). */
   steps: StepSummary[];
+  /**
+   * The infra/harness/connect failure message when `verdict === "error"` (mirrors the
+   * `run_end` event's `error` field). Absent for every other verdict.
+   */
+  error?: string;
 }
