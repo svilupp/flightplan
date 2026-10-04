@@ -74,11 +74,11 @@ output correction; it failed at 8,192 bytes before the fix.
 
 ## Minor-version release preparation
 
-The candidate versions are Flightplan 0.4.0 and browser-pilot 0.7.0; Flightplan
-requires `browser-pilot ^0.7.0`. Both packed candidates and their CLI version
+The candidate versions are Flightplan 0.4.0 and browser-pilot 0.7.0.
+Both packed candidates and their CLI version
 outputs passed verification. Browser-pilot 0.7.0 was not available on npm during
 preparation, so the companion's registry lock still resolves 0.6.0 while its
-workspace declaration reflects ^0.7.0. Publish browser-pilot first, then regenerate
+workspace declaration requests the candidate release. Publish browser-pilot first, then regenerate
 Flightplan's registry lock before a frozen registry install or Flightplan release.
 No checksum was invented for an unpublished registry artifact; local candidate
 verification uses the actual packed 0.7.0 tarball. Neither package was published.
@@ -103,7 +103,7 @@ cross-consumer results above were not re-run in this review; live hosted gates
 remain unverified.
 
 **Merge blocker:** npm still returns 404 for browser-pilot 0.7.0. The checked-in
-lock resolves 0.6.0 despite the ^0.7.0 manifest requirement. An isolated
+lock resolves 0.6.0 despite the newer manifest requirement. An isolated
 `bun install --frozen-lockfile --ignore-scripts` succeeded but installed 0.6.0;
 its subsequent typecheck failed on missing core exports such as `BorrowedBrowser`,
 `BrowserLease` and `normalizeProviderSelector`. Publish browser-pilot 0.7.0,

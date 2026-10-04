@@ -17,7 +17,7 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Changed
 
-- Requires browser-pilot ^0.7.0; includes `ws` for authenticated Node connections.
+- Includes `ws` for authenticated Node connections.
 - Failed normal-run teardown now rejects with the cleanup cause, exact provider
   cleanup identity when available, and the workflow result/artifact paths.
 
@@ -57,7 +57,6 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 ### Changed
 
-- Requires browser-pilot ^0.6.0.
 - Fatal saved-auth-state errors now include the snapshot path (e.g. invalid format, unsupported
   version, cookie rejected by the browser).
 - L2 escalation/abstain reason strings are now prefixed by the chooser that produced them (e.g.
@@ -83,23 +82,18 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 ### Fixed
 
 - Normalize hook paths for virtual filesystems, keep recording artifacts in injected storage, and stop AI fallbacks after cancellation.
-- Depend on browser-pilot ^0.5.0 only (dropped 0.4.x support); the real driver now sources `Page`/`TargetNotFoundError`/`Browser` from the portable `browser-pilot/core` entry and everything else from the root entry, with a packed-package compatibility check for release candidates.
-
-### Changed
-
-- Requires browser-pilot ^0.5.0.
+- The real driver now sources `Page`/`TargetNotFoundError`/`Browser` from the portable `browser-pilot/core` entry and everything else from the root entry, with a packed-package compatibility check for release candidates.
 
 ## [0.1.0] - 2026-08-29
 
 ### Added
 
-- `webmcp_call` steps for invoking exact page-provided WebMCP tools through browser-pilot 0.4.1.
+- `webmcp_call` steps for invoking exact page-provided WebMCP tools through browser-pilot.
 - Typed WebMCP result assertions and runtime captures, including secret-aware artifact redaction.
 - Effect-aware WebMCP dispatch safety: read-only preflight by default, explicit mutation acknowledgement, and conservative uncertain outcomes.
 
 ### Changed
 
-- Requires browser-pilot ^0.4.1.
 - The published package now supports Node.js 18+, includes declarations, and builds automatically during `npm pack`.
 - Published files include the operator documentation and examples needed to start a consumer project.
 
@@ -120,10 +114,6 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 - `[config.auth]` block for Cloudflare Access-protected targets (service token, extra headers, cookies — env var names only)
 - Driver `applyAuth()` — applies auth after connect, before the first step (headers reapplied on popups)
-
-### Changed
-
-- Requires browser-pilot ^0.3.0 (Cloudflare Access APIs)
 
 ## [0.0.2] - 2026-08-12
 

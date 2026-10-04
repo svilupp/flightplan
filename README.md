@@ -738,8 +738,8 @@ in itself; after a **successful** run (the same gate as lock flush) cookies are 
 file is overwritten before the flow's `teardown` hook runs. A save failure is a non-fatal warning;
 an invalid-format or I/O error is still fatal either way.
 
-This requires a Node/Bun host (the browser-pilot node adapter) and browser-pilot ^0.6.0; a
-MockDriver or worker host never touches the file. The snapshot holds live session cookies — treat
+This requires a Node/Bun host (the browser-pilot node adapter); a MockDriver or worker host
+never touches the file. The snapshot holds live session cookies — treat
 it as a credential: gitignore it (e.g. `*.cookies.json`), it is never copied into
 `.flightplan-runs/` artifacts (only counts/path appear in warnings), and "restored ≠
 logged in" — assert on real page state, don't trust the snapshot blindly. If you attach to a page
@@ -762,7 +762,6 @@ Notes:
 Run `bun run test:package` before release to build and test the npm tarball's public types,
 CLI, VFS artifacts, and cancellation. To check an unpublished browser-pilot candidate without
 installing it into this checkout, run `bun run test:package /absolute/path/browser-pilot.tgz`.
-Only browser-pilot ^0.6.0 is supported.
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.
