@@ -134,6 +134,3 @@ in a copy of either flow, replacing its `[config.connect]` launch block.
 Set `SAUCEDEMO_PASSWORD` to the public demo password before running the CLI.
 Hosted runs allocate a billable browser. Public SauceDemo needs no Cloudflare
 Access service token.
-
-See [live validation evidence](../docs/flightplan-validation.md#live-cloudflare-chromium-follow-up--2026-10-04)
-for the recorded Chromium results.

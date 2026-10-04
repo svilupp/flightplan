@@ -133,5 +133,4 @@ and is not remote release confirmation.
 
 Seven adversarial regressions cover 100 driver borrow/detach cycles, pre-cancel
 admission, noncooperative acquisition cancellation/deadline, late detach failure,
-and cleanup errors after passed and failed flow bodies. See
-[the validation report](flightplan-validation.md) for final checks and SauceDemo.
+and cleanup errors after passed and failed flow bodies.
