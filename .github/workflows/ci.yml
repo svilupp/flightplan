@@ -25,6 +25,32 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # browser-pilot 0.7.0 is not on npm yet. Test the immutable companion
+      # candidate until it is published and bun.lock can be refreshed.
+      # These are offline build/package steps; no Cloudflare account is used.
+      - name: Check out browser-pilot candidate
+        uses: actions/checkout@v4
+        with:
+          repository: svilupp/browser-pilot
+          ref: ce07e56bd03fb9e7dbfcd29c478f5b194febac74
+          path: .ci/browser-pilot
+          persist-credentials: false
+
+      - name: Build browser-pilot candidate
+        working-directory: .ci/browser-pilot
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+
+      - name: Install browser-pilot candidate
+        run: |
+          rm -rf node_modules/browser-pilot
+          mkdir -p node_modules/browser-pilot
+          tar -xzf "$RUNNER_TEMP/browser-pilot-0.7.0.tgz" --strip-components=1 -C node_modules/browser-pilot
+          node --input-type=module -e 'import("browser-pilot/core").then((m) => console.log(m.getBuildProvenance()))'
+          rm -rf .ci/browser-pilot
+
       - name: Run checks
         run: bun run check
 
@@ -49,3 +75,4 @@ jobs:
           '
           node dist/cli/index.js --version
           node --input-type=module -e 'import("./dist/index.js").then((m) => console.log(`Node import exports: ${Object.keys(m).length}`))'
+          node scripts/package-smoke.mjs "$RUNNER_TEMP/browser-pilot-0.7.0.tgz"
