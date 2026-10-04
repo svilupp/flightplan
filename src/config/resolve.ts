@@ -41,7 +41,7 @@
 //     - `ai.models.<role>.fallbacks` — array; replaced wholesale, never concatenated.
 //     - any other array              — replaced wholesale (arrays are never concatenated).
 //
-//   SPECIAL CASE — `connect`: it is a discriminated union (attach | launch). Merging two
+//   SPECIAL CASE — `connect`: it is a discriminated union (attach | launch | hosted | session). Merging two
 //   layers with different `mode`s would produce an invalid mixed object, so `connect` is
 //   replaced WHOLESALE whenever a later layer sets it (the later layer's `mode` and all of
 //   its fields win); never partially merged across differing modes.

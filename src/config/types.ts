@@ -20,7 +20,9 @@ import type {
   ConfigSchema,
   ConnectAttachSchema,
   ConnectConfigSchema,
+  ConnectHostedSchema,
   ConnectLaunchSchema,
+  ConnectSessionSchema,
   ExtraHeadersConfigSchema,
   LogfireConfigSchema,
   ModelPricingSchema,
@@ -62,6 +64,8 @@ export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 // ---- Connect config (discriminated union, PLAN.md §3) ----
 export type ConnectAttachConfig = z.infer<typeof ConnectAttachSchema>;
 export type ConnectLaunchConfig = z.infer<typeof ConnectLaunchSchema>;
+export type ConnectHostedConfig = z.infer<typeof ConnectHostedSchema>;
+export type ConnectSessionConfig = z.infer<typeof ConnectSessionSchema>;
 export type ConnectConfig = z.infer<typeof ConnectConfigSchema>;
 
 // ---- The full Config object & on-disk config file ----

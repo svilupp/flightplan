@@ -108,7 +108,7 @@ Node-flavored default:
 
 - **`@svilupp/flightplan/worker`** — a curated, Node-free barrel: `runFlow`, `lintText`,
   `RunOptions`/`RunResult`/`RunInterruptedError`, `FileSystemPort`, `MockDriver`,
-  `BrowserPilotDriver` (attach mode), `memoryFileSystem`. Bundles for Cloudflare Workers.
+  `BrowserPilotDriver` (host-injected acquisition), `acquireDriverLease`, `memoryFileSystem`. Bundles for Cloudflare Workers.
 - **`@svilupp/flightplan/adapters/node`** — the real `node:fs`-backed `nodeFileSystem`.
 - **`@svilupp/flightplan/adapters/memory`** — an in-memory `FileSystemPort` for tests.
 
@@ -268,6 +268,20 @@ follow-up; a late connection still gets a best-effort teardown. Persist the inte
 outside the interrupted filesystem, even if a previously dispatched summary write later finishes.
 Provider usage may be unknown after cancellation. Session release and durable recovery belong to
 the host.
+
+## Cloudflare and host-owned sessions
+
+`[config.connect] mode = "hosted"` supports `cloudflare`,
+`cloudflare:chromium` and explicit `cloudflare:kitesurf`, with environment
+credential names. `mode = "session"` borrows a host-owned browser through an
+injected acquirer and an explicit target policy. Borrowed teardown preserves
+its owner; owned cleanup may require provider reconciliation.
+See [hosted/session contracts](docs/cloudflare-hosted.md) for TOML and embedding
+examples, host requirements, stress evidence and live-service limits.
+
+For an external demo checkout, use the [SauceDemo example](examples/README.md#saucedemo-public-demo).
+Local fixture and Node/workerd evidence does not establish hosted Kitesurf or
+real payment support.
 
 ## Why the tiered resolver
 
@@ -672,6 +686,8 @@ Secrets are always expressed as env var **names**, never values — the same con
 ```toml
 # --- sugar for the common case: out-of-band service-token exchange, then a CF_Authorization cookie ---
 [config.auth.cf_access]
+# Target website credentials, usable with either a local or hosted browser.
+# Hosted Cloudflare browsers separately require an account ID and API token.
 url = "https://prodej.wikov.app"                # origin to mint against
 client_id_env = "CF_ACCESS_CLIENT_ID"           # env var NAME, never a value
 client_secret_env = "CF_ACCESS_CLIENT_SECRET"
@@ -722,8 +738,8 @@ in itself; after a **successful** run (the same gate as lock flush) cookies are 
 file is overwritten before the flow's `teardown` hook runs. A save failure is a non-fatal warning;
 an invalid-format or I/O error is still fatal either way.
 
-This requires a Node/Bun host (the browser-pilot node adapter) and browser-pilot ^0.6.0; a
-MockDriver or worker host never touches the file. The snapshot holds live session cookies — treat
+This requires a Node/Bun host (the browser-pilot node adapter); a MockDriver or worker host
+never touches the file. The snapshot holds live session cookies — treat
 it as a credential: gitignore it (e.g. `*.cookies.json`), it is never copied into
 `.flightplan-runs/` artifacts (only counts/path appear in warnings), and "restored ≠
 logged in" — assert on real page state, don't trust the snapshot blindly. If you attach to a page
@@ -746,7 +762,6 @@ Notes:
 Run `bun run test:package` before release to build and test the npm tarball's public types,
 CLI, VFS artifacts, and cancellation. To check an unpublished browser-pilot candidate without
 installing it into this checkout, run `bun run test:package /absolute/path/browser-pilot.tgz`.
-Only browser-pilot ^0.6.0 is supported.
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.

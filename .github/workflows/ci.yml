@@ -49,3 +49,4 @@ jobs:
           '
           node dist/cli/index.js --version
           node --input-type=module -e 'import("./dist/index.js").then((m) => console.log(`Node import exports: ${Object.keys(m).length}`))'
+          node scripts/package-smoke.mjs

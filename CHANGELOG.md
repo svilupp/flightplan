@@ -2,6 +2,36 @@
 
 Semver. Each release gets a short, user-facing note: what changed for someone *using* the platform (operators, API consumers, deployers), not internal refactors. Keep entries minimal - one line where possible, grouped under `Added` / `Changed` / `Fixed` / `Removed` only when needed.
 
+## [0.4.0] - 2026-10-04
+
+### Added
+
+- Hosted Cloudflare connection configuration and host-injected borrowed sessions
+  with explicit target selection, cancellation and deadlines.
+- Portable `acquireDriverLease` and driver-acquisition hooks for host-owned browser
+  reuse, including Workers embeddings and binary artifacts.
+- SauceDemo checkout and locked-user examples validated through source and built
+  CLI runs, with isolated profiles and password-redaction checks.
+- Repeated real-browser borrower stress tests, contention/cancellation regressions,
+  and updated hosted-session documentation and authoring skills.
+
+### Changed
+
+- Includes `ws` for authenticated Node connections.
+- Failed normal-run teardown now rejects with the cleanup cause, exact provider
+  cleanup identity when available, and the workflow result/artifact paths.
+
+### Fixed
+
+- Default hosted runs honor injected environment credentials and forward cancellation
+  and deadlines; setup and interrupted cleanup preserve provider allocation details.
+- Acquisition after cancellation or deadline is rejected; late leases detach
+  without a second acquisition and retain asynchronous cleanup failures.
+- Borrowed driver teardown preserves the host owner and failed setup detaches its
+  acquired lease.
+- Piped CLI JSON drains fully before process termination instead of truncating
+  successful results at 8,192 bytes.
+
 ## [0.3.0] - 2026-09-16
 
 ### Added
@@ -24,12 +54,9 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 - A JEV-only setup (no generative provider key) can resolve L2 element choices on its own; higher
   AI tiers and `ai_judge` remain unavailable and an `ai_judge` assertion under that setup fails
   clearly instead of being silently skipped.
-- `scripts/jev-smoke.ts`: opt-in live smoke check for the JEV classifier, gated on
-  `TYPESAFE_API_KEY`.
 
 ### Changed
 
-- Requires browser-pilot ^0.6.0.
 - Fatal saved-auth-state errors now include the snapshot path (e.g. invalid format, unsupported
   version, cookie rejected by the browser).
 - L2 escalation/abstain reason strings are now prefixed by the chooser that produced them (e.g.
@@ -55,23 +82,18 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 ### Fixed
 
 - Normalize hook paths for virtual filesystems, keep recording artifacts in injected storage, and stop AI fallbacks after cancellation.
-- Depend on browser-pilot ^0.5.0 only (dropped 0.4.x support); the real driver now sources `Page`/`TargetNotFoundError`/`Browser` from the portable `browser-pilot/core` entry and everything else from the root entry, with a packed-package compatibility check for release candidates.
-
-### Changed
-
-- Requires browser-pilot ^0.5.0.
+- The real driver now sources `Page`/`TargetNotFoundError`/`Browser` from the portable `browser-pilot/core` entry and everything else from the root entry, with a packed-package compatibility check for release candidates.
 
 ## [0.1.0] - 2026-08-29
 
 ### Added
 
-- `webmcp_call` steps for invoking exact page-provided WebMCP tools through browser-pilot 0.4.1.
+- `webmcp_call` steps for invoking exact page-provided WebMCP tools through browser-pilot.
 - Typed WebMCP result assertions and runtime captures, including secret-aware artifact redaction.
 - Effect-aware WebMCP dispatch safety: read-only preflight by default, explicit mutation acknowledgement, and conservative uncertain outcomes.
 
 ### Changed
 
-- Requires browser-pilot ^0.4.1.
 - The published package now supports Node.js 18+, includes declarations, and builds automatically during `npm pack`.
 - Published files include the operator documentation and examples needed to start a consumer project.
 
@@ -92,10 +114,6 @@ Semver. Each release gets a short, user-facing note: what changed for someone *u
 
 - `[config.auth]` block for Cloudflare Access-protected targets (service token, extra headers, cookies — env var names only)
 - Driver `applyAuth()` — applies auth after connect, before the first step (headers reapplied on popups)
-
-### Changed
-
-- Requires browser-pilot ^0.3.0 (Cloudflare Access APIs)
 
 ## [0.0.2] - 2026-08-12
 

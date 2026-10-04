@@ -6,44 +6,33 @@
 // detaches without killing it; Mode B launches its own Chrome via chrome-launcher and kills
 // it on teardown. Canonical reference: PLAN.md §3 (lifecycle table, gotchas-as-defaults).
 
-// The single allowed `import ... from 'browser-pilot'` (plus its portable `/core` entry below) in
-// the whole codebase. `Page`/`TargetNotFoundError`/`Browser` are re-exported byte-identically from
-// both entries (same underlying compiled chunk — `browser-pilot/core`'s `dist/core/index.d.ts` and
-// the root `dist/index.d.ts` both point at `page-*.js` / `types-*.js`), so importing them from
-// `/core` costs nothing and narrows this file's reliance on the root (non-portable) entry to just
-// the exports `/core` genuinely lacks (`connect`, webmcp*, capture*Signature, getBuildProvenance,
-// mintCfAccessJwt, Dialog/ExpectNewPageOptions/PageSnapshot/Step — see
-// `src/fitness/browser-pilot-chunk-gate.test.ts` for the reachability proof this doesn't change).
+// Static imports use the portable graph. Native attach/launch/token hosts load
+// the root entry lazily; Worker hosts supply an owner-held lease acquirer.
 import {
+  type BorrowedBrowser,
   type EmitWsOptions as BpEmitWsOptions,
+  type Browser,
+  type BrowserLease,
   captureStateSignature as bpCaptureStateSignature,
   captureStructureSignature as bpCaptureStructureSignature,
-  connect as bpConnect,
   webmcpCall as bpWebmcpCall,
   webmcpList as bpWebmcpList,
+  type CookieState,
+  CookieStateError,
+  captureCookieState,
   type Dialog,
   type ExpectNewPageOptions,
   getBrowserWebSocketUrl,
   getBuildProvenance,
-  // `mintCfAccessJwt` is a newer browser-pilot export (the `cloudflare-access-auth` proposal's
-  // Slice 6 requirement). Imported normally since the pinned browser-pilot build carries it, but
-  // `applyAuth` still feature-detects it at the call site (`typeof mintCfAccessJwt === "function"`)
-  // so a driver built against an older browser-pilot that predates this export degrades to a clear
-  // error instead of a hard import-time crash.
-  mintCfAccessJwt,
-  type PageSnapshot,
-  type Step,
-} from "browser-pilot";
-import {
-  type Browser,
-  type CookieState,
-  CookieStateError,
-  captureCookieState,
+  normalizeProviderSelector,
   type Page,
+  type PageSnapshot,
   restoreCookieState,
+  type Step,
   TargetNotFoundError,
 } from "browser-pilot/core";
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
+import { ambientEnv } from "../runtime.ts";
 import {
   AuthStateUnavailableError,
   buildAttachConnectArgs,
@@ -141,6 +130,14 @@ export interface BrowserPilotDriverOptions {
    * passes `config.resolve.attributes`.
    */
   resolveAttributes?: readonly string[];
+  acquisitionContext?: { signal: AbortSignal; deadline?: number; generation?: string };
+  /** Host acquisition seam. Called during connect(), after runner admission. */
+  acquire?: (
+    config: Extract<ConnectConfig, { mode: "hosted" | "session" }>,
+    context?: BrowserPilotDriverOptions["acquisitionContext"],
+  ) => Promise<DriverAcquisition>;
+  /** Explicit environment values for hosted token mode. */
+  providerEnv?: Record<string, string | undefined>;
 }
 
 /** Internal record of how the connection was acquired (drives teardown semantics). */
@@ -158,7 +155,97 @@ interface LaunchConnection {
   kind: "launch";
   chrome: LaunchedChrome;
 }
-type Connection = AttachConnection | LaunchConnection;
+export interface DriverAcquisition {
+  browser: Browser | BorrowedBrowser;
+  page: Page;
+  detach(): Promise<void>;
+}
+interface HostedConnection {
+  kind: "hosted";
+  detach(): Promise<void>;
+}
+type Connection = AttachConnection | LaunchConnection | HostedConnection;
+
+/** Turn an owner lease into one driver acquisition; failures always detach. */
+export async function acquireDriverLease(
+  lease: BrowserLease,
+  targetId?: string,
+): Promise<DriverAcquisition> {
+  try {
+    const page = await lease.browser.page(undefined, targetId ? { targetId } : undefined);
+    return { browser: lease.browser, page, detach: () => lease.detach() };
+  } catch (error) {
+    await lease.detach();
+    throw error;
+  }
+}
+
+/** Bound host acquisition even if a custom host ignores cancellation. */
+function acquireWithinContext(
+  pending: Promise<DriverAcquisition>,
+  context: BrowserPilotDriverOptions["acquisitionContext"],
+): Promise<DriverAcquisition> {
+  if (!context) return pending;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let admissionError: Error | undefined;
+    const cleanup = () => {
+      clearTimeout(timer);
+      context.signal.removeEventListener("abort", onAbort);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      admissionError = error;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () =>
+      fail(
+        context.signal.reason instanceof Error
+          ? context.signal.reason
+          : Object.assign(new Error("Hosted acquisition cancelled"), { code: "RUN_CANCELLED" }),
+      );
+    const timeoutError = () =>
+      Object.assign(new Error("Hosted acquisition deadline exceeded"), { code: "RUN_TIMEOUT" });
+    const timer =
+      context.deadline === undefined
+        ? undefined
+        : setTimeout(() => fail(timeoutError()), Math.max(0, context.deadline - Date.now()));
+    context.signal.addEventListener("abort", onAbort, { once: true });
+    if (context.signal.aborted) onAbort();
+    else if (context.deadline !== undefined && context.deadline <= Date.now()) fail(timeoutError());
+    void pending.then(
+      (acquisition) => {
+        if (!settled && context.signal.aborted) onAbort();
+        if (!settled && context.deadline !== undefined && context.deadline <= Date.now())
+          fail(timeoutError());
+        if (settled) {
+          // The host owns late cleanup; keep its failure attached to the same
+          // cancellation error so callers retain the exact cleanup identity.
+          void Promise.resolve()
+            .then(() => acquisition.detach())
+            .catch((error) => {
+              if (admissionError)
+                Object.assign(admissionError, {
+                  acquisitionCleanupError: error,
+                  ...(error && typeof error === "object" && "providerCleanup" in error
+                    ? { providerCleanup: error.providerCleanup }
+                    : {}),
+                });
+            });
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(acquisition);
+      },
+      (error) => {
+        if (!settled) fail(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
 
 /**
  * The real driver. Construct with optional dialog policy, then `connect(cfg)` → `page()` →
@@ -183,7 +270,8 @@ export class BrowserPilotDriver implements Driver {
    * enriched snapshot + resolveAll (Fix 2 BONUS). Readonly for diagnostics; empty by default.
    */
   readonly resolveAttributes: readonly string[];
-  private browser: Browser | undefined;
+  private browser: Browser | BorrowedBrowser | undefined;
+  private readonly hostOptions: BrowserPilotDriverOptions;
   private activePage: Page | undefined;
   private connection: Connection | undefined;
   /** Active opt-in recording (set by `startRecording`, cleared by `stopRecording`). */
@@ -204,6 +292,7 @@ export class BrowserPilotDriver implements Driver {
   private lastAuthHeaders: Record<string, string> | undefined;
 
   constructor(options: BrowserPilotDriverOptions = {}) {
+    this.hostOptions = options;
     this.dialogPolicy = options.dialogPolicy ?? "dismiss";
     this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
     this.navTimeoutMs = options.navTimeoutMs ?? DEFAULT_NAV_TIMEOUT_MS;
@@ -220,9 +309,91 @@ export class BrowserPilotDriver implements Driver {
     }
     if (cfg.mode === "attach") {
       await this.connectAttach(cfg);
-    } else {
+    } else if (cfg.mode === "launch") {
       await this.connectLaunch(cfg);
+    } else {
+      if (cfg.mode === "hosted") normalizeProviderSelector(cfg.provider);
+      if (cfg.mode === "session" && cfg.target_policy === "exact" && !cfg.target_id)
+        throw new Error("exact target policy requires target_id");
+      const context = this.hostOptions.acquisitionContext;
+      if (
+        context?.signal.aborted ||
+        (context?.deadline !== undefined && context.deadline <= Date.now())
+      )
+        throw new Error("Hosted acquisition cancelled or deadline exceeded before allocation");
+      let acquisition: DriverAcquisition;
+      if (this.hostOptions.acquire)
+        acquisition = await acquireWithinContext(this.hostOptions.acquire(cfg, context), context);
+      else if (cfg.mode === "session")
+        throw new Error(
+          "Session mode requires a host acquirer resolving session_ref to an owner lease",
+        );
+      else {
+        acquisition = await acquireWithinContext(
+          (async () => {
+            normalizeProviderSelector(cfg.provider);
+            const env = this.hostOptions.providerEnv ?? ambientEnv();
+            if (!env?.[cfg.account_id_env] || !env[cfg.api_token_env])
+              throw new Error(
+                "Hosted mode requires providerEnv or a host acquirer; credential values must stay in trusted host configuration",
+              );
+            const browser = await this.connectNative({
+              provider: cfg.provider,
+              signal: context?.signal,
+              ...(context?.deadline === undefined
+                ? {}
+                : { timeout: context.deadline - Date.now() }),
+              apiKey: env[cfg.api_token_env],
+              cloudflare: { accountId: env[cfg.account_id_env] },
+            });
+            const detach = async () => {
+              const cleanup = await browser.close();
+              if (cleanup?.status === "cleanup_pending") {
+                throw Object.assign(new Error("Provider cleanup remains pending"), {
+                  providerCleanup: cleanup,
+                });
+              }
+            };
+            try {
+              return {
+                browser,
+                page: await browser.page(),
+                detach,
+              };
+            } catch (error) {
+              try {
+                await detach();
+              } catch (cleanupError) {
+                if (cleanupError instanceof Error && cleanupError.cause === undefined)
+                  cleanupError.cause = error;
+                throw cleanupError;
+              }
+              throw error;
+            }
+          })(),
+          context,
+        );
+      }
+      this.browser = acquisition.browser;
+      this.activePage = acquisition.page;
+      this.connection = { kind: "hosted", detach: () => acquisition.detach() };
+      try {
+        await this.installDialogHandler();
+      } catch (error) {
+        await this.teardown();
+        throw error;
+      }
     }
+  }
+
+  private async connectNative(
+    options: Parameters<typeof import("browser-pilot")["connect"]>[0],
+  ): Promise<Browser> {
+    // Native capabilities are loaded only by native attach/launch/token hosts.
+    // Worker hosts inject a portable acquirer and never reach this branch.
+    const entry = "browser-pilot";
+    const native: typeof import("browser-pilot") = await import(entry);
+    return native.connect(options);
   }
 
   /** Mode A — attach to an existing/BYO Chrome; open a fresh tab; never kill on teardown. */
@@ -236,7 +407,7 @@ export class BrowserPilotDriver implements Driver {
     } // else: leave undefined → browser-pilot auto-discovers (may throw multiple-local-browsers)
 
     const args: ResolvedAttachConnectArgs = buildAttachConnectArgs(cfg, resolvedWsUrl);
-    this.browser = await bpConnect(args);
+    this.browser = await this.connectNative(args);
     this.connection = { kind: "attach", openedPages: [] };
 
     // Acquire a page. Never hijack the user's current tab: open a fresh one unless an
@@ -247,7 +418,7 @@ export class BrowserPilotDriver implements Driver {
       const before = await this.listPageNames();
       // Flightplan owns the page it drives; browser-pilot preserves DOM click effects in a
       // background target without foregrounding the browser window.
-      this.activePage = await this.browser.newPage();
+      this.activePage = await (this.browser as Browser).newPage();
       const after = await this.listPageNames();
       const opened = after.filter((n) => !before.includes(n));
       this.connection.openedPages.push(...opened);
@@ -285,7 +456,10 @@ export class BrowserPilotDriver implements Driver {
       await fetch(`http://127.0.0.1:${chrome.port}/json/version`)
     ).json()) as { webSocketDebuggerUrl: string };
 
-    this.browser = await bpConnect({ provider: "generic", wsUrl: version.webSocketDebuggerUrl });
+    this.browser = await this.connectNative({
+      provider: "generic",
+      wsUrl: version.webSocketDebuggerUrl,
+    });
     this.connection = { kind: "launch", chrome };
     // Fresh launched Chrome → its single blank tab.
     this.activePage = await this.browser.page();
@@ -384,13 +558,8 @@ export class BrowserPilotDriver implements Driver {
     }
 
     if (plan.cfAccessMint) {
-      if (typeof mintCfAccessJwt !== "function") {
-        throw new Error(
-          '[config.auth.cf_access] mode "cookie" requires browser-pilot\'s mintCfAccessJwt export, ' +
-            "which the connected browser-pilot build does not provide. Upgrade browser-pilot, or set " +
-            '`mode = "headers"` to use the header-only path instead.',
-        );
-      }
+      const nativeEntry = "browser-pilot";
+      const { mintCfAccessJwt } = (await import(nativeEntry)) as typeof import("browser-pilot");
       const { cookie } = await mintCfAccessJwt(plan.cfAccessMint);
       plan.cookies.push(cookie);
     }
@@ -469,8 +638,14 @@ export class BrowserPilotDriver implements Driver {
   ): Promise<NewPageResult> {
     const browser = this.browser;
     const active = this.activePage;
-    if (!browser || !active) {
-      return { matched: false, reason: "browser is not connected" };
+    if (!browser || !active || !("expectNewPage" in browser)) {
+      return {
+        matched: false,
+        reason:
+          browser && active
+            ? "borrowed browser does not support new-page expectations"
+            : "browser is not connected",
+      };
     }
 
     // browser-pilot owns the target-created/info-changed race. It arms listeners before the
@@ -544,7 +719,9 @@ export class BrowserPilotDriver implements Driver {
   }
 
   provenance(): BrowserPilotProvenance {
-    return this.browser?.provenance ?? getBrowserPilotProvenance();
+    return this.browser && "provenance" in this.browser
+      ? this.browser.provenance
+      : getBrowserPilotProvenance();
   }
 
   async pageState(): Promise<PageStateObservation> {
@@ -599,7 +776,7 @@ export class BrowserPilotDriver implements Driver {
     const conn = this.connection;
     const browser = this.browser;
     try {
-      if (conn?.kind === "attach" && browser) {
+      if (conn?.kind === "attach" && browser && "closePage" in browser) {
         // Close only the tabs we opened; never touch the user's tabs.
         for (const name of conn.openedPages) {
           try {
@@ -609,7 +786,8 @@ export class BrowserPilotDriver implements Driver {
           }
         }
       }
-      if (browser) {
+      if (conn?.kind === "hosted") await conn.detach();
+      else if (browser && "disconnect" in browser) {
         try {
           await browser.disconnect(); // drops our CDP socket
         } catch {

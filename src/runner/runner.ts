@@ -59,6 +59,7 @@ import { jevApiKeyEnvLabel, resolveJevApiKeyEnv } from "../config/resolve.ts";
 import type { CacheConfig, ConnectConfig, ResolvedConfig } from "../config/types.ts";
 import {
   BrowserPilotDriver,
+  type BrowserPilotDriverOptions,
   type DialogPolicy,
   getBrowserPilotProvenance,
 } from "../driver/browser-pilot-driver.ts";
@@ -140,7 +141,7 @@ import {
   isSyntheticRepairStepId,
   runPathRepair,
 } from "./path-repair.ts";
-import type { RunClock, RunOptions, RunResult } from "./types.ts";
+import type { DriverFactory, RunClock, RunOptions, RunResult } from "./types.ts";
 
 /** The default API-key env var when `[ai].api_key_env` is unset (PLAN.md §4 / §8 risk #5). */
 export const DEFAULT_API_KEY_ENV = "OPENROUTER_API_KEY";
@@ -2371,7 +2372,8 @@ async function runHookFlow(
  * writers, connects the driver, walks the steps (resume-trimmed via `fromStep`), runs assertions,
  * computes the verdict + totals, writes the summary, and ALWAYS tears the driver down (finally).
  * Returns the {@link RunResult} (summary + run dir + exit code). Never throws for a flow-level
- * failure. Loading/storage errors can reject; cancellation/deadline rejects with
+ * failure. Loading/storage and cleanup errors can reject; cleanup errors retain runResult
+ * and providerCleanup when available. Cancellation/deadline rejects with
  * RunInterruptedError after bounded cleanup, without fabricating a successful run summary.
  */
 export async function runFlow(opts: RunOptions): Promise<RunResult> {
@@ -2380,14 +2382,15 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
   }
   const control = new RunControl(opts);
   try {
-    const factory =
+    const factory: DriverFactory =
       opts.driverFactory ??
-      ((cfg: ConnectConfig) =>
+      ((cfg, context) =>
         defaultDriverFactory(
           cfg,
           opts.config.timeouts,
           opts.config.resolve?.attributes,
           opts.config.browser?.dialog,
+          { acquisitionContext: context, providerEnv: opts.env },
         ));
     // Remember whether the CALLER injected a port before we inject the (guarded) default —
     // `runFlowImpl` routes media through `fs.writeBinaryFile` only for caller-injected ports;
@@ -2404,7 +2407,13 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
           clock: control.guard(opts.clock ?? systemRunClock, "clock"),
           driverFactory: (cfg) => {
             control.check();
-            return control.attach(factory(cfg, { signal: control.signal }));
+            return control.attach(
+              factory(cfg, {
+                signal: control.signal,
+                deadline: control.deadline,
+                generation: opts.runId,
+              }),
+            );
           },
         },
         control,
@@ -2644,11 +2653,13 @@ async function runFlowImpl(
           opts.config.timeouts,
           opts.config.resolve?.attributes,
           opts.config.browser?.dialog,
+          { providerEnv: env },
         );
   const assertCtx = buildAssertContext(driver, opts.config, clock, runtime);
 
   // The produced video path (opt-in `[browser] record`), collected in the finally before teardown.
   let videoPath: string | null = null;
+  let cleanupFailure: unknown;
 
   try {
     if (!state.aborted) await driver.connect(connectCfg);
@@ -2808,6 +2819,7 @@ async function runFlowImpl(
     // `runFlow` wrapper's `control.interruptedError` check maps it to a `RunInterruptedError`,
     // never a `runError`/`error` verdict.
     if (err instanceof RunInterruptedError) throw err;
+    if (err && typeof err === "object" && "providerCleanup" in err) cleanupFailure = err;
     // connect() or a fatal harness error → verdict `error` (not a flow `failed`).
     const detail = err instanceof Error ? err.message : String(err);
     state.runError = state.runError ?? `connect/harness error: ${detail}`;
@@ -2830,8 +2842,8 @@ async function runFlowImpl(
     // The browser ALWAYS tears down — Mode B kills Chrome, Mode A disconnects. No orphan.
     try {
       if (driver.teardown) await driver.teardown();
-    } catch {
-      // teardown failure is non-fatal; the verdict is already determined.
+    } catch (error) {
+      cleanupFailure = error;
     }
   }
 
@@ -2868,7 +2880,20 @@ async function runFlowImpl(
   // Close the telemetry run span (verdict + drift_count). NOOP when telemetry is disabled.
   runSpan.end(runEndAttrs({ verdict, driftCount: state.healedSteps.length }));
 
-  return { summary, runDir: runDir.dir, exitCode: VERDICT_EXIT_CODES[verdict] };
+  const result = { summary, runDir: runDir.dir, exitCode: VERDICT_EXIT_CODES[verdict] };
+  if (cleanupFailure !== undefined) {
+    // Preserve the body verdict and artifacts while surfacing cleanup failure.
+    // Provider errors retain their exact allocation identity for reconciliation.
+    throw Object.assign(new Error("Flightplan driver cleanup failed", { cause: cleanupFailure }), {
+      runResult: result,
+      ...(cleanupFailure &&
+      typeof cleanupFailure === "object" &&
+      "providerCleanup" in cleanupFailure
+        ? { providerCleanup: cleanupFailure.providerCleanup }
+        : {}),
+    });
+  }
+  return result;
 }
 
 /**
@@ -3197,8 +3222,10 @@ export function defaultDriverFactory(
   timeouts?: { action_ms: number; nav_ms: number },
   resolveAttributes?: readonly string[],
   dialog?: DialogPolicy,
+  acquisition?: Pick<BrowserPilotDriverOptions, "acquisitionContext" | "providerEnv">,
 ): Driver {
   return new BrowserPilotDriver({
+    ...acquisition,
     ...(timeouts ? { actionTimeoutMs: timeouts.action_ms, navTimeoutMs: timeouts.nav_ms } : {}),
     ...(resolveAttributes && resolveAttributes.length > 0 ? { resolveAttributes } : {}),
     ...(dialog ? { dialogPolicy: dialog } : {}),

@@ -279,3 +279,15 @@ current page misses the lock and its configured ladder or assertions require AI.
 - The generated `<flow>.lock.toml` is reviewed with the flow.
 - CI or shared replay uses `--frozen`.
 - A later heal is regenerated and reviewed before the lock is promoted again.
+
+## Hosted/session acquisition
+
+See [Cloudflare and borrowed sessions](cloudflare-hosted.md) for owned hosted
+TOML and host-injected borrowed session examples. `BrowserPilotDriver.connect()`
+acquires after admission; teardown detaches borrowed leases and releases owned
+allocations. Forward the run signal/deadline into the acquirer and retain cleanup
+identity on failure. The Worker barrel stays portable and requires injected
+acquisition/artifact ports. Native attach/launch and CLI daemons are separate.
+The [SauceDemo example](../examples/README.md#saucedemo-public-demo) provides a
+public UI checkout fixture; local and hosted validation gates are recorded
+separately in the companion/browser-pilot validation reports.

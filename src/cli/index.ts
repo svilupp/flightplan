@@ -3,10 +3,10 @@
 // Flightplan CLI shell.
 //
 // Node process wiring ONLY: `process.argv`/`process.env`/`process.cwd()`, `console.log`/
-// `console.error`, `process.exit`, and the `nodeFileSystem` adapter. Argument parsing,
+// `console.error`, `process.exitCode`, and the `nodeFileSystem` adapter. Argument parsing,
 // validation, and the `lint`/`run` command bodies live in the process-free `./commands.ts`
 // (shared with the shell entry) — this file's job is only to build the `CommandIO`
-// and translate `{ exitCode }` into `process.exit`.
+// and set `process.exitCode` so pending output drains before natural termination.
 //
 // `explain`/`report`/`sweep`/`migrate-effects` stay Node-only and are implemented inline/in
 // their own sibling modules — they are out of scope for the worker entry.
@@ -192,5 +192,7 @@ if (invokedPath !== undefined) {
   }
 }
 if (invokedDirectly) {
-  process.exit(await main(process.argv.slice(2)));
+  // process.exit() truncates asynchronous pipe writes (including --json output).
+  // Natural termination preserves the command status while queued bytes drain.
+  process.exitCode = await main(process.argv.slice(2));
 }

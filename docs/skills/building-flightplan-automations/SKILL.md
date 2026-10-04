@@ -213,3 +213,24 @@ a clear goal and explicit cost budget.
 - [ ] Fault injection covers response loss or context destruction after commit.
 - [ ] Ledger, final state, and artifacts prove the result.
 - [ ] Live lane is gated or explicitly skipped when configuration is absent.
+
+## Hosted and borrowed browser acquisition
+
+Read [hosted/session guidance](../../cloudflare-hosted.md) when selecting a
+Cloudflare provider or embedding a host-owned session. `mode = "hosted"` owns
+its allocation; `mode = "session"` requires a host acquirer, `session_ref` and
+explicit `target_policy` (`exact` also requires `target_id`). Credentials remain
+environment-variable names. The portable Worker entry requires host acquisition
+and binary artifact ports; local attach/launch is a native-host path.
+
+Borrowed teardown detaches, preserving the owner. Retain `providerCleanup` when
+owned teardown reports `cleanup_pending`; reconcile that exact allocation.
+Cancellation/deadline and contention need independent evidence from successful
+flow runs. Local Node/Chromium success does not prove Kitesurf frame semantics or
+live provider behavior. See the browser-pilot validation report for those gates.
+
+Use `examples/flows/saucedemo-checkout.toml` and the examples README for a public
+demo login/cart/checkout proof; its demo completion is not a real payment oracle.
+Keep credentials in environment references. Read the examples README before
+running: the verified Chrome 154 fixture uses a disposable profile with credential
+saving disabled; default fresh-profile launches retained an input-delivery failure.

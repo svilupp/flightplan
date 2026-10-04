@@ -26,7 +26,7 @@ import type { TelemetrySink } from "../telemetry/index.ts";
  */
 export type DriverFactory = (
   connectCfg: ConnectConfig,
-  context?: { signal: AbortSignal },
+  context?: { signal: AbortSignal; deadline?: number; generation?: string },
 ) => Driver;
 
 /**

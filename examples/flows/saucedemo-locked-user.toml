@@ -1,0 +1,89 @@
+# Public Sauce Labs demo: verifies locked-account rejection, never a purchase.
+# Set SAUCEDEMO_PASSWORD to the demo password displayed on the login page.
+# Use an isolated Chrome profile with credential saving disabled; see examples/README.md.
+# Run with: flightplan run examples/flows/saucedemo-locked-user.toml --frozen --no-lock-write
+version = 1
+kind = "flow"
+id = "examples.saucedemo-locked-user"
+description = "Verify the public demo rejects its locked-out account"
+goal = "Exact locked-account error with the login page still available"
+
+[inputs]
+username = "locked_out_user"
+password = "${env.SAUCEDEMO_PASSWORD}"
+
+[config.connect]
+mode = "launch"
+headless = true
+
+[config.plan]
+enabled = false
+
+[config.browser]
+record = false
+
+[run]
+max_steps = 20
+assertions = "eager"
+assert_timeout_ms = 6000
+
+[[steps]]
+id = "open_login"
+do = "goto"
+effect = "observe"
+url = "https://www.saucedemo.com/"
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-test='login-button']"
+
+[[steps]]
+id = "enter_username"
+do = "fill"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["[data-test='username']", "the Username field"]
+value = "${inputs.username}"
+
+[[steps.assert]]
+type = "value"
+selector = "[data-test='username']"
+value = "${inputs.username}"
+
+[[steps]]
+id = "enter_password"
+do = "fill"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["[data-test='password']", "the Password field"]
+value = "${inputs.password}"
+secret = true
+
+[[steps.assert]]
+type = "value"
+selector = "[data-test='password']"
+value = "${inputs.password}"
+purpose = "postcondition"
+
+[[steps]]
+id = "locked_login"
+do = "click"
+effect = "at_most_once"
+target = ["[data-test='login-button']", "the Login button"]
+retry = { policy = "never" }
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='error']"
+text = "Epic sadface: Sorry, this user has been locked out."
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-test='login-button']"
+
+[[steps.assert]]
+type = "url"
+url = "https://www.saucedemo.com/"
+match = "exact"
