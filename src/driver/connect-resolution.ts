@@ -43,8 +43,8 @@ export const DEFAULT_CHROME_FLAGS: readonly string[] = [
   "--window-size=1280,720",
 ] as const;
 
-/** Whether a connect config is attach (Mode A) or launch (Mode B). */
-export function connectMode(cfg: ConnectConfig): "attach" | "launch" {
+/** The configured native or host-owned connection mode. */
+export function connectMode(cfg: ConnectConfig): ConnectConfig["mode"] {
   return cfg.mode;
 }
 

@@ -10,9 +10,11 @@
 export type { Page } from "browser-pilot/core";
 // --- the real implementation ---
 export {
+  acquireDriverLease,
   BrowserPilotDriver,
   type BrowserPilotDriverOptions,
   type DialogPolicy,
+  type DriverAcquisition,
   getBrowserPilotProvenance,
   withNavigationDefault,
 } from "./browser-pilot-driver.ts";

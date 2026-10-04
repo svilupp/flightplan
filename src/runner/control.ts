@@ -29,7 +29,7 @@ export class RunControl {
   readonly signal: AbortSignal = this.controller.signal;
   private readonly pending = new Set<{ kind: string; name: string }>();
   private readonly timeout: ReturnType<typeof setTimeout> | undefined;
-  private readonly deadline: number | undefined;
+  readonly deadline: number | undefined;
   private readonly externalSignal: AbortSignal | undefined;
   private readonly abort = (): void => this.interrupt("cancelled");
   private readonly stopped: Promise<never>;
@@ -179,7 +179,17 @@ export class RunControl {
       error.cleanup = await Promise.race([
         this.cleanup().then(
           () => "completed" as const,
-          () => "failed" as const,
+          (cleanupError) => {
+            Object.assign(error, {
+              acquisitionCleanupError: cleanupError,
+              ...(cleanupError &&
+              typeof cleanupError === "object" &&
+              "providerCleanup" in cleanupError
+                ? { providerCleanup: cleanupError.providerCleanup }
+                : {}),
+            });
+            return "failed" as const;
+          },
         ),
         new Promise<"pending">((resolve) => {
           timer = setTimeout(() => resolve("pending"), this.cleanupTimeoutMs);

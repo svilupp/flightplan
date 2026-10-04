@@ -1,0 +1,316 @@
+# Public Sauce Labs demo: completes a simulated order, never a real purchase.
+# Set SAUCEDEMO_PASSWORD to the demo password displayed on the login page.
+# Use an isolated Chrome profile with credential saving disabled; see examples/README.md.
+# Run with: flightplan run examples/flows/saucedemo-checkout.toml --frozen --no-lock-write
+version = 1
+kind = "flow"
+id = "examples.saucedemo-checkout"
+description = "Order one Backpack and one Bike Light in the public SauceDemo mock shop"
+goal = "Two items at $43.18 and the exact Thank you for your order! completion heading"
+
+[inputs]
+username = "standard_user"
+password = "${env.SAUCEDEMO_PASSWORD}"
+first_name = "Jan"
+last_name = "Tester"
+postal_code = "SW1A 1AA"
+
+[config.connect]
+mode = "launch"
+headless = true
+
+[config.plan]
+enabled = false
+
+[config.browser]
+record = false
+
+[run]
+max_steps = 20
+assertions = "eager"
+assert_timeout_ms = 6000
+
+[[steps]]
+id = "open_login"
+do = "goto"
+effect = "observe"
+url = "https://www.saucedemo.com/"
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-test='login-button']"
+
+[[steps]]
+id = "enter_username"
+do = "fill"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["[data-test='username']", "the Username field"]
+value = "${inputs.username}"
+
+[[steps.assert]]
+type = "value"
+selector = "[data-test='username']"
+value = "${inputs.username}"
+
+[[steps]]
+id = "enter_password"
+do = "fill"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["[data-test='password']", "the Password field"]
+value = "${inputs.password}"
+secret = true
+
+[[steps.assert]]
+type = "value"
+selector = "[data-test='password']"
+value = "${inputs.password}"
+purpose = "postcondition"
+
+[[steps]]
+id = "login"
+do = "click"
+effect = "at_most_once"
+target = ["[data-test='login-button']", "the Login button"]
+retry = { policy = "never" }
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='title']"
+text = "Products"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "count"
+selector = "[data-test='inventory-item']"
+count = 6
+
+[[steps]]
+id = "add_backpack"
+do = "click"
+effect = "at_most_once"
+target = ["[data-test='add-to-cart-sauce-labs-backpack']", "the Add to cart button for Sauce Labs Backpack"]
+retry = { policy = "never" }
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='shopping-cart-badge']"
+text = "1"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "visible"
+selector = "[data-test='remove-sauce-labs-backpack']"
+
+[[steps]]
+id = "add_bike_light"
+do = "click"
+effect = "at_most_once"
+target = ["[data-test='add-to-cart-sauce-labs-bike-light']", "the Add to cart button for Sauce Labs Bike Light"]
+retry = { policy = "never" }
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='shopping-cart-badge']"
+text = "2"
+match = "exact"
+purpose = "postcondition"
+
+[[steps]]
+id = "open_cart"
+do = "click"
+effect = "at_most_once"
+target = ["[data-test='shopping-cart-link']", "the cart with two items"]
+retry = { policy = "never" }
+
+[[steps.assert]]
+type = "count"
+selector = "[data-test='inventory-item']"
+count = 2
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='item-4-title-link']"
+text = "Sauce Labs Backpack"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='item-0-title-link']"
+text = "Sauce Labs Bike Light"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "count"
+selector = "[data-test='item-quantity']"
+count = 2
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='inventory-item']:has([data-test='item-4-title-link']) [data-test='item-quantity']"
+text = "1"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='inventory-item']:has([data-test='item-0-title-link']) [data-test='item-quantity']"
+text = "1"
+match = "exact"
+purpose = "postcondition"
+
+[[steps]]
+id = "checkout"
+do = "click"
+effect = "at_most_once"
+target = ["[data-test='checkout']", "the Checkout button"]
+retry = { policy = "never" }
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='title']"
+text = "Checkout: Your Information"
+match = "exact"
+purpose = "postcondition"
+
+[[steps]]
+id = "enter_first_name"
+do = "fill"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["[data-test='firstName']", "the First Name field"]
+value = "${inputs.first_name}"
+
+[[steps.assert]]
+type = "value"
+selector = "[data-test='firstName']"
+value = "${inputs.first_name}"
+
+[[steps]]
+id = "enter_last_name"
+do = "fill"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["[data-test='lastName']", "the Last Name field"]
+value = "${inputs.last_name}"
+
+[[steps.assert]]
+type = "value"
+selector = "[data-test='lastName']"
+value = "${inputs.last_name}"
+
+[[steps]]
+id = "enter_postal_code"
+do = "fill"
+effect = "at_most_once"
+retry = { policy = "never" }
+target = ["[data-test='postalCode']", "the Zip Postal Code field"]
+value = "${inputs.postal_code}"
+
+[[steps.assert]]
+type = "value"
+selector = "[data-test='postalCode']"
+value = "${inputs.postal_code}"
+
+[[steps]]
+id = "review_order"
+do = "click"
+effect = "at_most_once"
+target = ["[data-test='continue']", "the Continue button"]
+retry = { policy = "never" }
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='title']"
+text = "Checkout: Overview"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "count"
+selector = "[data-test='inventory-item']"
+count = 2
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='item-4-title-link']"
+text = "Sauce Labs Backpack"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='item-0-title-link']"
+text = "Sauce Labs Bike Light"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "count"
+selector = "[data-test='item-quantity']"
+count = 2
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='inventory-item']:has([data-test='item-4-title-link']) [data-test='item-quantity']"
+text = "1"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='inventory-item']:has([data-test='item-0-title-link']) [data-test='item-quantity']"
+text = "1"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='subtotal-label']"
+text = "Item total: $39.98"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='tax-label']"
+text = "Tax: $3.20"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='total-label']"
+text = "Total: $43.18"
+match = "exact"
+purpose = "postcondition"
+
+[[steps]]
+id = "finish_demo_order"
+do = "click"
+effect = "at_most_once"
+target = ["[data-test='finish']", "the Finish button for this simulated order"]
+retry = { policy = "never" }
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='complete-header']"
+text = "Thank you for your order!"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "text"
+selector = "[data-test='title']"
+text = "Checkout: Complete!"
+match = "exact"
+purpose = "postcondition"
+
+[[steps.assert]]
+type = "hidden"
+selector = "[data-test='shopping-cart-badge']"

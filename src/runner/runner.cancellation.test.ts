@@ -104,14 +104,15 @@ describe("run cancellation and deadlines", () => {
       }
       await append(path, text);
     };
+    const cleanup = { status: "cleanup_pending", sessionId: "interrupted-allocation" };
     driver.teardown = async () => {
-      throw new Error("release failed");
+      throw Object.assign(new Error("release failed"), { providerCleanup: cleanup });
     };
     const controller = new AbortController();
     const done = interruption(runFlow({ ...options, signal: controller.signal }));
     await entered.promise;
     controller.abort();
-    expect((await done).cleanup).toBe("failed");
+    expect(await done).toMatchObject({ cleanup: "failed", providerCleanup: cleanup });
     held.resolve();
   });
 

@@ -108,7 +108,7 @@ Node-flavored default:
 
 - **`@svilupp/flightplan/worker`** — a curated, Node-free barrel: `runFlow`, `lintText`,
   `RunOptions`/`RunResult`/`RunInterruptedError`, `FileSystemPort`, `MockDriver`,
-  `BrowserPilotDriver` (attach mode), `memoryFileSystem`. Bundles for Cloudflare Workers.
+  `BrowserPilotDriver` (host-injected acquisition), `acquireDriverLease`, `memoryFileSystem`. Bundles for Cloudflare Workers.
 - **`@svilupp/flightplan/adapters/node`** — the real `node:fs`-backed `nodeFileSystem`.
 - **`@svilupp/flightplan/adapters/memory`** — an in-memory `FileSystemPort` for tests.
 
@@ -268,6 +268,20 @@ follow-up; a late connection still gets a best-effort teardown. Persist the inte
 outside the interrupted filesystem, even if a previously dispatched summary write later finishes.
 Provider usage may be unknown after cancellation. Session release and durable recovery belong to
 the host.
+
+## Cloudflare and host-owned sessions
+
+`[config.connect] mode = "hosted"` supports `cloudflare`,
+`cloudflare:chromium` and explicit `cloudflare:kitesurf`, with environment
+credential names. `mode = "session"` borrows a host-owned browser through an
+injected acquirer and an explicit target policy. Borrowed teardown preserves
+its owner; owned cleanup may require provider reconciliation.
+See [hosted/session contracts](docs/cloudflare-hosted.md) for TOML and embedding
+examples, host requirements, stress evidence and live-service limits.
+
+For an external demo checkout, use the [SauceDemo example](examples/README.md#saucedemo-public-demo).
+Local fixture and Node/workerd evidence does not establish hosted Kitesurf or
+real payment support.
 
 ## Why the tiered resolver
 
@@ -672,6 +686,8 @@ Secrets are always expressed as env var **names**, never values — the same con
 ```toml
 # --- sugar for the common case: out-of-band service-token exchange, then a CF_Authorization cookie ---
 [config.auth.cf_access]
+# Target website credentials, usable with either a local or hosted browser.
+# Hosted Cloudflare browsers separately require an account ID and API token.
 url = "https://prodej.wikov.app"                # origin to mint against
 client_id_env = "CF_ACCESS_CLIENT_ID"           # env var NAME, never a value
 client_secret_env = "CF_ACCESS_CLIENT_SECRET"

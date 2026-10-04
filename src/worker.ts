@@ -54,9 +54,14 @@ export {
 } from "./config/index.ts";
 export type { Driver, DriverCall, MockDriverDefaults } from "./driver/index.ts";
 // ---- Driver: types + the Node-free mock, plus the real browser-pilot-backed driver (the
-// worker entry ships attach-mode support out of the box — see docs/plans/workers-slice-2.md
-// §4 for the chunk-level portability assessment of the installed browser-pilot dist) ----
-export { BrowserPilotDriver, MockDriver } from "./driver/index.ts";
+// worker entry requires host-injected acquisition; see docs/cloudflare-hosted.md) ----
+export {
+  acquireDriverLease,
+  BrowserPilotDriver,
+  type BrowserPilotDriverOptions,
+  type DriverAcquisition,
+  MockDriver,
+} from "./driver/index.ts";
 // ---- Flow loading / parsing ----
 export type {
   AiJudgeAssertion,

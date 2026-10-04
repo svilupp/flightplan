@@ -156,9 +156,36 @@ export const ConnectLaunchSchema = z
   })
   .strict();
 
+export const ConnectHostedSchema = z
+  .object({
+    mode: z.literal("hosted"),
+    provider: z.enum(["cloudflare", "cloudflare:chromium", "cloudflare:kitesurf"]),
+    account_id_env: z.string().min(1).default("CLOUDFLARE_ACCOUNT_ID"),
+    api_token_env: z.string().min(1).default("CLOUDFLARE_API_TOKEN"),
+  })
+  .strict();
+export const ConnectSessionSchema = z
+  .object({
+    mode: z.literal("session"),
+    session_ref: z.string().min(1),
+    target_id: z.string().min(1).optional(),
+    target_policy: z.enum(["selected", "exact"]),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.target_policy === "exact" && !value.target_id)
+      ctx.addIssue({
+        code: "custom",
+        message: "exact target policy requires target_id",
+        path: ["target_id"],
+      });
+  });
+
 export const ConnectConfigSchema = z.discriminatedUnion("mode", [
   ConnectAttachSchema,
   ConnectLaunchSchema,
+  ConnectHostedSchema,
+  ConnectSessionSchema,
 ]);
 
 // ---------------------------------------------------------------------------
