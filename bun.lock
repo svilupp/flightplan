@@ -9,7 +9,7 @@
         "@noble/hashes": "^2.4.0",
         "@openrouter/ai-sdk-provider": "^2.10.0",
         "ai": "^6.0.272",
-        "browser-pilot": "^0.7.0",
+        "browser-pilot": "^0.7.0 || ^0.8.0",
         "chrome-launcher": "1.2.1",
         "smol-toml": "^1.4.2",
         "ws": "^8.18.3",
