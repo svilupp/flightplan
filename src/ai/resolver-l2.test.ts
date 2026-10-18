@@ -169,3 +169,135 @@ describe("resolveL2 — chooser chain", () => {
     expect(exec.note).toBeUndefined(); // JEV never emits a note
   });
 });
+
+test("shadow compares original candidates after the authoritative action", async () => {
+  const d = new MockDriver();
+  d.setSnapshot(makeSnapshot({ interactiveElements: [] }));
+  d.setResolveAll([
+    makeRankedCandidate({ role: "button", ref: "e1", name: "First" }),
+    makeRankedCandidate({ role: "button", ref: "e2", name: "Second" }),
+  ]);
+  d.setBatchResult(makeSuccessBatch("ref:e1"));
+  const order: string[] = [];
+  let authorityPacket: CandidatePacketEntry[] = [];
+  const batch = d.batch.bind(d);
+  d.batch = async (...args) => {
+    order.push("action");
+    d.setResolveAll([makeRankedCandidate({ role: "button", ref: "e3", name: "Changed" })]);
+    return batch(...args);
+  };
+  const shadow: CandidateChooser = {
+    kind: "jev",
+    async choose(_intent, packet) {
+      expect(packet).toBe(authorityPacket);
+      expect(packet.map((candidate) => candidate.name)).toEqual(["First", "Second"]);
+      order.push("shadow");
+      return { kind: "pick", index: 1, confidence: 1 };
+    },
+  };
+  const authority: CandidateChooser = {
+    kind: "heuristic",
+    async choose(_intent, packet) {
+      authorityPacket = packet;
+      order.push("authority");
+      return { kind: "pick", index: 0, confidence: 1 };
+    },
+  };
+  const result = await resolveL2([authority], clickStep(), prior(), ctxFor(d), shadow);
+  expect(order).toEqual(["authority", "action", "shadow"]);
+  expect(result.pinnedLabel).toBe("First");
+});
+
+test("profile freshness rejects a changed candidate before any dispatch", async () => {
+  const d = new MockDriver();
+  d.setSnapshot(makeSnapshot({ interactiveElements: [] }));
+  let calls = 0;
+  d.resolveAll = async () => [
+    makeRankedCandidate({ role: "button", ref: ++calls === 1 ? "e1" : "e2", name: "Go" }),
+  ];
+  let dispatches = 0;
+  d.batch = async () => {
+    dispatches++;
+    return makeSuccessBatch("ref:e2");
+  };
+  const result = await resolveL2(
+    [scriptedChooser("jev", [{ kind: "pick", index: 0, confidence: 1 }])],
+    clickStep(),
+    prior(),
+    ctxFor(d),
+    undefined,
+    undefined,
+    true,
+  );
+  expect(result.ok).toBe(false);
+  expect(result.error).toBe("jev_snapshot_stale");
+  expect(dispatches).toBe(0);
+});
+
+test("verified scoped attributes are compared again before dispatch", async () => {
+  const { makeInteractiveElement } = await import("../driver/index.ts");
+  const d = new MockDriver();
+  let observations = 0,
+    dispatches = 0;
+  d.snapshot = async () =>
+    makeSnapshot({
+      interactiveElements: [
+        makeInteractiveElement({
+          role: "button",
+          ref: "e1",
+          name: "Go",
+          attributes: { title: ++observations < 4 ? "Save invoice" : "Delete invoice" },
+        }),
+      ],
+    });
+  d.setResolveAll([makeRankedCandidate({ role: "button", ref: "e1", name: "Go" })]);
+  d.batch = async () => {
+    dispatches++;
+    return makeSuccessBatch("ref:e1");
+  };
+  const chooser: CandidateChooser = {
+    kind: "jev",
+    async choose(_intent, _packet, context) {
+      expect(await context.verificationEvidence?.(0)).toEqual({
+        candidate: { title: "Save invoice" },
+        alternative: null,
+      });
+      return { kind: "pick", index: 0, confidence: 1 };
+    },
+  };
+  const result = await resolveL2(
+    [chooser],
+    clickStep(),
+    prior(),
+    ctxFor(d),
+    undefined,
+    undefined,
+    true,
+  );
+  expect(result.error).toBe("jev_snapshot_stale");
+  expect(dispatches).toBe(0);
+});
+
+test("authoritative abstention preserves fallback allowance without paid shadow work", async () => {
+  const d = new MockDriver();
+  d.setSnapshot(makeSnapshot({ interactiveElements: [] }));
+  d.setResolveAll([makeRankedCandidate({ role: "button", ref: "e1", name: "First" })]);
+  let shadowCalls = 0;
+  const shadow: CandidateChooser = {
+    kind: "jev",
+    async choose() {
+      shadowCalls++;
+      return { kind: "pick", index: 0, confidence: 1 };
+    },
+  };
+  const result = await resolveL2(
+    [scriptedChooser("heuristic", [{ kind: "abstain", reason: "uncertain" }])],
+    clickStep(),
+    prior(),
+    ctxFor(d),
+    shadow,
+  );
+  expect(result.ok).toBe(false);
+  expect(result.escalate).toBe(true);
+  expect(shadowCalls).toBe(0);
+});

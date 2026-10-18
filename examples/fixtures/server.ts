@@ -1,3 +1,6 @@
+import { renderJevFixture } from "./jev.ts";
+import { renderRecipeFixture } from "./recipes.ts";
+
 /**
  * Flightplan fixture server
  * =========================
@@ -818,6 +821,11 @@ function handle(req: Request): Response {
   const url = new URL(req.url);
   // Normalize trailing slash (except root).
   const path = url.pathname !== "/" ? url.pathname.replace(/\/+$/, "") : "/";
+
+  if (path.startsWith("/jev/")) {
+    const fixture = renderRecipeFixture(url) ?? renderJevFixture(url);
+    if (fixture) return html(fixture);
+  }
 
   switch (path) {
     case "/":

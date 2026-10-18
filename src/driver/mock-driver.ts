@@ -83,7 +83,7 @@
 // `./mock-fixtures.ts`.
 
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
-import { AuthStateUnavailableError, resolveAuthPlan } from "./connect-resolution.ts";
+import { type AuthStateUnavailableError, resolveAuthPlan } from "./connect-resolution.ts";
 import type {
   ActionOpts,
   BatchOptions,
@@ -872,6 +872,22 @@ export class MockDriver implements Driver {
     // driver): a target that follows a `goto` resolves against the top document, never a stale frame.
     this.currentFrameValue = null;
     this.crossOriginFrameValue = undefined;
+  }
+
+  private extractionValue: unknown = [];
+  setExtractResult(value: unknown): this {
+    this.extractionValue = value;
+    return this;
+  }
+  async extract(_spec: import("./extract.ts").ExtractionSpec): Promise<unknown> {
+    return structuredClone(this.extractionValue);
+  }
+  async documentIdentity(): Promise<string> {
+    return JSON.stringify({
+      page: this.pageStateValue,
+      url: this.currentUrlValue,
+      frame: this.currentFrame(),
+    });
   }
 
   async currentUrl(): Promise<string> {

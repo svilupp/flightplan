@@ -22,6 +22,8 @@ export interface ChooseContext {
   note?: string;
   /** Runtime cancellation signal (combined the same way `generate`'s deps.signal is). */
   signal?: AbortSignal;
+  /** Fresh scoped attributes omitted from the compact packet; undefined means no useful new evidence. */
+  verificationEvidence?(index: number): Promise<Record<string, unknown> | undefined>;
 }
 
 /** Discriminated result: a gated pick, an abstain (fall through / escalate), or a chooser error. */
@@ -44,6 +46,11 @@ export type ChooseResult =
 /** One candidate-choosing backend. */
 export interface CandidateChooser {
   readonly kind: ChooserKind;
+  /** Observation-only comparison, after the authoritative result is known. */
+  observeAuthoritative?(
+    result: ChooseResult,
+    execution?: import("../ladder/types.ts").StepExecution,
+  ): Promise<void>;
   choose(
     intent: string,
     candidates: CandidatePacketEntry[],

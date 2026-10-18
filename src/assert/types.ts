@@ -45,6 +45,7 @@ export interface AssertClock {
  * `selectorOrTarget` echoes the assertion's `selector`/`url`/expected target for reporting.
  */
 export interface AssertionResult {
+  outcome?: "pass" | "fail" | "unknown";
   type: AssertType;
   pass: boolean;
   message: string;
@@ -105,6 +106,7 @@ export interface AssertContext {
   captures?: Record<string, string>;
   /** Structured result returned by the current WebMCP call, when applicable. */
   actionResult?: unknown;
+  actionResults?: Record<string, unknown>;
   /** Before-state captured immediately before the step action. */
   beforeState?: {
     url?: string;

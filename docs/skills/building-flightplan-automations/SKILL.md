@@ -73,9 +73,9 @@ bp forms -s discovery --json
 bp review -s discovery --json
 ```
 
-After discovery, close the browser-pilot session and write the behavior as TOML. Preserve the useful
-selectors, landmarks, readiness conditions, and popup identity in the flow. Do not make the discovery
-session the automation.
+After discovery, write the behavior as TOML and preserve selectors, landmarks, readiness conditions,
+and popup identity. A compatible BP owner can remain connected while Flightplan borrows its named
+session. Use verified handback before direct BP actions resume; refresh observations and refs.
 
 ### 3. Author the flow as a state machine
 
@@ -216,7 +216,7 @@ a clear goal and explicit cost budget.
 
 ## Hosted and borrowed browser acquisition
 
-Read [hosted/session guidance](../../cloudflare-hosted.md) when selecting a
+Read `docs/cloudflare-hosted.md` in the Flightplan checkout when selecting a
 Cloudflare provider or embedding a host-owned session. `mode = "hosted"` owns
 its allocation; `mode = "session"` requires a host acquirer, `session_ref` and
 explicit `target_policy` (`exact` also requires `target_id`). Credentials remain
@@ -234,3 +234,21 @@ demo login/cart/checkout proof; its demo completion is not a real payment oracle
 Keep credentials in environment references. Read the examples README before
 running: the verified Chrome 154 fixture uses a disposable profile with credential
 saving disabled; default fresh-profile launches retained an input-delivery failure.
+
+## JEV, recipes and shared sessions
+
+Read `docs/JEV.md` in the Flightplan checkout for profile configuration and JEV assertions.
+Inspect `flightplan config <flow> --json` before running; repeat all required ceilings when
+replacing a run table. Image permission does not bypass capture safety. Keep deterministic
+postconditions alongside model assertions and never retry an uncertain mutation.
+
+Read `docs/CALLABLE_RECIPES.md` for typed inputs, entry/outcome conditions, extraction and outputs.
+Keep business loops in the host. Prefer explicit extraction selectors; secret fields require them.
+`resolve = "ai"` requests fresh selection without target-lock reuse. Use `list`/`describe` for
+discovery and `check` for current entry inspection only. Secret inputs use `--input-env`;
+retries reuse one `--idempotency-key`. A new key does not prove a mutation is safe to repeat.
+
+Read `docs/BROWSER_PILOT_INTEGRATION.md` for named sessions, guards and host yield. Require verified
+handback and fresh observations before resuming BP actions. Local guards cannot override owner
+policy. Native assurance requires trusted host opt-in and `browser.dialog = "fail"`.
+Yield requires return assertions and a fresh grant; it cannot restore a crashed runner cursor.

@@ -1,0 +1,62 @@
+version = 1
+kind = "flow"
+id = "recipes.inspect-products"
+description = "Read product identities, USD prices, and currency from the seeded product page."
+
+[inputs.base_url]
+type = "string"
+default = "http://127.0.0.1:3000"
+description = "Origin of the local fixture server."
+
+[inputs.min_price]
+type = "number"
+default = 100
+description = "Exclusive minimum price for the first product."
+
+[[before]]
+type = "url"
+url = "${inputs.base_url}/recipes"
+match = "origin_path"
+
+[[steps]]
+id = "products"
+do = "extract"
+effect = "observe"
+selector = ".product"
+max_rows = 100
+
+[steps.fields.id]
+selector = "."
+source = "attribute"
+attribute = "data-product-id"
+type = "string"
+required = true
+
+[steps.fields.price]
+selector = "[data-testid='price']"
+source = "attribute"
+attribute = "data-amount"
+type = "number"
+required = true
+
+[steps.fields.currency]
+selector = "[data-testid='currency']"
+source = "text"
+type = "string"
+required = true
+
+[[after]]
+type = "result"
+step = "products"
+path = "0.price"
+gt = "${inputs.min_price}"
+
+[[after]]
+type = "result"
+step = "products"
+path = "0.currency"
+equals = "USD"
+
+[outputs.products]
+step = "products"
+path = "."

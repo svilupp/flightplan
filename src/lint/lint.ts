@@ -9,7 +9,7 @@
 // `lintPaths(paths)` expands directories/globs and lints each file, returning a
 // MultiLintResult. Canonical reference: PLAN.md §5 (Phase 1, "flightplan lint").
 
-import { ConfigFileSchema, formatIssues, parseToml, TomlParseError } from "../config/index.ts";
+import { ConfigFileSchema, parseToml, TomlParseError } from "../config/index.ts";
 import type { LoadedFlow } from "../flow/index.ts";
 import {
   collectImportScope,
@@ -35,6 +35,11 @@ import {
   type RawDoc,
   type ResolvedRef,
 } from "./context.ts";
+import {
+  enrichDiagnostics,
+  recipeReferenceDiagnostics,
+  schemaIssueDiagnostics,
+} from "./diagnostics.ts";
 import { RULES, readArtifactPath } from "./rules.ts";
 import type { Diagnostic, LintResult, MultiLintResult } from "./types.ts";
 
@@ -43,6 +48,10 @@ function isRecord(v: unknown): v is RawDoc {
 }
 
 function tally(file: string, diagnostics: Diagnostic[]): LintResult {
+  diagnostics = diagnostics.map((item) => ({
+    ...item,
+    code: item.code ?? item.ruleId.toUpperCase().replace(/[^A-Z0-9]+/g, "_"),
+  }));
   let errorCount = 0;
   let warningCount = 0;
   for (const d of diagnostics) {
@@ -112,13 +121,19 @@ async function resolveImportInfo(
   const imports = flow.imports;
   if (typeof imports === "string") await addRef(imports, "import");
   else if (Array.isArray(imports)) {
-    for (const entry of imports) await addRef(entry, "import");
+    for (const entry of imports) if (typeof entry === "string") await addRef(entry, "import");
   }
-  if (flow.setup) await addRef(flow.setup, "setup");
-  if (flow.teardown) await addRef(flow.teardown, "teardown");
+  if (typeof flow.setup === "string") await addRef(flow.setup, "setup");
+  if (typeof flow.teardown === "string") await addRef(flow.teardown, "teardown");
   const seenRunPaths = new Set<string>();
   for (const step of runSteps) {
-    if (step.do !== "run" || !isRunFlowPath(step.flow) || seenRunPaths.has(step.flow)) continue;
+    if (
+      step.do !== "run" ||
+      typeof step.flow !== "string" ||
+      !isRunFlowPath(step.flow) ||
+      seenRunPaths.has(step.flow)
+    )
+      continue;
     seenRunPaths.add(step.flow);
     await addRef(step.flow, "run");
   }
@@ -278,6 +293,15 @@ async function lintFileImpl(
         severity: "error",
         message: detail,
         file,
+        ...(err instanceof TomlParseError &&
+        err.cause &&
+        typeof err.cause === "object" &&
+        "line" in err.cause &&
+        "column" in err.cause &&
+        typeof err.cause.line === "number" &&
+        typeof err.cause.column === "number"
+          ? { sourceRange: { line: err.cause.line, column: err.cause.column } }
+          : {}),
       },
     ]);
   }
@@ -319,7 +343,7 @@ async function lintFileImpl(
     dirExists: await computeDirExists(doc, baseDir, fs),
   };
 
-  let schemaDiag: Diagnostic | null = null;
+  const schemaDiagnostics: Diagnostic[] = [];
 
   if (declaredKind === FILE_KINDS[1]) {
     // flow
@@ -333,12 +357,8 @@ async function lintFileImpl(
     } catch {
       const result = FlowFileSchema.safeParse(doc);
       if (!result.success) {
-        schemaDiag = diag(
-          ctx,
-          "schema/invalid",
-          "error",
-          `Flow failed schema validation: ${formatIssues(result.error.issues)}`,
-        );
+        for (const issue of result.error.issues)
+          schemaDiagnostics.push(...schemaIssueDiagnostics(issue, doc, file));
       }
     }
   } else if (declaredKind === FILE_KINDS[0]) {
@@ -347,18 +367,31 @@ async function lintFileImpl(
     if (result.success) {
       ctx.config = result.data;
     } else {
-      schemaDiag = diag(
-        ctx,
-        "schema/invalid",
-        "error",
-        `Config failed schema validation: ${formatIssues(result.error.issues)}`,
-      );
+      for (const issue of result.error.issues)
+        schemaDiagnostics.push(
+          diag(ctx, "schema/invalid", "error", issue.message, {
+            location: issue.path.map(String).join("."),
+          }),
+        );
     }
   }
   // Unknown/absent kind: header rules will flag it; no schema validation attempted.
+  if (
+    declaredKind === "flow" &&
+    !ctx.imports &&
+    Array.isArray(doc.steps) &&
+    doc.steps.every(isRecord)
+  ) {
+    // Direct missing imports are independent of malformed sibling steps/schema keys.
+    ctx.imports = await resolveImportInfo(
+      { flow: doc as unknown as LoadedFlow["flow"], path: file, sourceText, sourceHash },
+      fs,
+    );
+  }
 
   // 4. Run every rule.
   const diagnostics: Diagnostic[] = [];
+  diagnostics.push(...recipeReferenceDiagnostics(doc, file));
   if (forEachDiag !== null) diagnostics.push(forEachDiag);
   for (const rule of RULES) {
     try {
@@ -373,11 +406,13 @@ async function lintFileImpl(
   }
 
   // 5. Append the catch-all schema diagnostic only if no structural rule already explained it.
-  if (schemaDiag !== null && diagnostics.every((d) => d.severity !== "error")) {
-    diagnostics.push(schemaDiag);
+  for (const issue of schemaDiagnostics) {
+    const duplicate = diagnostics.some(
+      (d) => d.severity === "error" && d.location === issue.location && d.message === issue.message,
+    );
+    if (!duplicate) diagnostics.push(issue);
   }
-
-  return tally(file, diagnostics);
+  return tally(file, enrichDiagnostics(diagnostics, sourceText));
 }
 
 /**

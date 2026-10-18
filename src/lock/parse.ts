@@ -126,6 +126,26 @@ export const LockFileSchema = z
     source_hash: z.string(),
     description: z.string(),
     targets: z.array(LockTargetSchema),
+    extractions: z
+      .array(
+        z
+          .object({
+            step: z.string(),
+            schema_hash: z.string(),
+            url: z.string(),
+            frame: z.string(),
+            signature: z.string(),
+            fields: z.record(
+              z.string(),
+              z
+                .string()
+                .min(1)
+                .refine((s) => !s.includes("ref:"), "Extraction maps require durable selectors"),
+            ),
+          })
+          .strict(),
+      )
+      .optional(),
   })
   .strict();
 

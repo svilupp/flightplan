@@ -22,8 +22,12 @@ import type { AiCallRuntime } from "./call.ts";
 import type { CandidateChooser } from "./chooser.ts";
 import { resolveChooserChain } from "./chooser.ts";
 import { JevChooser } from "./chooser-jev.ts";
+import { resolveJevVision } from "./chooser-jev-vision.ts";
 import { LlmChooser } from "./chooser-llm.ts";
 import { CostAccumulator } from "./cost.ts";
+import { diagnoseJevFailure } from "./jev-diagnosis.ts";
+import { compileJevProfile } from "./jev-profile.ts";
+import { JevStrategyRuntime, ProfileJevChooser } from "./jev-strategies.ts";
 import { judge as judgeImpl } from "./judge.ts";
 import {
   gatherPlannerPage,
@@ -31,6 +35,7 @@ import {
   planRepair as planRepairImpl,
 } from "./planner-l5.ts";
 import { resolveRegistry } from "./registry.ts";
+import { intentTextForStep } from "./resolve-common.ts";
 import { resolveL2 } from "./resolver-l2.ts";
 import type { AiHooksImpl, AiRuntime, AiRuntimeDeps, PlannerRuntime } from "./types.ts";
 import { resolveBatchL3, resolveL3 } from "./vision-l3.ts";
@@ -82,6 +87,11 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
   const registry = resolveRegistry(deps.config);
   const budget = new BudgetTracker(resolveBudgetLimits(deps.config));
   const cost = new CostAccumulator();
+  const profile = compileJevProfile(deps.config);
+  if (profile && !deps.jevApiKey)
+    throw new Error(`jev_missing_key: set ${jevApiKeyEnvLabel(deps.config.ai?.jev_api_key_env)}`);
+  const jev = profile ? new JevStrategyRuntime(deps, profile, budget, cost) : undefined;
+  const profileChooser = jev ? new ProfileJevChooser(jev) : undefined;
 
   // The slice the tier callers + aiCall consume. The optional redactor (when `enabled`) drives
   // `redactedPrompt`/`redactedResponse` on every `ai_call` event; absent → no prompt/response logged.
@@ -117,28 +127,94 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
       jevKeyEnv,
       llmAvailable: !!rt,
       makeJev: () =>
-        new JevChooser({
-          budget,
-          cost,
-          aiWriter: deps.aiWriter,
-          ...(deps.onAiCall ? { onAiCall: deps.onAiCall } : {}),
-          ...(deps.redactor ? { redactor: deps.redactor } : {}),
-          ...(deps.fetchFn ? { fetchFn: deps.fetchFn } : {}),
-          ...(deps.signal ? { signal: deps.signal } : {}),
-          apiKey: deps.jevApiKey ?? "",
-        }),
+        profileChooser && profile?.profile !== "shadow"
+          ? profileChooser
+          : new JevChooser({
+              budget,
+              cost,
+              aiWriter: deps.aiWriter,
+              ...(deps.onAiCall ? { onAiCall: deps.onAiCall } : {}),
+              ...(deps.redactor ? { redactor: deps.redactor } : {}),
+              ...(deps.fetchFn ? { fetchFn: deps.fetchFn } : {}),
+              ...(deps.signal ? { signal: deps.signal } : {}),
+              apiKey: deps.jevApiKey ?? "",
+            }),
       makeLlm: () => new LlmChooser(rt!),
     });
 
   const hooks: AiHooksImpl = {
-    resolveL2: (step, prior, ctx) => resolveL2(choosers, step, prior, ctx),
+    resolveL2: (step, prior, ctx) => {
+      jev?.begin(step.id);
+      return resolveL2(
+        choosers,
+        step,
+        prior,
+        ctx,
+        profile?.profile === "shadow" ? profileChooser : undefined,
+        deps.signal,
+        !!profile && profile.profile !== "shadow",
+      );
+    },
   };
   if (rt) {
     hooks.resolveL3 = (step, prior, ctx) => resolveL3({ ...rt, budget }, step, prior, ctx);
-    hooks.classifyL4 = (step, prior, ctx) => classifyL4(rt, step, prior, ctx);
+    hooks.classifyL4 = async (step, prior, ctx) => {
+      let hint = "unknown";
+      if (
+        jev &&
+        profile?.profile !== "shadow" &&
+        (budget.limits.max_model_calls === undefined ||
+          budget.modelCalls + 2 <= budget.limits.max_model_calls) &&
+        budget.limits.max_cost_usd === undefined
+      ) {
+        try {
+          jev.begin(step.id);
+          const snapshot = await ctx.driver.snapshot();
+          hint = await diagnoseJevFailure(jev, step.id, {
+            failure: prior.failureReason ?? prior.error ?? "unknown",
+            expected: intentTextForStep(step),
+            snapshot: JSON.stringify(snapshot.accessibilityTree),
+          });
+        } catch {
+          /* optional advice cannot replace the existing L4 contract */
+        }
+      }
+      return classifyL4(
+        rt,
+        step,
+        hint === "unknown"
+          ? prior
+          : {
+              ...prior,
+              error: `${prior.error ?? ""}\nNon-authoritative local diagnosis: ${hint}. Existing deterministic probes and effect policy remain authoritative.`,
+            },
+        ctx,
+      );
+    };
     // Vision batching (PLAN_v003 §4 v003-3): the runner injects this as `BatchVisionResolve`. The
     // callback OWNS the ONE-screenshot/ONE-call resolve + per-target fallback (see `resolveBatchL3`).
     hooks.resolveBatchL3 = (steps, ctx) => resolveBatchL3({ ...rt, budget }, steps, ctx);
+  }
+
+  if (jev && profile?.profile === "visual") {
+    hooks.resolveL3 = (step, prior, ctx) => resolveJevVision(jev, step, prior, ctx);
+    // Each action may invalidate the previous frame. Keep mapping and budgets explicit;
+    // shared-frame optimization awaits geometry fixture evidence.
+    hooks.resolveBatchL3 = async (steps, ctx) => {
+      const results = [];
+      const shared = {};
+      for (const step of steps)
+        results.push(
+          await resolveJevVision(
+            jev,
+            step,
+            { ok: false, tier: "L2", candidates: [], escalate: true },
+            ctx,
+            shared,
+          ),
+        );
+      return results;
+    };
   }
 
   // The L5 path-repair planner (PLAN_v003 v003-6), bound to the runtime slice. Present only when
@@ -155,6 +231,7 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
     : undefined;
 
   return {
+    ...(jev ? { jevRequests: jev.requests } : {}),
     registry,
     budget,
     cost,
@@ -162,10 +239,28 @@ export function createAiRuntime(deps: AiRuntimeDeps): AiRuntime {
     hasGenerate,
     aiWriter: deps.aiWriter,
     hooks,
-    ...(rt
+    ...(rt || jev
       ? {
           judge: (assertion: AiJudgeAssertion, opts: AiJudgeOptions): Promise<AssertionResult> =>
-            judgeImpl(rt, assertion, opts),
+            assertion.backend === "jev"
+              ? jev
+                ? jev.judge(assertion, opts)
+                : Promise.resolve({
+                    type: "ai_judge",
+                    pass: false,
+                    durationMs: 0,
+                    when: opts.when ?? "after",
+                    message: "jev_missing_runtime",
+                  })
+              : rt
+                ? judgeImpl(rt, assertion, opts)
+                : Promise.resolve({
+                    type: "ai_judge",
+                    pass: false,
+                    durationMs: 0,
+                    when: opts.when ?? "after",
+                    message: "ai_judge: default backend unavailable",
+                  }),
         }
       : {}),
     ...(planner ? { planner } : {}),

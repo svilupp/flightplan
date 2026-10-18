@@ -1,0 +1,46 @@
+version = 1
+kind = "flow"
+id = "jev.shadow"
+
+description = "JEV shadow comparison after heuristic selection without controlling dispatch"
+
+[inputs]
+base_url = "http://localhost:3000"
+
+[config.ai]
+classifier = "heuristic"
+
+[config.ai.jev]
+profile = "shadow"
+model = "jev-1.14.0"
+images = "deny"
+max_calls_per_step = 1
+max_requests_per_run = 16
+
+[config.run]
+max_model_calls = 16
+max_screenshots = 0
+max_cost_usd = 0.02
+
+[[steps]]
+id = "open"
+do = "goto"
+url = "${inputs.base_url}/jev/baseline"
+
+[[steps]]
+id = "choose"
+do = "click"
+effect = "at_most_once"
+target = "the Continue button"
+
+[[steps.assert]]
+type = "text"
+selector = "#result"
+text = "selected:q1"
+match = "exact"
+
+[[steps.assert]]
+type = "text"
+selector = "#count"
+text = "1"
+match = "exact"

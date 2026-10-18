@@ -21,6 +21,7 @@
 
 import { dirname, resolve as resolvePath } from "../paths.ts";
 import { ambientEnv, type FileSystemPort } from "../runtime.ts";
+import type { InputValues } from "./input.ts";
 import { type LoadedFlow, loadFlowFile } from "./load.ts";
 import { resolveInputs } from "./template.ts";
 import type { FlowFile } from "./types.ts";
@@ -65,7 +66,7 @@ export interface ImportNode {
   /** How this node was referenced from its parent (or 'import' for the root's children). */
   relation: ImportRelation;
   /** This module's declared inputs resolved against env (no per-site `with` — that is `run`). */
-  inputs: Record<string, string>;
+  inputs: InputValues;
   /** Absolute paths of this node's direct children (imports + setup/teardown + run paths). */
   children: string[];
 }
@@ -137,7 +138,7 @@ export function resolveModulePath(modulePath: string, importerPath: string): str
  */
 export async function resolveImports(
   root: LoadedFlow,
-  opts?: { env?: Record<string, string | undefined>; fs?: FileSystemPort },
+  opts?: { env?: Record<string, string | undefined>; fs?: FileSystemPort; inputs?: InputValues },
 ): Promise<ImportGraph> {
   const env = opts?.env ?? ambientEnv();
   const fs = opts?.fs;
@@ -161,7 +162,14 @@ export async function resolveImports(
     onStack.add(path);
     stack.push(path);
 
-    const inputs = resolveInputs(loaded.flow.inputs, undefined, env, {});
+    const inputs = resolveInputs(
+      loaded.flow.inputs,
+      undefined,
+      env,
+      {},
+      loaded.path === root.path ? opts?.inputs : undefined,
+      loaded.path === root.path,
+    );
     const refs = extractRefs(loaded.flow);
     const children: string[] = [];
 

@@ -250,6 +250,7 @@ export interface AiRuntimeDeps {
  * API-key presence by the CALLER; this factory just assembles from deps.
  */
 export interface AiRuntime {
+  jevRequests?: import("./budget.ts").JevRequestBudget;
   /** Per-role resolved model entries (model + fallbacks + pricing). */
   registry: Record<ModelRoleName, ResolvedModelRole>;
   /** The budget tracker (counters + ceilings; throws `BudgetExceededError`). */

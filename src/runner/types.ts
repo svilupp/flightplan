@@ -16,6 +16,7 @@ import type { AiRuntime, AiRuntimeDeps } from "../ai/index.ts";
 import type { RunSummary } from "../artifacts/index.ts";
 import type { ConnectConfig, ResolvedConfig } from "../config/types.ts";
 import type { Driver } from "../driver/index.ts";
+import type { InputValues } from "../flow/input.ts";
 import type { FileSystemPort } from "../runtime.ts";
 import type { TelemetrySink } from "../telemetry/index.ts";
 
@@ -58,6 +59,16 @@ export interface RunClock {
  * config; tests build it directly with an injected driver factory + clock.
  */
 export interface RunOptions {
+  extractionMapper?: import("../ai/extraction-map.ts").ExtractionMapper;
+  /** Caller input values, bound before child composition. */
+  inputs?: InputValues;
+  idempotencyKey?: string;
+  /** Trusted host scope for a shared invocation store. Defaults to cwd or default. */
+  invocationNamespace?: string;
+  sessionHandback?: () => import("../driver/named-session.ts").SessionHandback;
+  invocationStore?: import("../invocation/index.ts").InvocationStore;
+  actionGuard?: import("../guard/types.ts").ActionGuardOptions;
+  yieldHost?: import("./checkpoints.ts").YieldHost;
   /** Absolute or cwd-relative path to the flow .toml to run. */
   flowPath: string;
   /**

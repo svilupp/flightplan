@@ -21,6 +21,7 @@ import {
   TRANSITION_ASSERTIONS,
   URL_MATCH_MODES,
 } from "../types.ts";
+import { InputDeclarationSchema } from "./input.ts";
 
 // ---------------------------------------------------------------------------
 // Assertion — discriminated union on `type` (PLAN.md §4 AssertType).
@@ -128,21 +129,34 @@ export const ResultAssertionSchema = z
     equals: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
     /** Assert that the path is present (or absent) without comparing its value. */
     exists: z.boolean().optional(),
+    step: z.string().min(1).optional(),
+    gt: z.union([z.number().finite(), z.string().regex(/^\$\{inputs\.[\w.-]+\}$/)]).optional(),
+    gte: z.union([z.number().finite(), z.string().regex(/^\$\{inputs\.[\w.-]+\}$/)]).optional(),
+    lt: z.union([z.number().finite(), z.string().regex(/^\$\{inputs\.[\w.-]+\}$/)]).optional(),
+    lte: z.union([z.number().finite(), z.string().regex(/^\$\{inputs\.[\w.-]+\}$/)]).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.equals === undefined && value.exists === undefined) {
+    const predicates = [
+      value.equals,
+      value.exists,
+      value.gt,
+      value.gte,
+      value.lt,
+      value.lte,
+    ].filter((v) => v !== undefined);
+    if (predicates.length === 0) {
       ctx.addIssue({
         code: "custom",
         path: ["equals"],
-        message: "result assertion requires equals or exists",
+        message: "result assertion requires equals, exists, or a numeric predicate",
       });
     }
-    if (value.equals !== undefined && value.exists !== undefined) {
+    if (predicates.length > 1) {
       ctx.addIssue({
         code: "custom",
         path: ["equals"],
-        message: "result assertion cannot set both equals and exists",
+        message: "result assertion requires exactly one predicate",
       });
     }
   });
@@ -155,6 +169,7 @@ export const ResultAssertionSchema = z
 export const AiJudgeAssertionSchema = z
   .object({
     type: z.literal("ai_judge"),
+    backend: z.enum(["default", "jev"]).optional(),
     ...assertionCommon,
     prompt: z.string().min(1),
     inputs: z.array(z.enum(AI_JUDGE_INPUTS)).min(1).optional(),
@@ -241,7 +256,10 @@ export const OnFailSchema = z
 
 /** Fields common to every step. */
 const stepCommon = {
-  id: z.string().min(1),
+  id: z
+    .string()
+    .min(1)
+    .refine((id) => !id.includes("@flightplan:"), "Step IDs containing @flightplan: are reserved"),
   /** Optional per-step assertions ([[steps.assert]]). */
   assert: z.array(AssertionSchema).optional(),
   /** Optional per-step timeout override (PLAN.md §4 mentions per-step timeout_ms). */
@@ -272,6 +290,7 @@ const stepCommon = {
 
 /** Fields shared by the locator-targeting actions (click / fill / select / ai_pick). */
 const targetingCommon = {
+  resolve: z.literal("ai").optional(),
   /** Ordered locator list (PLAN_v002 §1): selectors (`ref:`/`role:`/`text:`/`css:`/`[...]`
    * prefixed) tried in author order at L1, plus at most one natural-language query that feeds
    * fuzzy ranking + L2/L3. A bare string is a one-entry list. See `./normalize-target.ts`. */
@@ -351,6 +370,65 @@ export const AiPickStepSchema = z
     ...targetingCommon,
   })
   .strict();
+
+export const ExtractStepSchema = z
+  .object({
+    ...stepCommon,
+    do: z.literal("extract"),
+    effect: z.literal("observe").optional().default("observe"),
+    selector: z.string().min(1),
+    max_rows: z.number().int().positive().max(10000).default(100),
+    fields: z
+      .record(
+        z.string(),
+        z
+          .object({
+            selector: z.string().min(1).optional(),
+            description: z.string().min(1).optional(),
+            source: z.enum(["text", "value", "attribute"]),
+            attribute: z.string().min(1).optional(),
+            type: z.enum(["string", "number", "boolean"]),
+            required: z.boolean().default(true),
+            secret: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .refine(
+        (fields) => Object.keys(fields).length > 0 && Object.keys(fields).length <= 32,
+        "extract requires 1..32 fields",
+      ),
+  })
+  .strict();
+
+export const YieldStepSchema = z
+  .object({
+    ...stepCommon,
+    do: z.literal("yield"),
+    task: z.string().min(1),
+    effect: z.literal("at_most_once").optional().default("at_most_once"),
+    assert: z.array(AssertionSchema).min(1),
+  })
+  .strict()
+  .superRefine((step, ctx) => {
+    if (
+      !step.assert.some(
+        (assertion) =>
+          (assertion.when ?? (assertion.purpose === "precondition" ? "before" : "after")) ===
+          "after",
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["assert"],
+        message: "yield requires an after return condition",
+      });
+    if (step.on_fail?.goto === "self")
+      ctx.addIssue({
+        code: "custom",
+        path: ["on_fail"],
+        message: "yield cannot replay its host task",
+      });
+  });
 
 /**
  * switch_frame — ENTER a same-origin `<iframe>` (and, per browser-pilot, a cross-origin OOPIF) so
@@ -533,6 +611,8 @@ export const StepSchema = z.discriminatedUnion("do", [
   WaitStepSchema,
   AssertStepSchema,
   AiPickStepSchema,
+  ExtractStepSchema,
+  YieldStepSchema,
   RunStepSchema,
   SwitchFrameStepSchema,
   SwitchToMainStepSchema,
@@ -568,6 +648,44 @@ export const FlowFileSchema = z
      * `resolveFlowGoal`), so an author who wrote only a `description` still gets a usable goal.
      */
     goal: z.string().min(1).optional(),
+    outputs: z
+      .record(
+        z.string(),
+        z
+          .object({
+            step: z.string().min(1),
+            path: z.string().min(1).default("."),
+            secret: z.boolean().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
+    before: z
+      .array(AssertionSchema)
+      .superRefine((items, ctx) => {
+        items.forEach((a, i) => {
+          if (a.when === "after" || a.purpose === "postcondition")
+            ctx.addIssue({
+              code: "custom",
+              path: [i],
+              message: "before requires precondition timing",
+            });
+        });
+      })
+      .optional(),
+    after: z
+      .array(AssertionSchema)
+      .superRefine((items, ctx) => {
+        items.forEach((a, i) => {
+          if (a.when === "before" || a.purpose === "precondition")
+            ctx.addIssue({
+              code: "custom",
+              path: [i],
+              message: "after requires postcondition timing",
+            });
+        });
+      })
+      .optional(),
     // composition
     imports: ImportsSchema.optional(),
     setup: z.string().min(1).optional(),
@@ -575,7 +693,7 @@ export const FlowFileSchema = z
     // flow-level config (rare; mostly for self-contained flows). [config.*]
     config: ConfigSchema.optional(),
     // declared inputs ([inputs]) — ${inputs.*} / ${env.*} templated values
-    inputs: z.record(z.string(), z.string()).optional(),
+    inputs: z.record(z.string(), InputDeclarationSchema).optional(),
     // flow-local run budgets ([run])
     run: RunLimitsSchema.optional(),
     // the ordered step list

@@ -26,6 +26,7 @@
 //
 // Canonical references: PLAN.md §3 (driver lifecycle), §4 (RunSummary / verdict), §5 Phase 2.
 
+import { createJevExtractionMapper, type ExtractionMapper } from "../ai/extraction-map.ts";
 import {
   type AiRuntime,
   type BudgetLimitName,
@@ -64,6 +65,8 @@ import {
   getBrowserPilotProvenance,
 } from "../driver/browser-pilot-driver.ts";
 import { AuthStateUnavailableError, resolveAuthPlan } from "../driver/connect-resolution.ts";
+import type { ExtractionSpec } from "../driver/extract.ts";
+import { validateExtraction } from "../driver/extract.ts";
 import type {
   ActionReceipt,
   DispatchState,
@@ -78,10 +81,18 @@ import type {
   WebMcpCallResult,
 } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
-import { type ImportGraph, resolveImports } from "../flow/imports.ts";
+import { validateBoundSteps } from "../flow/bound.ts";
+import { type ImportGraph, resolveImports, resolveModulePath } from "../flow/imports.ts";
+import { gatherInputSecrets, type InputValues, isInputJson } from "../flow/input.ts";
+import { computeSourceHash } from "../flow/load.ts";
 import { describeTarget, normalizeTarget } from "../flow/normalize-target.ts";
 import { loadFlowFileFlattened } from "../flow/run.ts";
-import { applyTemplatingDeep, resolveInputs, type TemplateContext } from "../flow/template.ts";
+import {
+  applyTemplatingDeep,
+  resolveInputs,
+  restoreInputLiterals,
+  type TemplateContext,
+} from "../flow/template.ts";
 import type {
   AiJudgeAssertion,
   Assertion,
@@ -91,6 +102,15 @@ import type {
   Step,
 } from "../flow/types.ts";
 import { defaultFileSystem } from "../fs-default.ts";
+import {
+  createGuardedDriver,
+  createJevGuard,
+  drainGuardObservations,
+  GuardBlockedError,
+  isGuardedDriver,
+  setGuardStep,
+} from "../guard/index.ts";
+import { runWithInvocation } from "../invocation/run.ts";
 import {
   createLadder,
   type LadderResult,
@@ -133,6 +153,7 @@ import type {
   AdvisoryVerdictKind,
   RunVerdict,
 } from "../types.ts";
+import { runYield, type YieldCheckpoint, type YieldHost } from "./checkpoints.ts";
 import { RunControl, RunInterruptedError } from "./control.ts";
 import {
   type Divergence,
@@ -251,6 +272,9 @@ interface RunState {
   replanCount: number;
   repairedSteps: string[];
   captures: Record<string, string>;
+  actionResults: Record<string, unknown>;
+  secretResults: Set<string>;
+  outputs: Record<string, unknown>;
   secretCaptures: Set<string>;
   pages: Array<{
     targetId?: string;
@@ -281,6 +305,9 @@ function freshRunState(): RunState {
     replanCount: 0,
     repairedSteps: [],
     captures: {},
+    actionResults: {},
+    secretResults: new Set(),
+    outputs: {},
     secretCaptures: new Set(),
     pages: [],
     inconclusiveReason: null,
@@ -298,6 +325,10 @@ function freshRunState(): RunState {
  * no-secret / no-token / no-record run is behavior-identical to before).
  */
 interface RunServices {
+  extractionMapper?: ExtractionMapper;
+  yieldHost?: YieldHost;
+  recipeBinding: string;
+  yieldReceipts: () => YieldCheckpoint["receipts"];
   /** Redaction policy (secrets + PII). Identity when disabled — see {@link createRedactor}. */
   redactor: Redactor;
   /** The telemetry run span (root). Per-step spans are `runSpan.child(...)`. NOOP when disabled. */
@@ -352,7 +383,7 @@ interface RunServices {
     escalateConfidence?: number;
     escalateAttempts?: number;
   };
-  inputs: Record<string, string>;
+  inputs: InputValues;
   env: Record<string, string | undefined>;
   dialogPolicy: NativeDialogPolicy;
   /** Run-time warning sink (defaults to stderr). */
@@ -439,12 +470,12 @@ async function maybePersistScreenshot(
  */
 function templateFlow(
   flow: FlowFile,
-  inputs: Record<string, string>,
+  inputs: InputValues,
   env: Record<string, string | undefined>,
-): { steps: Step[]; inputs: Record<string, string> } {
+): { steps: Step[]; inputs: InputValues } {
   const ctx: TemplateContext = { inputs, env, deferCaptures: true };
   // Template the step list (deep — covers urls, values, hints, assertion text/selectors).
-  const steps = flow.steps.map((s) => applyTemplatingDeep(s, ctx));
+  const steps = validateBoundSteps(flow.steps.map((s) => applyTemplatingDeep(s, ctx)));
   return { steps, inputs };
 }
 
@@ -859,7 +890,135 @@ async function performStepAction(
   span: SpanHandle,
   preResolved?: LadderResult,
 ): Promise<StepActionOutcome> {
+  setGuardStep(driver, step);
   switch (step.do) {
+    case "yield": {
+      if (!services.yieldHost)
+        return { ok: false, error: "yield_host_unavailable", dispatchState: "not_dispatched" };
+      try {
+        await runYield(services.yieldHost, {
+          task: services.redactor.redactText(step.task),
+          stepId: step.id,
+          recipeBinding: services.recipeBinding,
+          receipts: services.yieldReceipts(),
+          timeoutMs: step.timeout_ms,
+        });
+        return { ok: true, dispatchState: "dispatched", retrySafe: false };
+      } catch {
+        return { ok: false, error: "yield_failed", dispatchState: "uncertain" };
+      }
+    }
+    case "extract": {
+      if (!driver.extract)
+        return {
+          ok: false,
+          dispatchState: "not_dispatched",
+          error: "driver does not support read-only extract",
+        };
+      try {
+        const documentIdentity = await driver.documentIdentity?.();
+        const basis = {
+          schema_hash: computeSourceHash(
+            JSON.stringify({
+              selector: step.selector,
+              fields: step.fields,
+              max_rows: step.max_rows,
+            }),
+          ),
+          url: await driver.currentUrl(),
+          frame: driver.currentFrame() ?? "",
+          signature: await driver.captureStateSignature({ mode: "structure" }),
+        };
+        const cached = session?.extractionMap(step.id, basis);
+        let fieldMap =
+          cached ??
+          Object.fromEntries(
+            Object.entries(step.fields).flatMap(([name, field]) =>
+              field.selector ? [[name, field.selector]] : [],
+            ),
+          );
+        const missing = Object.fromEntries(
+          Object.entries(step.fields).filter(([name]) => !fieldMap[name]),
+        );
+        if (Object.keys(missing).length) {
+          if (!services.extractionMapper || !driver.extractionCandidates)
+            throw new Error(
+              "extract field map requires an available mapper and candidate capability",
+            );
+          if (Object.values(step.fields).some((field) => field.secret))
+            throw new Error("secret extraction requires explicit field selectors");
+          const candidates = await driver.extractionCandidates(step.selector);
+          const learned = await services.extractionMapper({
+            step: step.id,
+            fields: missing,
+            candidates: services.redactor.redactJson(candidates),
+          });
+          const freshCandidates = await driver.extractionCandidates(step.selector);
+          if (JSON.stringify(freshCandidates) !== JSON.stringify(candidates))
+            throw new Error("extract map semantic evidence changed before projection");
+          for (const name of Object.keys(missing))
+            if (
+              !candidates.some((candidate) => candidate.selector === learned[name]) ||
+              learned[name]?.includes("ref:")
+            )
+              throw new Error("extract mapper returned an invalid selector");
+          fieldMap = { ...fieldMap, ...learned };
+        }
+        const spec: ExtractionSpec = {
+          ...step,
+          fields: Object.fromEntries(
+            Object.entries(step.fields).map(([name, field]) => [
+              name,
+              { ...field, selector: fieldMap[name]! },
+            ]),
+          ),
+        };
+        if (
+          documentIdentity !== (await driver.documentIdentity?.()) ||
+          basis.url !== (await driver.currentUrl()) ||
+          basis.frame !== (driver.currentFrame() ?? "") ||
+          basis.signature !== (await driver.captureStateSignature({ mode: "structure" }))
+        )
+          throw new Error("extract map evidence changed before projection");
+        const actionResult = await driver.extract(spec);
+        validateExtraction(actionResult, spec);
+        const privateFields = Object.entries(step.fields)
+          .filter(([, field]) => field.secret)
+          .map(([name]) => name);
+        if (Array.isArray(actionResult))
+          services.redactor.addSecrets(
+            actionResult.flatMap((row: Record<string, unknown>) =>
+              privateFields.map((field) => {
+                const value = row[field];
+                return typeof value === "string" ||
+                  typeof value === "number" ||
+                  typeof value === "boolean"
+                  ? String(value)
+                  : "";
+              }),
+            ),
+          );
+        return {
+          ok: true,
+          actionResult,
+          dispatchState: "not_dispatched",
+          ...(session
+            ? {
+                creditResolution: () => {
+                  session.recordExtractionMap(step.id, basis, fieldMap);
+                  return { healed: false, fail: false, note: "extraction map validated" };
+                },
+              }
+            : {}),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          dispatchState: "not_dispatched",
+          error: error instanceof Error ? error.message : "extract failed",
+        };
+      }
+    }
     case "goto": {
       await driver.goto(step.url);
       return { ok: true };
@@ -1089,6 +1248,20 @@ async function performStepAction(
       } catch (err) {
         if (err instanceof RunInterruptedError) throw err;
         await emitTrace(false, undefined);
+        if (err instanceof GuardBlockedError)
+          return {
+            ok: false,
+            error: err.message,
+            dispatchState: "not_dispatched",
+            retrySafe: true,
+            effect,
+            webmcp: {
+              tool: step.tool,
+              phase: "preflight",
+              dispatchState: "not_dispatched",
+              retrySafe: true,
+            },
+          };
         return {
           ok: false,
           error:
@@ -1340,17 +1513,18 @@ async function performStepAction(
         // `kind:'ai_pick'` so a `pinned_choice` is persisted, threading the chosen candidate's
         // human-readable name (`exec.pinnedLabel`, set by the AI acting tiers) into the pin's
         // `label` so a healed/replayed pin stays legible.
-        const creditResolution = session
-          ? (): RecordResolutionResult =>
-              session.recordResolution(step, exec, {
-                resolvedAtL0: exec.tier === "L0",
-                // Layer 3: a revalidated L0 hit carries a fresh signature basis for the stale lock;
-                // pass the flag so the write policy refreshes the stored sig (auto) without a heal.
-                ...(exec.revalidated ? { revalidated: true } : {}),
-                ...(step.do === "ai_pick" ? { kind: "ai_pick" as const } : {}),
-                ...(exec.pinnedLabel !== undefined ? { pinnedLabel: exec.pinnedLabel } : {}),
-              })
-          : undefined;
+        const creditResolution =
+          session && step.resolve !== "ai"
+            ? (): RecordResolutionResult =>
+                session.recordResolution(step, exec, {
+                  resolvedAtL0: exec.tier === "L0",
+                  // Layer 3: a revalidated L0 hit carries a fresh signature basis for the stale lock;
+                  // pass the flag so the write policy refreshes the stored sig (auto) without a heal.
+                  ...(exec.revalidated ? { revalidated: true } : {}),
+                  ...(step.do === "ai_pick" ? { kind: "ai_pick" as const } : {}),
+                  ...(exec.pinnedLabel !== undefined ? { pinnedLabel: exec.pinnedLabel } : {}),
+                })
+            : undefined;
         // Let the AX tree settle after a DOM-mutating action so the NEXT step's single L1
         // snapshot is fresh (no real delay under a FakeClock — tests stay instant). Effective
         // value is `[timeouts] settle_ms`; `0` skips the sleep entirely.
@@ -1499,6 +1673,7 @@ function isVisionBatchable(step: Step): step is Step & { tier_hint: "vision" } {
     LADDER_VERBS.has(step.do) &&
     "tier_hint" in step &&
     step.tier_hint === "vision" &&
+    !("resolve" in step && step.resolve === "ai") &&
     !("assert" in step && step.assert && step.assert.length > 0) &&
     !("on_fail" in step && step.on_fail) &&
     popupForStep(step) === undefined
@@ -1571,12 +1746,18 @@ async function executeSteps(
     if (state.aborted) break;
     const rawStep = steps[cursor]!;
     // Capture references are resolved at execution time, after earlier steps have observed them.
-    const step = applyTemplatingDeep(rawStep, {
-      inputs: services.inputs,
-      env: services.env,
-      captures: state.captures,
-    });
+    const step = restoreInputLiterals(
+      applyTemplatingDeep(rawStep, {
+        inputs: services.inputs,
+        env: services.env,
+        captures: state.captures,
+      }),
+    );
 
+    const stepAssertCtx =
+      "__boundary" in step || step.do === "yield"
+        ? { ...assertCtx, failOnAssertion: true, mode: "eager" as const }
+        : assertCtx;
     // (0) max_steps budget (Phase 4). The tracker does NOT enforce this — the runner loop does.
     // The (maxSteps+1)-th step is never started: the run fails fast with the partial evidence
     // already gathered (verdict `inconclusive`, exit 3). Unlimited when `max_steps` is unset, so
@@ -1664,28 +1845,29 @@ async function executeSteps(
     };
 
     try {
+      setGuardStep(driver, step);
       if (driver.setDialogPolicy) {
         await driver.setDialogPolicy(
           step.dialog ? normalizeDialogPolicy(step.dialog) : services.dialogPolicy,
         );
       }
 
-      assertCtx.captures = state.captures;
-      assertCtx.actionResult = undefined;
-      assertCtx.beforeState = await captureBeforeState(driver, step);
+      stepAssertCtx.captures = state.captures;
+      stepAssertCtx.actionResult = undefined;
+      stepAssertCtx.beforeState = await captureBeforeState(driver, step);
       // (1) before-phase assertions (e.g. preconditions).
       const beforeAssertions = "assert" in step && step.assert ? step.assert : [];
       const before = await runAndRecordAssertions(
         beforeAssertions,
         "before",
         step.id,
-        assertCtx,
+        stepAssertCtx,
         writers,
         state,
         stepSpan,
         services.redactor,
       );
-      if (before.anyFailed && assertCtx.failOnAssertion && assertCtx.mode === "eager") {
+      if (before.anyFailed && stepAssertCtx.failOnAssertion && stepAssertCtx.mode === "eager") {
         // Eager + fail: a failed precondition would abort the run before acting (failedStep/
         // verdictFailed were already set by runAndRecordAssertions). An `on_fail` on this step can
         // recover instead of aborting: roll the state back and jump.
@@ -1723,6 +1905,7 @@ async function executeSteps(
         // `try` so a `BudgetExceededError` from the shared screenshot/vision call maps to
         // `inconclusive` via the same handler as a single-step AI call.
         if (
+          !isGuardedDriver(driver) &&
           runtime?.hooks.resolveBatchL3 &&
           !batchResults.has(step.id) &&
           isVisionBatchable(step) &&
@@ -1771,7 +1954,11 @@ async function executeSteps(
         if (err instanceof RunInterruptedError) throw err;
         // Any other driver/ladder throw is an INFRA error → abort the run with verdict `error`.
         const detail = err instanceof Error ? err.message : String(err);
-        action = { ok: false, error: detail };
+        action = {
+          ok: false,
+          error: detail,
+          ...(err instanceof GuardBlockedError ? { dispatchState: "not_dispatched" as const } : {}),
+        };
         state.runError = `step ${step.id} threw: ${detail}`;
         state.aborted = true;
       }
@@ -1791,7 +1978,12 @@ async function executeSteps(
       // (3) after-phase assertions (validation). A dispatched/uncertain action is observable even
       // when transport reported `ok=false`; deterministic postconditions may prove the effect and
       // rescue the logical step without redispatching it.
-      assertCtx.actionResult = action.actionResult;
+      stepAssertCtx.actionResult = action.actionResult;
+      if (action.ok && action.actionResult !== undefined)
+        state.actionResults[step.id] = action.actionResult;
+      if (step.do === "extract" && Object.values(step.fields).some((field) => field.secret))
+        state.secretResults.add(step.id);
+      stepAssertCtx.actionResults = state.actionResults;
       let afterFailed = false;
       let afterDeterministicCount = 0;
       let afterDeterministicFailed = 0;
@@ -1803,7 +1995,7 @@ async function executeSteps(
           afterAssertions,
           "after",
           step.id,
-          assertCtx,
+          stepAssertCtx,
           writers,
           state,
           stepSpan,
@@ -1817,10 +2009,18 @@ async function executeSteps(
       const captured = await captureStepValues(driver, step, action.actionResult);
       Object.assign(state.captures, captured);
       for (const spec of capturesForStep(step)) {
-        if (spec.secret === true) state.secretCaptures.add(spec.name);
+        if (spec.secret === true || (spec.type === "result" && state.secretResults.has(step.id)))
+          state.secretCaptures.add(spec.name);
       }
+      services.redactor.addSecrets(
+        Object.entries(captured)
+          .filter(([name]) => state.secretCaptures.has(name))
+          .map(([, value]) => value),
+      );
       const persistedCaptured = redactCapturedValues(step, captured, services.redactor);
-      assertCtx.captures = state.captures;
+      for (const name of Object.keys(persistedCaptured))
+        if (state.secretCaptures.has(name)) persistedCaptured[name] = REDACTED;
+      stepAssertCtx.captures = state.captures;
       if (action.popup) {
         state.pages.push({
           ...(action.popup.targetId !== undefined ? { targetId: action.popup.targetId } : {}),
@@ -1857,7 +2057,35 @@ async function executeSteps(
       // (3.5) opt-in per-step screenshot frame (video recording on), honoring `redact_media`.
       await maybePersistScreenshot(driver, step, services, stepSpan);
 
-      const stepOk = (action.ok || rescuePassed) && !afterFailed;
+      let stepOk = (action.ok || rescuePassed) && !afterFailed;
+      if (stepOk && "__outputs" in step) {
+        for (const [name, spec] of Object.entries(
+          step.__outputs as Record<string, { step: string; path: string; secret?: boolean }>,
+        )) {
+          const selected = readResultPath(state.actionResults[spec.step], spec.path);
+          if (selected.found && !isInputJson(selected.value)) {
+            stepOk = false;
+            state.verdictFailed = true;
+            state.failedStep ??= step.id;
+            state.aborted = true;
+            const message = "Output source must contain finite JSON values";
+            state.failedAssertions.push({ step: step.id, type: "result", detail: message });
+            await writers.run.emitAssertionResult({
+              stepId: step.id,
+              assertType: "result",
+              pass: false,
+              message,
+              durationMs: 0,
+            });
+            break;
+          }
+          if (selected.found)
+            state.outputs[name] =
+              spec.secret || state.secretResults.has(spec.step)
+                ? REDACTED
+                : services.redactor.redactJson(selected.value);
+        }
+      }
       const durationMs = clock.now() - stepStart;
 
       // (3.6) Credit the lock write-back + heal accounting — GATED on the FULL step outcome.
@@ -1894,7 +2122,7 @@ async function executeSteps(
       // `on_fail` recovery: a step that would FAIL THE RUN (a failed action, or a failing
       // after-assertion under fail_on_assertion) can jump instead of failing. A hard infra error
       // (state.runError) is NEVER recoverable — it always aborts with verdict `error`.
-      const wouldFailRun = !stepOk || (afterFailed && assertCtx.failOnAssertion);
+      const wouldFailRun = !stepOk || (afterFailed && stepAssertCtx.failOnAssertion);
       const jump =
         wouldFailRun && !state.runError && !state.inconclusiveReason ? tryOnFail(action) : null;
 
@@ -1984,8 +2212,8 @@ async function executeSteps(
       //   - DEFERRED: keep going; collect every failure and fail at the end.
       //   - A hard infra error (state.runError) ALWAYS aborts regardless of mode.
       if (
-        assertCtx.mode === "eager" &&
-        (!action.ok || (afterFailed && assertCtx.failOnAssertion))
+        stepAssertCtx.mode === "eager" &&
+        (!action.ok || (afterFailed && stepAssertCtx.failOnAssertion))
       ) {
         state.aborted = true;
       }
@@ -2339,19 +2567,38 @@ async function runHookFlow(
     fs,
   });
   // `max_steps` is a main-flow budget, so hook steps are not counted against it (maxSteps undefined).
-  await executeSteps(
-    steps,
-    driver,
-    ladder,
-    writers,
-    assertCtx,
-    clock,
-    state,
-    hookSession,
-    runtime,
-    undefined,
-    services,
-  );
+  const outerScope = {
+    captures: state.captures,
+    secretCaptures: state.secretCaptures,
+    actionResults: state.actionResults,
+    secretResults: state.secretResults,
+    outputs: state.outputs,
+  };
+  state.captures = {};
+  state.secretCaptures = new Set();
+  state.actionResults = {};
+  state.secretResults = new Set();
+  state.outputs = {};
+  try {
+    await executeSteps(
+      steps,
+      driver,
+      ladder,
+      writers,
+      assertCtx,
+      clock,
+      state,
+      hookSession,
+      runtime,
+      undefined,
+      services,
+    );
+  } finally {
+    Object.assign(state, outerScope);
+    assertCtx.captures = state.captures;
+    assertCtx.actionResults = state.actionResults;
+    assertCtx.actionResult = undefined;
+  }
   // Persist the hook module's learned/healed recipes (auto mode only; frozen/no-write never write).
   // Skip the flush on a harness error (the in-memory lock state is unreliable).
   if (!state.runError) {
@@ -2377,6 +2624,19 @@ async function runHookFlow(
  * RunInterruptedError after bounded cleanup, without fabricating a successful run summary.
  */
 export async function runFlow(opts: RunOptions): Promise<RunResult> {
+  if (opts.idempotencyKey !== undefined) {
+    const factory =
+      opts.driverFactory ??
+      ((cfg, context) =>
+        defaultDriverFactory(
+          cfg,
+          opts.config.timeouts,
+          opts.config.resolve?.attributes,
+          opts.config.browser?.dialog,
+          { acquisitionContext: context, providerEnv: opts.env },
+        ));
+    return runWithInvocation(opts, runFlow, factory);
+  }
   if (!opts.signal && opts.timeoutMs === undefined && opts.cleanupTimeoutMs === undefined) {
     return runFlowImpl(opts);
   }
@@ -2453,12 +2713,26 @@ async function runFlowImpl(
     env,
     fs,
     ...(opts.flowSource !== undefined ? { flowSource: opts.flowSource } : {}),
+    ...(opts.inputs !== undefined ? { inputs: opts.inputs } : {}),
   });
   // Resolve the import graph (root node carries this flow's resolved inputs).
-  const graph = await resolveImports(loaded, { env, fs });
+  const graph = await resolveImports(loaded, {
+    env,
+    fs,
+    ...(opts.inputs !== undefined ? { inputs: opts.inputs } : {}),
+  });
   const rootNode = graph.nodes.get(graph.rootPath);
   const inputs = rootNode?.inputs ?? resolveInputs(loaded.flow.inputs, undefined, env, {});
   const { steps: allSteps } = templateFlow(loaded.flow, inputs, env);
+  // Known hook bindings must fail before any root setup/action or browser acquisition.
+  for (const hook of [loaded.flow.setup, loaded.flow.teardown]) {
+    if (!hook) continue;
+    const hookFlow = await loadFlowFileFlattened(resolveModulePath(hook, loaded.path), { env, fs });
+    templateFlow(hookFlow.flow, resolveInputs(hookFlow.flow.inputs, undefined, env, {}), env);
+  }
+  if ((opts.fromStep || opts.toStep) && allSteps.some((step) => "__boundary" in step)) {
+    throw new Error("Debugging slices cannot skip required invocation boundaries");
+  }
 
   // Resume/slice support: trim to the `--from`/`--to` debugging range (both inclusive).
   const steps = trimStepRange(allSteps, opts.fromStep, opts.toStep);
@@ -2479,7 +2753,10 @@ async function runFlowImpl(
   // setup/teardown hook nodes (the import graph already loaded them), so hook secrets are masked in
   // the shared run.jsonl / trace.jsonl / ai.jsonl too. `mask_text` (default fail-closed `true`)
   // gates PII scrubbing; secret values are masked unconditionally. Disabled redactor = identity.
-  const secrets = new Set<string>(gatherSecretValues(steps, inputs));
+  const secrets = new Set<string>([
+    ...gatherSecretValues(steps, inputs),
+    ...gatherInputSecrets(loaded.flow.inputs, inputs),
+  ]);
   for (const node of graph.nodes.values()) {
     if (node.relation !== "setup" && node.relation !== "teardown") continue;
     const { steps: hookSteps } = templateFlow(node.loaded.flow, node.inputs, env);
@@ -2503,11 +2780,25 @@ async function runFlowImpl(
   const activeSpan: { current: SpanHandle } = { current: runSpan };
   const onWarn = opts.onWarn ?? ((m: string) => console.error(m));
   const services: RunServices = {
+    ...(opts.yieldHost
+      ? { yieldHost: { ...opts.yieldHost, signal: opts.signal ?? opts.yieldHost.signal } }
+      : {}),
+    recipeBinding: loaded.sourceHash,
+    yieldReceipts: () =>
+      state.stepSummaries.map((step) => ({
+        stepId: step.stepId,
+        ...(step.dispatchState ? { dispatchState: step.dispatchState } : {}),
+      })),
     redactor,
+    ...(opts.extractionMapper ? { extractionMapper: opts.extractionMapper } : {}),
     runSpan,
     activeSpan,
     onWarn,
-    record: opts.config.browser?.record === true,
+    record:
+      opts.config.browser?.record === true &&
+      !steps.some(
+        (step) => step.do === "extract" && Object.values(step.fields).some((field) => field.secret),
+      ),
     ...(injectedFs ? { mediaFs: fs } : {}),
     redactMedia: opts.config.redaction.redact_media ?? true,
     screenshotsDir: runDir.screenshotsDir,
@@ -2554,6 +2845,15 @@ async function runFlowImpl(
   // The redactor + the `onAiCall` telemetry bridge are threaded into the runtime so ai.jsonl is
   // redacted and ai_call telemetry lands on the active step span.
   let runtime = await buildAiRuntime(opts, env, writers, clock, redactor, onAiCall);
+  const extractionKey = resolveJevApiKeyEnv(opts.config.ai?.jev_api_key_env, env).value;
+  if (!services.extractionMapper && runtime && extractionKey)
+    services.extractionMapper = createJevExtractionMapper({
+      apiKey: extractionKey,
+      runtime,
+      timeoutMs: opts.config.timeouts.ai_call_ms ?? 3000,
+      maxRequests: opts.config.ai?.jev?.max_requests_per_run ?? 16,
+      signal: opts.signal,
+    });
   if (runtime && control) {
     runtime = control.guard(runtime, "ai", ["hooks", "planner"]);
   }
@@ -2644,7 +2944,7 @@ async function runFlowImpl(
   // the author-declared `[resolve] attributes` (extra selector-hook attribute names like data-cmd).
   // A frozen source-hash failure is already terminal. Do not even invoke the driver factory in
   // that case: validation must complete before any browser-facing setup or connection.
-  const driver = state.aborted
+  const unguardedDriver = state.aborted
     ? ({} as Driver)
     : opts.driverFactory
       ? opts.driverFactory(connectCfg)
@@ -2655,6 +2955,49 @@ async function runFlowImpl(
           opts.config.browser?.dialog,
           { providerEnv: env },
         );
+  const configuredGuard = opts.config.guard;
+  const actionGuard =
+    opts.actionGuard ??
+    (configuredGuard
+      ? {
+          mode: configuredGuard.mode,
+          policyVersion: configuredGuard.policy_version,
+          timeoutMs: configuredGuard.timeout_ms,
+          maxEvaluations: configuredGuard.max_evaluations,
+          evaluate: createJevGuard({
+            apiKey: env[configuredGuard.api_key_env] ?? "",
+            policy: configuredGuard.policy,
+            model: configuredGuard.model,
+            timeoutMs: configuredGuard.timeout_ms,
+            maxRequests: configuredGuard.max_evaluations,
+            ...(configuredGuard.images === "allow"
+              ? {
+                  imageEvidence: async () => {
+                    throw new Error("guard_bound_image_evidence_unavailable");
+                  },
+                  validateImage: async (
+                    evidence: import("../ai/vision-evidence.ts").JevVisualEvidence,
+                  ) => (await unguardedDriver.validateJevEvidence?.(evidence)) ?? false,
+                }
+              : {}),
+          }),
+        }
+      : undefined);
+  const driver =
+    actionGuard && !state.aborted
+      ? createGuardedDriver(
+          unguardedDriver,
+          {
+            ...actionGuard,
+            signal: opts.signal ?? ("signal" in actionGuard ? actionGuard.signal : undefined),
+            onObservation: async (observation) => {
+              await writers.trace.emit({ type: "guard_decision", ts: clock.now(), ...observation });
+              if ("onObservation" in actionGuard) await actionGuard.onObservation?.(observation);
+            },
+          },
+          (text) => redactor.redactText(text),
+        )
+      : unguardedDriver;
   const assertCtx = buildAssertContext(driver, opts.config, clock, runtime);
 
   // The produced video path (opt-in `[browser] record`), collected in the finally before teardown.
@@ -2704,6 +3047,24 @@ async function runFlowImpl(
       } catch {
         // recording is best-effort — a start failure degrades to no capture, never fails the run.
       }
+    }
+
+    // Required entry contracts precede setup and cannot be disabled by optional assertion policy.
+    if (steps[0]?.id === "@flightplan:before") {
+      const entry = steps.shift()!;
+      await executeSteps(
+        [entry],
+        driver,
+        ladder,
+        writers,
+        assertCtx,
+        clock,
+        state,
+        session,
+        runtime,
+        undefined,
+        services,
+      );
     }
 
     // --- (4) setup hook (referenced flow) ---
@@ -2863,6 +3224,17 @@ async function runFlowImpl(
     artifactProvenance,
     services.redactor,
   );
+  if (opts.sessionHandback) summary.session_handback = opts.sessionHandback();
+  summary.invocation_status =
+    verdict === "passed"
+      ? "completed"
+      : state.failedStep === "@flightplan:before"
+        ? "not_started"
+        : "failed";
+  if (verdict === "passed" && loaded.flow.outputs)
+    summary.outputs = Object.fromEntries(
+      Object.keys(loaded.flow.outputs).map((name) => [name, state.outputs[name]]),
+    );
 
   await writers.run.emitRunEnd({
     verdict,
@@ -2875,6 +3247,7 @@ async function runFlowImpl(
     ...(state.runError ? { error: state.runError } : {}),
   });
   await writeSummary(runDir, summary, fs);
+  await drainGuardObservations(driver);
   await writers.close();
 
   // Close the telemetry run span (verdict + drift_count). NOOP when telemetry is disabled.
@@ -2981,7 +3354,7 @@ async function buildAiRuntime(
   // error (`ClassifierConfigError`) surfaced at run start — never the fail-open `onWarn` path
   // reserved for `"auto"`'s missing-SDK degradation below. Checked BEFORE the `wantsRuntime` gate
   // so a missing prerequisite is never silently swallowed into an AI-less run.
-  if (classifier === "jev" && !jevApiKey) {
+  if ((classifier === "jev" || opts.config.ai?.jev) && !jevApiKey) {
     throw new ClassifierConfigError(
       `[ai] classifier = "jev" but env ${jevApiKeyEnvLabel(opts.config.ai?.jev_api_key_env)} is not set`,
     );
@@ -2992,7 +3365,8 @@ async function buildAiRuntime(
     );
   }
 
-  const jevUsable = !!jevApiKey && (classifier === "auto" || classifier === "jev");
+  const jevUsable =
+    !!jevApiKey && (classifier === "auto" || classifier === "jev" || !!opts.config.ai?.jev);
   const wantsRuntime = !!apiKey || jevUsable || classifier === "heuristic";
   if (!wantsRuntime) return undefined;
 

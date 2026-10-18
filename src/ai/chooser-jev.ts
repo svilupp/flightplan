@@ -12,6 +12,7 @@ import type { CandidateChooser, ChooseContext, ChooseResult } from "./chooser.ts
 import type { CostAccumulator } from "./cost.ts";
 import type { CandidatePacketEntry } from "./resolve-common.ts";
 import type { AiCallSink } from "./types.ts";
+import { postJevRequest } from "./typesafe.ts";
 
 // ---------------------------------------------------------------------------
 // Constants (all in one reviewable block)
@@ -244,22 +245,7 @@ async function doFetch(
   body: SystemOneRequest,
   signal: AbortSignal,
 ): Promise<{ status: number; json: unknown }> {
-  const res = await fetchFn(JEV_API_URL, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
-  let json: unknown;
-  try {
-    json = await res.json();
-  } catch {
-    json = undefined;
-  }
-  return { status: res.status, json };
+  return postJevRequest(fetchFn, apiKey, body, signal);
 }
 
 /**

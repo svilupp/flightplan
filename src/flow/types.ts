@@ -18,6 +18,7 @@ import type {
   EmitStepSchema,
   EvalStepSchema,
   EvaluateStepSchema,
+  ExtractStepSchema,
   FillStepSchema,
   FlowFileSchema,
   GotoStepSchema,
@@ -40,6 +41,7 @@ import type {
   VisibleAssertionSchema,
   WaitStepSchema,
   WebMcpCallStepSchema,
+  YieldStepSchema,
 } from "./schema.ts";
 
 // ---- Assertions ----
@@ -56,6 +58,8 @@ export type AiJudgeAssertion = z.infer<typeof AiJudgeAssertionSchema>;
 export type DeterministicAssertion = z.infer<typeof DeterministicAssertionSchema>;
 export type Assertion = z.infer<typeof AssertionSchema>;
 export type Capture = z.infer<typeof CaptureSchema>;
+export type ExtractStep = z.infer<typeof ExtractStepSchema>;
+export type YieldStep = z.infer<typeof YieldStepSchema>;
 export type PopupExpectation = z.infer<typeof PopupExpectationSchema>;
 
 // ---- Control flow ----

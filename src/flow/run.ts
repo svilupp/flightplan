@@ -30,6 +30,7 @@ import {
   resolveImports,
   resolveModulePath,
 } from "./imports.ts";
+import type { InputValues } from "./input.ts";
 import { type LoadedFlow, loadFlowFile, parseFlowFile } from "./load.ts";
 import { applyInputsTemplatingDeep, resolveInputs } from "./template.ts";
 import type { RunStep, Step } from "./types.ts";
@@ -50,6 +51,7 @@ export { ImportCycleError, isRunFlowPath };
 
 /** Options for the flatten pass. */
 export interface FlattenOptions {
+  inputs?: InputValues;
   /** Environment for `with` / input templating; defaults to `process.env`. */
   env?: Record<string, string | undefined>;
   /** Injectable filesystem for loading imported/run-referenced modules. Defaults to Node's. */
@@ -93,12 +95,44 @@ export function collectImportScope(
 /** Namespace one child step under a call-site id: id + its own on_fail.goto (v002-9). */
 function namespaceStep(callSiteId: string, step: Step): Step {
   const out: Step = { ...step, id: `${callSiteId}:${step.id}` };
+  if (step.assert)
+    out.assert = step.assert.map((a) =>
+      a.type === "result" && a.step ? { ...a, step: `${callSiteId}:${a.step}` } : a,
+    );
+  if (step.capture) {
+    const specs = Array.isArray(step.capture) ? step.capture : [step.capture];
+    out.capture = specs.map((spec) => ({ ...spec, name: `${callSiteId}:${spec.name}` }));
+  }
+  if ("__outputs" in step)
+    Object.assign(out, {
+      __outputs: Object.fromEntries(
+        Object.entries(
+          step.__outputs as Record<string, { step: string; path: string; secret?: boolean }>,
+        ).map(([name, spec]) => [
+          `${callSiteId}:${name}`,
+          { ...spec, step: `${callSiteId}:${spec.step}` },
+        ]),
+      ),
+    });
   if (step.on_fail && step.on_fail.goto !== "self") {
     // The child's goto targets resolve WITHIN the child (file-scoped, v002-9) — rewrite them
     // to the namespaced form so they still point at the embedded copy of that step.
     out.on_fail = { ...step.on_fail, goto: `${callSiteId}:${step.on_fail.goto}` };
   }
-  return out;
+  const scopeCaptures = (value: unknown): unknown => {
+    if (typeof value === "string")
+      return value.replace(
+        /\$\{\s*capture\.([\w.:-]+)\s*\}/g,
+        (_token, name: string) => `\${capture.${callSiteId}:${name}}`,
+      );
+    if (Array.isArray(value)) return value.map(scopeCaptures);
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([key, child]) => [key, scopeCaptures(child)]),
+      );
+    return value;
+  };
+  return scopeCaptures(out) as Step;
 }
 
 /**
@@ -111,7 +145,11 @@ function namespaceStep(callSiteId: string, step: Step): Step {
 export async function flattenRunSteps(loaded: LoadedFlow, opts?: FlattenOptions): Promise<Step[]> {
   const env = opts?.env ?? ambientEnv();
   // Combined import + run DAG: loads every referenced module and throws on a cycle (v002-6).
-  const graph = await resolveImports(loaded, { env, ...(opts?.fs ? { fs: opts.fs } : {}) });
+  const graph = await resolveImports(loaded, {
+    env,
+    ...(opts?.fs ? { fs: opts.fs } : {}),
+    ...(opts?.inputs ? { inputs: opts.inputs } : {}),
+  });
   const rootInputs = graph.nodes.get(loaded.path)?.inputs ?? {};
   return flattenFile(loaded, rootInputs, graph, env, /* preTemplateInputs */ false);
 }
@@ -186,12 +224,43 @@ function resolveRunChild(step: RunStep, file: LoadedFlow, graph: ImportGraph): L
  */
 function flattenFile(
   file: LoadedFlow,
-  effInputs: Record<string, string>,
+  effInputs: InputValues,
   graph: ImportGraph,
   env: Record<string, string | undefined>,
   preTemplateInputs: boolean,
 ): Step[] {
+  const localTargets = new Set(
+    file.flow.steps.filter((step) => step.do !== "run").map((step) => step.id),
+  );
+  for (const step of file.flow.steps) {
+    const target = step.on_fail?.goto;
+    if (target && target !== "self" && !localTargets.has(target))
+      throw new RunResolutionError(
+        `Step ${step.id}: on_fail target ${target} crosses an invocation boundary or does not exist in this file`,
+        file.path,
+      );
+  }
   const out: Step[] = [];
+  const boundary = (phase: "before" | "after", assertions: NonNullable<Step["assert"]>): Step => ({
+    id: `@flightplan:${phase}`,
+    do: "assert",
+    effect: "observe",
+    assert: assertions.map((a) => ({
+      ...a,
+      when: phase,
+      purpose: phase === "before" ? "precondition" : "postcondition",
+    })),
+    ...{ __boundary: phase },
+  });
+  if (file.flow.before?.length)
+    out.push(
+      boundary(
+        "before",
+        preTemplateInputs
+          ? applyInputsTemplatingDeep(file.flow.before, effInputs)
+          : file.flow.before,
+      ),
+    );
   for (const step of file.flow.steps) {
     if (step.do !== "run") {
       out.push(preTemplateInputs ? applyInputsTemplatingDeep(step, effInputs) : step);
@@ -217,13 +286,38 @@ function flattenFile(
       const siteAssert = preTemplateInputs
         ? applyInputsTemplatingDeep(step.assert, effInputs)
         : step.assert;
+      const entry = siteAssert.filter(
+        (a) => a.when === "before" || (a.when === undefined && a.purpose === "precondition"),
+      );
+      if (entry.length)
+        childSteps.unshift({
+          ...boundary("before", entry),
+          id: `${step.id}:@flightplan:call-before`,
+        });
+      const outcome = siteAssert.filter((a) => !entry.includes(a));
       const last = childSteps[childSteps.length - 1]!;
       childSteps[childSteps.length - 1] = {
         ...last,
-        assert: [...(last.assert ?? []), ...siteAssert],
+        assert: [...(last.assert ?? []), ...outcome],
       };
     }
     out.push(...childSteps);
+  }
+  if (file.flow.after?.length || Object.keys(file.flow.outputs ?? {}).length) {
+    const outputChecks = Object.values(file.flow.outputs ?? {}).map((spec) => ({
+      type: "result" as const,
+      step: spec.step,
+      path: spec.path,
+      exists: true,
+    }));
+    const assertions = [...(file.flow.after ?? []), ...outputChecks];
+    out.push({
+      ...boundary(
+        "after",
+        preTemplateInputs ? applyInputsTemplatingDeep(assertions, effInputs) : assertions,
+      ),
+      ...{ __outputs: file.flow.outputs ?? {} },
+    });
   }
   return out;
 }

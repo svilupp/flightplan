@@ -174,7 +174,7 @@ From a new Worker project, copy `worker.ts` and
 [`wrangler.toml`](examples/cloudflare-worker/wrangler.toml) from that example, then run:
 
 ```sh
-npm install @svilupp/flightplan@^0.2.0 just-bash
+npm install @svilupp/flightplan just-bash
 npm install -D wrangler
 npx wrangler dev
 ```
@@ -512,6 +512,7 @@ Lint and preview effect policy before execution:
 
 ```sh
 flightplan lint path/to/flow.toml
+flightplan config path/to/flow.toml --json
 flightplan migrate-effects path/to/flow.toml
 ```
 
@@ -616,10 +617,18 @@ behavior.
 L0 lock replay and L1 deterministic DOM resolution are the default path. L2 resolver, L3 vision, L4
 advisor, AI assertions, and the L5 path-repair planner need an AI runtime when invoked.
 
+### Bounded JEV profiles
+
+`[config.ai.jev] profile = "text"`, `"visual"`, or `"shadow"` adds bounded selection,
+optional image recovery, or comparison without controlling dispatch. Profiles share request
+and cost limits with explicit JEV assertions. Images require permission and safe, current evidence.
+See [JEV configuration and assertions](docs/JEV.md) for a working configuration and limits.
+
 ### L2 classifier: JEV vs LLM vs heuristic
 
 L2 ("which candidate element matches this intent") is answered by an ordered chain of
-**choosers**, selected by `[config.ai] classifier`:
+**choosers**, selected by `[config.ai] classifier`. The behavior below applies when
+`[config.ai.jev]` is absent:
 
 ```toml
 [config.ai]
@@ -650,8 +659,8 @@ NAME, never the key value.
   chooser, and a missing prerequisite key **fails the run at start** with a clear config error
   naming the missing env var (never a silent no-op, never a value in the error). `"heuristic"`
   needs no key at all.
-- A **JEV-only setup** (`TYPESAFE_API_KEY` set, no generative provider key) covers L2 element
-  choice only — L3 vision, L4 advisor, the L5 planner, and `ai_judge` are all unavailable. An
+- A **legacy JEV-only setup** (`TYPESAFE_API_KEY` set, no generative provider key, no
+  `[config.ai.jev]` profile) covers L2 element choice only — L3 vision, L4 advisor, the L5 planner, and `ai_judge` are all unavailable. An
   `ai_judge` assertion under a JEV-only (or fully AI-less) runtime **fails that assertion** with a
   clearly-marked "not available" message (`pass: false`) — it is a real, counted assertion
   failure, never a silent skip. It is still distinct from a judge FAILING CLOSED on a model-call
@@ -765,6 +774,7 @@ installing it into this checkout, run `bun run test:package /absolute/path/brows
 
 - [`examples/flows/`](examples/flows/) - deterministic and AI-backed examples.
 - [`examples/fixtures/README.md`](examples/fixtures/README.md) - fixture contracts.
+- [`docs/JEV.md`](docs/JEV.md) - bounded JEV profiles, assertions and evaluation limits.
 - [`docs/BENCHMARK.md`](docs/BENCHMARK.md) - cost, resolution, and validation methodology.
 - [`docs/BROWSER_PILOT_INTEGRATION.md`](docs/BROWSER_PILOT_INTEGRATION.md) - browser integration contract.
 
@@ -782,3 +792,26 @@ diagnosis, then run the final automation through Flightplan.
 
 Flightplan is under active development. Treat the flow, lock, and artifact checks as part of the
 workflow, not as optional polish.
+
+## Callable recipes
+
+Recipes accept typed inputs, check entry and outcome conditions, and return named JSON outputs.
+Keep business loops in the calling host.
+
+```sh
+flightplan list ./flows --json
+flightplan describe ./flows/open-order.toml --json
+flightplan run ./flows/open-order.toml --input order_id=D123 --json
+flightplan check ./flows/open-order.toml --session work --json
+```
+
+See [recipe inputs, extraction, outputs and idempotency](docs/CALLABLE_RECIPES.md).
+`check` inspects the current entry state; later states remain unchecked.
+
+## Named BP sessions
+
+`--session work` borrows an existing BP session; `--target-id` selects an exact page.
+Handback verifies the final target and invalidates saved element references. Missing owner APIs
+fail with `BP_NAMED_SESSION_UNAVAILABLE` without opening a replacement connection.
+
+Flightplan requires browser-pilot 0.8 or later within the 0.8 release series. See [session ownership, guards and host yield](docs/BROWSER_PILOT_INTEGRATION.md#shared-named-owner).

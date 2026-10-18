@@ -196,6 +196,14 @@ export interface LockPinnedChoice {
  *  - `targets`     — the per-step recipes. Kept sorted by `step` on write for stable diffs.
  */
 export interface LockFile {
+  extractions?: Array<{
+    step: string;
+    schema_hash: string;
+    url: string;
+    frame: string;
+    signature: string;
+    fields: Record<string, string>;
+  }>;
   version: number;
   source: string;
   source_hash: string;

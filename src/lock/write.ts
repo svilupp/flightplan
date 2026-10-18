@@ -148,6 +148,18 @@ function lockToObject(lock: LockFile): Record<string, unknown> {
     source_hash: lock.source_hash,
     description: lock.description,
     targets: orderedTargets(lock.targets).map(targetToObject),
+    ...(lock.extractions?.length
+      ? {
+          extractions: [...lock.extractions]
+            .sort((a, b) => a.step.localeCompare(b.step))
+            .map((entry) => ({
+              ...entry,
+              fields: Object.fromEntries(
+                Object.entries(entry.fields).sort(([a], [b]) => a.localeCompare(b)),
+              ),
+            })),
+        }
+      : {}),
   };
 }
 

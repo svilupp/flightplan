@@ -71,9 +71,20 @@ export const AI_PROVIDERS = ["openrouter", "google", "openai"] as const;
  */
 export const AI_CLASSIFIERS = ["auto", "heuristic", "jev", "llm"] as const;
 
+export const JevConfigSchema = z
+  .object({
+    profile: z.enum(["text", "visual", "shadow"]),
+    model: z.literal("jev-1.14.0").optional(),
+    images: z.enum(["allow", "deny"]).optional(),
+    max_calls_per_step: z.number().int().positive().optional(),
+    max_requests_per_run: z.number().int().positive().optional(),
+  })
+  .strict();
+
 export const AiConfigSchema = z
   .object({
     provider: z.enum(AI_PROVIDERS).optional(),
+    jev: JevConfigSchema.optional(),
     api_key_env: z.string().min(1).optional(),
     /** L2 element-choice backend. Default `"auto"` (key-availability driven). */
     classifier: z.enum(AI_CLASSIFIERS).optional(),
@@ -95,7 +106,28 @@ export const AiConfigSchema = z
     max_screenshots: z.number().int().nonnegative().optional(),
     models: ModelRegistrySchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((ai, ctx) => {
+    if (ai.jev?.profile === "visual" && ai.jev.images !== "allow") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["jev", "images"],
+        message: "jev_images_denied: visual requires images=allow",
+      });
+    }
+    if (
+      ai.jev &&
+      ai.jev.profile !== "shadow" &&
+      ai.classifier &&
+      !["auto", "jev"].includes(ai.classifier)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["classifier"],
+        message: "jev_classifier_incompatible: active profiles require auto or jev",
+      });
+    }
+  });
 
 // ---------------------------------------------------------------------------
 // [browser] — provider / version pin / connect mode / record
@@ -479,8 +511,22 @@ export const AuthConfigSchema = z
 // The full Config object (all sections optional; built-in defaults fill the gaps).
 // ---------------------------------------------------------------------------
 
+export const GuardConfigSchema = z
+  .object({
+    mode: z.enum(["shadow", "enforce"]),
+    policy: z.string().min(1),
+    policy_version: z.string().min(1).default("guard-v1"),
+    api_key_env: z.string().min(1).default("TYPESAFE_API_KEY"),
+    model: z.string().min(1).optional(),
+    timeout_ms: z.number().int().positive().default(3000),
+    max_evaluations: z.number().int().nonnegative().default(100),
+    images: z.enum(["deny", "allow"]).default("deny"),
+  })
+  .strict();
+
 export const ConfigSchema = z
   .object({
+    guard: GuardConfigSchema.optional(),
     browser: BrowserConfigSchema.optional(),
     connect: ConnectConfigSchema.optional(),
     ai: AiConfigSchema.optional(),

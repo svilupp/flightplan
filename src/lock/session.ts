@@ -171,6 +171,39 @@ export class LockSession {
   get collisions() {
     return this.composed.collisions;
   }
+  extractionMap(
+    step: string,
+    basis: { schema_hash: string; url: string; frame: string; signature: string },
+  ): Record<string, string> | undefined {
+    const entry = this.bySource
+      .get(this.rootSource)
+      ?.lock.extractions?.find((item) => item.step === step);
+    if (!entry) return undefined;
+    if (
+      entry.schema_hash !== basis.schema_hash ||
+      entry.url !== basis.url ||
+      entry.frame !== basis.frame ||
+      entry.signature !== basis.signature
+    ) {
+      if (this.mode === "frozen") throw new Error("Frozen extraction map is stale");
+      return undefined;
+    }
+    return { ...entry.fields };
+  }
+  recordExtractionMap(
+    step: string,
+    basis: { schema_hash: string; url: string; frame: string; signature: string },
+    fields: Record<string, string>,
+  ): void {
+    const tracked = this.bySource.get(this.rootSource);
+    if (!tracked) return;
+    const entries = tracked.lock.extractions ?? [];
+    const existing = entries.find((entry) => entry.step === step);
+    const next = { step, ...basis, fields: { ...fields } };
+    if (JSON.stringify(existing) === JSON.stringify(next)) return;
+    tracked.lock.extractions = [...entries.filter((entry) => entry.step !== step), next];
+    tracked.dirty = true;
+  }
 
   /**
    * Record a SUCCESSFUL targeted-step resolution and apply the write policy. Builds the `match`
