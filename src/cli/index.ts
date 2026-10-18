@@ -17,10 +17,13 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nodeFileSystem } from "../adapters/node/index.ts";
 import { loadFlowFile } from "../flow/index.ts";
+import { NodeInvocationStore } from "../invocation/node.ts";
 import {
   CliUsageError,
   type CommandIO,
   EXIT,
+  executeCheck,
+  executeDiscovery,
   executeLint,
   executeRun,
   type ParsedArgs,
@@ -28,6 +31,7 @@ import {
   printUsage,
   validateCommandArgs,
 } from "./commands.ts";
+import { executeConfig } from "./config.ts";
 import { runExplain } from "./explain.ts";
 import { runReport } from "./report.ts";
 import { runSweep } from "./sweep.ts";
@@ -60,6 +64,9 @@ function nodeCommandIO(): CommandIO {
     fs: nodeFileSystem,
     cwd: process.cwd(),
     env: process.env,
+    invocationStore: new NodeInvocationStore(
+      resolve(process.cwd(), ".flightplan-runs/.invocations"),
+    ),
     stdout: (text: string) => console.log(text),
     stderr: (text: string) => console.error(text),
   };
@@ -121,6 +128,13 @@ export async function runMigrateEffects(args: ParsedArgs): Promise<number> {
 
 async function dispatch(argv: string[], args: ParsedArgs): Promise<number> {
   switch (args.command) {
+    case "check":
+      return (await executeCheck(argv, nodeCommandIO())).exitCode;
+    case "list":
+    case "describe":
+      return (await executeDiscovery(argv, nodeCommandIO())).exitCode;
+    case "config":
+      return executeConfig(args.positionals[0]!, nodeCommandIO());
     case "lint":
       return (await executeLint(argv, nodeCommandIO())).exitCode;
     case "run":
@@ -147,8 +161,19 @@ export async function main(argv: string[]): Promise<number> {
     args = parseArgs(argv);
   } catch (err) {
     if (err instanceof CliUsageError) {
-      console.error(err.message);
-      printUsageToStderr();
+      if (argv.includes("--json"))
+        console.log(
+          JSON.stringify({
+            ok: false,
+            diagnostics: [
+              { code: "CLI_USAGE", severity: "error", message: "Invalid command arguments." },
+            ],
+          }),
+        );
+      else {
+        console.error(err.message);
+        printUsageToStderr();
+      }
       return err.exitCode;
     }
     throw err;
@@ -167,7 +192,16 @@ export async function main(argv: string[]): Promise<number> {
     validateCommandArgs(args);
   } catch (err) {
     if (err instanceof CliUsageError) {
-      console.error(err.message);
+      if (argv.includes("--json"))
+        console.log(
+          JSON.stringify({
+            ok: false,
+            diagnostics: [
+              { code: "CLI_USAGE", severity: "error", message: "Invalid command arguments." },
+            ],
+          }),
+        );
+      else console.error(err.message);
       return err.exitCode;
     }
     throw err;

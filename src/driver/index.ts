@@ -34,6 +34,7 @@ export {
   resolveAuthPlan,
 } from "./connect-resolution.ts";
 export { normalizeBatchResult } from "./dispatch-metadata.ts";
+export type { ExtractionCandidate, ExtractionSpec } from "./extract.ts";
 // --- the mock testing seam ---
 export {
   type DriverCall,
@@ -51,7 +52,23 @@ export {
   makeStepResult,
   makeSuccessBatch,
 } from "./mock-fixtures.ts";
-
+export type {
+  NamedSessionBorrow,
+  NamedSessionBorrower,
+  NamedSessionHandback,
+  SessionHandback,
+} from "./named-session.ts";
+export { namedSessionDriverFactory, nativeNamedSessionBorrower } from "./named-session.ts";
+export {
+  createNamedSessionYieldHost,
+  type NamedSessionYieldOptions,
+} from "./named-session-yield.ts";
+export {
+  type BorrowedOwnerActions,
+  nativeOwnerActionDriverFactory,
+  nativeOwnerActionsBorrower,
+  type OwnerActionsBorrower,
+} from "./native-owner-actions.ts";
 // --- navigation-settling helpers (pure) ---
 export {
   clickStep,
@@ -59,6 +76,25 @@ export {
   resolveWaitForNavigation,
   submitOptions,
 } from "./navigation.ts";
+export {
+  OwnerActionDriver,
+  type OwnerActionDriverOptions,
+  type OwnerActionLease,
+  ownerActionDriverFactory,
+} from "./owner-action-driver.ts";
+export { executeOwnerAction, OwnerActionError } from "./owner-actions.ts";
+export type {
+  OwnerAction,
+  OwnerActionCapabilities,
+  OwnerActionPort,
+  OwnerActionReceipt,
+  OwnerApproval,
+  OwnerAssurance,
+  OwnerExtractRequest,
+  OwnerExtractResult,
+  OwnerObservation,
+  OwnerPreparedAction,
+} from "./owner-contract.ts";
 // --- the selector→strategy mapping (ladder + lock depend on it) ---
 export { selectorUsedToStrategy, strategyFromStepResult } from "./selector-strategy.ts";
 // --- the interface + supporting types ---

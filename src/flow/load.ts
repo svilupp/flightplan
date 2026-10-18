@@ -73,6 +73,9 @@ export function parseFlowFile(sourceText: string, path: string): LoadedFlow {
       result.error.issues,
     );
   }
+  if (result.data.steps.some((s) => s.id.includes("@flightplan:"))) {
+    throw new FlowValidationError("Step IDs containing @flightplan: are reserved", path, []);
+  }
   return {
     flow: result.data,
     path,

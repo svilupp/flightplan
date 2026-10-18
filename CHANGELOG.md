@@ -1,6 +1,13 @@
 # Changelog
 
-Semver. Each release gets a short, user-facing note: what changed for someone *using* the platform (operators, API consumers, deployers), not internal refactors. Keep entries minimal - one line where possible, grouped under `Added` / `Changed` / `Fixed` / `Removed` only when needed.
+## [0.5.0] - 2026-10-18
+
+- Build reusable recipes with typed inputs, page data extraction, and JSON outputs. Discover recipes with `list` and `describe`; inspect their starting state with `check`.
+- Reuse an existing browser-pilot session and hand control back after a workflow or host task.
+- Set action policies to monitor or block browser actions, and use idempotency keys to prevent duplicate workflow execution.
+- Choose JEV text, visual, or shadow mode with request and cost limits. Inspect settings with `flightplan config`. Visual mode remains experimental.
+- Catch invalid recipe inputs before connecting to the browser.
+- Requires browser-pilot `^0.8.0`.
 
 ## [0.4.0] - 2026-10-04
 

@@ -711,3 +711,47 @@ describe("orchestrator — cross-origin frame bypass (after switch_frame)", () =
     expect(attempts.length).toBeGreaterThan(0); // the normal L0/L1 walk ran, not the bypass.
   });
 });
+
+describe("fresh semantic resolution", () => {
+  for (const action of ["click", "ai_pick"] as const) {
+    test(`${action} resolve=ai never reads locks or dispatches L1`, async () => {
+      let picks = 0;
+      const driver = new MockDriver();
+      const ctx: ResolveContext = {
+        driver,
+        lock: {
+          lookup: () => {
+            throw new Error("cache read");
+          },
+        },
+        ai: {
+          resolveL2: async (_step, _prior, fresh) => {
+            expect(fresh.lock).toBeUndefined();
+            picks++;
+            return { ok: true, tier: "L2", escalate: false, dispatchState: "dispatched" };
+          },
+        },
+      };
+      const step: Step = {
+        id: "semantic",
+        do: action,
+        target: "available product",
+        resolve: "ai",
+        effect: "idempotent",
+      };
+      await resolveStep(step, ctx);
+      await resolveStep(step, ctx);
+      expect(picks).toBe(2);
+      expect(driver.callsTo("batch")).toHaveLength(0);
+    });
+  }
+  test("unavailable semantic chooser fails before deterministic dispatch", async () => {
+    const driver = new MockDriver();
+    const result = await resolveStep(
+      { id: "semantic", do: "click", target: "product", resolve: "ai" },
+      { driver },
+    );
+    expect(result.execution.dispatchState).toBe("not_dispatched");
+    expect(driver.callsTo("batch")).toHaveLength(0);
+  });
+});

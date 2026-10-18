@@ -12,6 +12,8 @@ export {
   resolveImports,
   resolveModulePath,
 } from "./imports.ts";
+export type { InputDeclaration, InputIssue, InputValue, InputValues } from "./input.ts";
+export { bindInputs, InputBindingError, InputDeclarationSchema } from "./input.ts";
 export type { LoadedFlow } from "./load.ts";
 // Loading.
 export {
@@ -44,6 +46,7 @@ export {
   EmitStepSchema,
   EvalStepSchema,
   EvaluateStepSchema,
+  ExtractStepSchema,
   FillStepSchema,
   FlowFileSchema,
   GotoStepSchema,
@@ -61,9 +64,9 @@ export {
   VisibleAssertionSchema,
   WaitStepSchema,
   WebMcpCallStepSchema,
+  YieldStepSchema,
 } from "./schema.ts";
 export type { LoopContext, TemplateContext, TemplateRef } from "./template.ts";
-
 // Templating.
 export {
   applyInputsTemplating,
@@ -91,6 +94,7 @@ export type {
   EmitStep,
   EvalStep,
   EvaluateStep,
+  ExtractStep,
   FillStep,
   FlowFile,
   GotoStep,
@@ -108,4 +112,5 @@ export type {
   VisibleAssertion,
   WaitStep,
   WebMcpCallStep,
+  YieldStep,
 } from "./types.ts";

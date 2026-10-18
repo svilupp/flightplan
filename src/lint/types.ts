@@ -14,6 +14,11 @@ export type Severity = "error" | "warning";
  * problem is (a step id, an assertion path, an import path, …) when known.
  */
 export interface Diagnostic {
+  code?: string;
+  sourceRange?: { line: number; column: number };
+  evidence?: Record<string, unknown>;
+  suggestions?: string[];
+  rootCauseId?: string;
   /** Stable rule identifier, e.g. `steps/unique-ids`. Used by tests + tooling. */
   ruleId: string;
   /** `error` (fails lint) or `warning` (reported, does not fail). */

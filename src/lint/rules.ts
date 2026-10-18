@@ -797,7 +797,8 @@ const assertRequiredFields: Rule = {
           }
           const hasEquals = a.equals !== undefined;
           const hasExists = a.exists !== undefined;
-          if (!hasEquals && !hasExists) {
+          const numericCount = [a.gt, a.gte, a.lt, a.lte].filter((v) => v !== undefined).length;
+          if (!hasEquals && !hasExists && numericCount === 0) {
             out.push(
               diag(
                 ctx,
@@ -807,7 +808,7 @@ const assertRequiredFields: Rule = {
                 { stepId: sid, location: loc },
               ),
             );
-          } else if (hasEquals && hasExists) {
+          } else if (Number(hasEquals) + Number(hasExists) + numericCount > 1) {
             out.push(
               diag(
                 ctx,
@@ -838,7 +839,13 @@ const resultAssertionScope: Rule = {
     const out: Diagnostic[] = [];
     rawSteps(ctx.doc).forEach((step, i) => {
       const resultAssertions = rawAsserts(step).filter((a) => a.type === "result");
-      if (resultAssertions.length === 0 || step.do === "webmcp_call") return;
+      if (
+        resultAssertions.length === 0 ||
+        step.do === "webmcp_call" ||
+        step.do === "extract" ||
+        resultAssertions.every((a) => typeof a.step === "string")
+      )
+        return;
       out.push(
         diag(
           ctx,
@@ -850,7 +857,7 @@ const resultAssertionScope: Rule = {
       );
     });
     rawSteps(ctx.doc).forEach((step, i) => {
-      if (step.do !== "webmcp_call") return;
+      if (step.do !== "webmcp_call" && step.do !== "extract") return;
       rawAsserts(step).forEach((assertion) => {
         if (assertion.type !== "result" || assertion.when !== "before") return;
         out.push(
@@ -874,7 +881,7 @@ const resultCaptureScope: Rule = {
   description: "A result capture must be declared on a webmcp_call step.",
   run(ctx) {
     return rawSteps(ctx.doc).flatMap((step, i) => {
-      if (step.do === "webmcp_call") return [];
+      if (step.do === "webmcp_call" || step.do === "extract") return [];
       if (!rawCaptures(step).some((capture) => capture.type === "result")) return [];
       return [
         diag(
@@ -1538,7 +1545,10 @@ const templatingUnusedInput: Rule = {
     if (declared.size === 0) return [];
     // Collect every referenced input name across all steps.
     const used = new Set<string>();
-    for (const step of rawSteps(ctx.doc)) {
+    for (const step of [
+      ...rawSteps(ctx.doc),
+      { before: ctx.doc?.before, after: ctx.doc?.after, outputs: ctx.doc?.outputs },
+    ]) {
       const leaves: Array<{ path: string; value: string }> = [];
       collectStrings(step, "", leaves);
       for (const leaf of leaves) {

@@ -291,3 +291,101 @@ acquisition/artifact ports. Native attach/launch and CLI daemons are separate.
 The [SauceDemo example](../examples/README.md#saucedemo-public-demo) provides a
 public UI checkout fixture; local and hosted validation gates are recorded
 separately in the companion/browser-pilot validation reports.
+
+## Shared named owner
+
+`--session work` uses BP's `borrowNamedSession` API with recovery disabled. `--target-id`
+selects an exact existing page. Handback drains operations, commits the selected target,
+invalidates saved references, and returns a binding revision and observation epoch.
+Flightplan verifies the receipt and records `session_handback` in the summary.
+Missing APIs or uncertain handback fail without opening a replacement connection.
+
+Strict hosts install policy through BP's `startOwnerActionDaemon({ wsUrl, policy })` and
+inject `nativeOwnerActionDriverFactory`. The driver uses `borrowOwnerActions`, typed reads,
+and owner-issued preparation/approval handles. Raw Page/CDP/evaluation access is unavailable.
+A compatibility borrower has raw authority and does not enforce owner policy.
+
+## Action guards
+
+```toml
+[config.guard]
+mode = "shadow"
+policy = "Allow reading orders. Deny refunds, payments, and deletions."
+policy_version = "orders-v1"
+api_key_env = "TYPESAFE_API_KEY"
+images = "deny"
+timeout_ms = 3000
+max_evaluations = 100
+```
+
+`shadow` evaluates actions with a separate budget but cannot veto them, including on timeout or
+observer failure. `enforce` blocks deny and unknown verdicts before input. It requires a trusted
+dispatcher and negotiated assurance; missing support fails with `atomic_dispatch_unavailable`
+or `dispatch_assurance_unavailable`. Start in shadow to evaluate a policy against your own fixtures.
+
+For BP native mouse/keyboard input, the trusted host must explicitly accept its guarantee:
+
+```ts
+import { nativeOwnerActionDriverFactory } from '@svilupp/flightplan';
+
+const driverFactory = nativeOwnerActionDriverFactory({
+  requiredAssurance: 'owner-serialized-prechecked-native',
+});
+```
+
+Set `browser.dialog = "fail"`. Unsupported actions, screenshots, raw evaluation and learned
+extraction fail explicitly; bounded explicit extraction uses the typed read port. The default
+`renderer-same-task-dom` requirement refuses native-only owners. Native prechecks retain the
+prepared target and verify evidence, but page JavaScript can change before input; they do not
+provide renderer atomicity or prove a backend transaction.
+
+Local guards can veto owner-prepared actions but cannot override installed root policy.
+Custom `RunOptions.actionGuard` hosts provide `identify`, `dispatch`, `dispatchAssurance` and
+`requiredAssurance`. They must bind approvals to the current document, target, resource, owner
+epoch and grant; revalidate those identities; reject changed targets; preserve dispatch receipts;
+and never repeat uncertain mutations. Model approval cannot add capabilities.
+
+JEV independently checks policy, intent and evidence sufficiency, requiring 0.99 for each.
+Malformed or unavailable answers return unknown. Images require verified safe, fresh evidence
+bound to the proposal; native configured capture is unavailable. Page text is untrusted evidence.
+`trace.jsonl` records bounded `guard_decision` events without payloads, DOM, images or credentials.
+
+## Yield to a host task
+
+```toml
+[[steps]]
+id = "find_order"
+do = "yield"
+task = "Open order D123 without submitting changes."
+timeout_ms = 10000
+
+[[steps.assert]]
+type = "url"
+url = "https://admin.example.com/orders/D123"
+match = "origin_path"
+```
+
+A yield step requires an injected `RunOptions.yieldHost` and at least one return assertion.
+`createNamedSessionYieldHost` supports same-process BP borrowing: release Flightplan control,
+acquire host control, perform the task, verify handback, acquire a fresh Flightplan grant,
+refresh observations, then check return assertions. Competing controllers may receive busy;
+the helper does not reserve transfer priority. TOML does not launch an agent.
+
+Custom `YieldHost` implementations supply checkpoint storage, caller/input binding, owner/page
+identity, exclusive lease transfer, the bounded callback, fresh observations and return checks.
+Release must revoke queued commands and drain in-flight input. The callback receives an abort
+signal and deadline; timeout or cancellation requests revocation and never resumes prior actions.
+
+`resumeYield` atomically claims an opaque checkpoint from `yielded` to `reacquiring`.
+Wrong bindings, expired or duplicate claims, stale grants, changed owner/page identity and failed
+return checks stop continuation. Checkpoints retain dispatch receipts without raw secrets.
+`memoryCheckpointStore` supports one live process; durable hosts supply an atomic `CheckpointStore`.
+Neither helper restores a crashed runner's program counter or provides CLI restart/resume.
+
+## Package compatibility
+
+Flightplan 0.5 requires BP `^0.8.0`, including its named borrowing and typed owner APIs.
+Test a prerelease build with `bun run test:package /absolute/path/browser-pilot-0.8.0.tgz`.
+
+Release BP first, update the consumer lock from the registry, rerun packed API/runtime and
+named-owner fixtures, then release Flightplan.

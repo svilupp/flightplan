@@ -13,7 +13,22 @@
 import { DEFAULT_BASE_DIR, type RunSummary } from "../artifacts/index.ts";
 import type { Config, ResolvedConfig } from "../config/index.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
+import {
+  type NamedSessionBorrower,
+  namedSessionDriverFactory,
+  nativeNamedSessionBorrower,
+} from "../driver/named-session.ts";
 import { loadFlowFile } from "../flow/index.ts";
+import {
+  InputBindingError,
+  type InputValues,
+  inputMetadata,
+  parseInputJson,
+} from "../flow/input.ts";
+import { resolveInputs } from "../flow/template.ts";
+import type { FlowFile } from "../flow/types.ts";
+import { checkFlow } from "../inspection/check.ts";
+import { InvocationError } from "../invocation/index.ts";
 import { formatHuman, formatJson, lintPaths } from "../lint/index.ts";
 import { resolve } from "../paths.ts";
 import {
@@ -24,6 +39,7 @@ import {
 } from "../runner/index.ts";
 import type { AiRuntimeFactory } from "../runner/types.ts";
 import type { FileSystemPort } from "../runtime.ts";
+import { executeCatalogue } from "./catalogue.ts";
 
 /** Shared process exit codes across the native CLI and the shell entry. */
 export const EXIT = {
@@ -35,11 +51,28 @@ export const EXIT = {
   cancelled: 130,
 } as const;
 
-export const COMMANDS = ["lint", "run", "explain", "report", "sweep", "migrate-effects"] as const;
+export const COMMANDS = [
+  "lint",
+  "run",
+  "explain",
+  "report",
+  "sweep",
+  "migrate-effects",
+  "config",
+  "list",
+  "describe",
+  "check",
+] as const;
 export type Command = (typeof COMMANDS)[number];
 
 /** Parsed, validated command line. */
 export interface ParsedArgs {
+  inputs: string[];
+  inputEnvs: string[];
+  inputsFile: string | null;
+  idempotencyKey: string | null;
+  session: string | null;
+  targetId: string | null;
   /** The subcommand, or null when none was given (e.g. `--help` / `--version` only). */
   command: Command | null;
   /** Positional arguments after the command (e.g. the flow/run file path). */
@@ -94,7 +127,26 @@ export function validateCommandArgs(args: ParsedArgs): void {
 
   const allowed = {
     lint: new Set(["json"]),
-    run: new Set(["json", "frozen", "noLockWrite", "lock", "out", "from", "to", "startTier"]),
+    config: new Set(["json"]),
+    list: new Set(["json"]),
+    describe: new Set(["json"]),
+    check: new Set(["json", "inputs", "inputEnvs", "inputsFile", "session", "targetId"]),
+    run: new Set([
+      "json",
+      "frozen",
+      "noLockWrite",
+      "lock",
+      "out",
+      "from",
+      "to",
+      "startTier",
+      "inputs",
+      "inputEnvs",
+      "inputsFile",
+      "idempotencyKey",
+      "session",
+      "targetId",
+    ]),
     explain: new Set(["json"]),
     report: new Set(["json"]),
     sweep: new Set(["frozen", "noLockWrite", "lock", "out", "trials", "compareBaseline"]),
@@ -102,6 +154,12 @@ export function validateCommandArgs(args: ParsedArgs): void {
   }[args.command];
   const values: Array<[string, boolean]> = [
     ["--json", args.json],
+    ["--inputs", args.inputs.length > 0],
+    ["--input-envs", args.inputEnvs.length > 0],
+    ["--inputs-file", args.inputsFile !== null],
+    ["--idempotency-key", args.idempotencyKey !== null],
+    ["--session", args.session !== null],
+    ["--target-id", args.targetId !== null],
     ["--frozen", args.frozen],
     ["--no-lock-write", args.noLockWrite],
     ["--lock", args.lock !== null],
@@ -117,10 +175,13 @@ export function validateCommandArgs(args: ParsedArgs): void {
     throw new CliUsageError(`${args.command}: flag ${unsupported[0]} is not supported`);
   }
 
-  const maxPositionals = args.command === "lint" || args.command === "report" ? Infinity : 1;
+  if (args.targetId !== null && args.session === null)
+    throw new CliUsageError("--target-id requires --session");
+  const maxPositionals =
+    args.command === "lint" || args.command === "report" || args.command === "list" ? Infinity : 1;
   if (args.positionals.length === 0) {
     throw new CliUsageError(
-      `${args.command}: expected ${args.command === "lint" || args.command === "report" ? "at least one" : "one"} path argument`,
+      `${args.command}: expected ${args.command === "lint" || args.command === "report" || args.command === "list" ? "at least one" : "one"} path argument`,
     );
   }
   if (args.positionals.length > maxPositionals) {
@@ -150,6 +211,12 @@ function flagField(name: string): string {
  */
 export function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
+    inputs: [],
+    inputEnvs: [],
+    inputsFile: null,
+    idempotencyKey: null,
+    session: null,
+    targetId: null,
     command: null,
     positionals: [],
     json: false,
@@ -189,6 +256,34 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
     if (arg === "--no-lock-write") {
       parsed.noLockWrite = true;
+      continue;
+    }
+    if (arg === "--session" || arg === "--target-id") {
+      const value = argv[++i];
+      if (!value?.trim() || value.startsWith("--"))
+        throw new CliUsageError(`${arg} requires an identifier`);
+      if (arg === "--session") parsed.session = value;
+      else parsed.targetId = value;
+      continue;
+    }
+    if (arg === "--idempotency-key") {
+      const value = argv[++i];
+      if (!value?.trim() || value.startsWith("--"))
+        throw new CliUsageError("--idempotency-key requires an identifier");
+      if (parsed.idempotencyKey !== null)
+        throw new CliUsageError("--idempotency-key may only be specified once");
+      parsed.idempotencyKey = value;
+      continue;
+    }
+    if (arg === "--input" || arg === "--input-env" || arg === "--inputs-file") {
+      const value = argv[++i];
+      if (value === undefined || value.startsWith("--"))
+        throw new CliUsageError(`${arg} requires a value`);
+      if (arg === "--inputs-file") {
+        if (parsed.inputsFile !== null)
+          throw new CliUsageError("--inputs-file may only be specified once");
+        parsed.inputsFile = value;
+      } else (arg === "--input" ? parsed.inputs : parsed.inputEnvs).push(value);
       continue;
     }
     if (arg === "--lock") {
@@ -266,7 +361,11 @@ Usage:
 
 Commands:
   lint <path...>        Validate flow/config files, directories, or globs
+  config <flow.toml>    Inspect effective JEV policy offline as JSON
   run <flow.toml>       Execute a flow against a browser
+  list <path...>       List recipe metadata without browser or model access
+  describe <flow.toml> Describe one recipe as JSON
+  check <flow.toml>    Inspect current entry state without dispatch; later states unchecked
   explain <run-dir|run.jsonl>
                         Render a human-readable failure diagnosis for a run
   report <run-dir>...   Aggregate one or many runs into a campaign metrics report
@@ -289,7 +388,13 @@ Quick start:
 From this repository, prefix commands with \`bun run flightplan\`.
 
 Flags:
-  --json                lint/run/explain/report/migrate-effects: emit machine-readable JSON
+  --json                Emit machine-readable JSON
+  --session <name>       run: borrow a fenced BP-owned named session
+  --target-id <id>       run: select one exact existing target in --session
+  --idempotency-key <id> run: atomically claim one invocation; duplicates never redispatch
+  --input <name=value>  run: override a declared scalar input
+  --inputs-file <path> run: JSON object of typed input values
+  --input-env <n=ENV>  run: bind a declared secret through an env reference
   --frozen              run/sweep: heal at runtime, report drift, do not persist
   --no-lock-write       run/sweep: suppress all lock writes
   --lock <path>         run/sweep: override the lock file path
@@ -304,6 +409,7 @@ Flags:
   --version             Show version
 
 Examples:
+  flightplan config path/to/flow.toml --json  Inspect effective JEV policy and runtime requirements
   flightplan lint path/to/flow.toml       Validate a flow file
   flightplan run path/to/flow.toml        Execute a flow against a browser
   flightplan run path/to/flow.toml --json Execute a flow, emit run-summary JSON
@@ -313,6 +419,15 @@ Examples:
                                           Sweep every flow, tiered + baseline, into a campaign dir
   flightplan migrate-effects path/to/flow.toml
                                           Review effect-policy suggestions (no files changed)
+
+JEV configuration:
+  [config.ai] classifier selects auto, heuristic, llm, or jev.
+  [config.ai.jev] profile selects text, visual, or shadow; visual requires images = "allow".
+  config reports policy, capabilities, budgets, provenance, and credential availability;
+  it makes no model or browser calls and never prints credential values.
+  JEV uses TYPESAFE_API_KEY (JEV_API_KEY alias); jev_api_key_env selects a custom env var
+  and disables the alias. Image strategies are experimental; Box/crop are evaluation-only.
+  Schema: docs/schemas/config.schema.json. See README.md for profile behavior and limits.
 
 WebMCP is page-scoped and experimental: use Chrome 149+ with the required origin-trial/testing
 configuration and verify availability with \`bp webmcp status\`. See README.md and
@@ -365,6 +480,8 @@ export interface CommandIO {
   stderr: (text: string) => void;
   /** Browser driver factory. Defaults to the real `BrowserPilotDriver` when omitted. */
   driverFactory?: DriverFactory;
+  invocationStore?: import("../invocation/index.ts").InvocationStore;
+  namedSessionBorrower?: NamedSessionBorrower;
   /** AI runtime factory. Omitted → AI stays off unless an API key is present in `env`. */
   aiRuntimeFactory?: AiRuntimeFactory;
   /** Cancellation/deadline signal threaded straight into `RunOptions.signal`. */
@@ -373,6 +490,114 @@ export interface CommandIO {
   timeoutMs?: number;
   /** Version string shown by `--version` in hosts that surface it (the shell entry). */
   version?: string;
+}
+
+async function readCliInputs(
+  args: ParsedArgs,
+  flow: FlowFile,
+  io: CommandIO,
+): Promise<InputValues | undefined> {
+  let inputs: InputValues | undefined;
+  if (args.inputs.length || args.inputEnvs.length || args.inputsFile !== null) {
+    inputs = {};
+    if (args.inputsFile !== null) {
+      let text: string;
+      try {
+        text = await io.fs.readTextFile(resolve(io.cwd, args.inputsFile));
+      } catch {
+        throw new CliUsageError("inputs-file could not be read");
+      }
+      inputs = parseInputJson(text);
+    }
+    const seen = new Set<string>();
+    const issues: Array<{ code: string; input: string; message: string }> = [];
+    for (const [assignments, secret] of [
+      [args.inputs, false],
+      [args.inputEnvs, true],
+    ] as const) {
+      for (const assignment of assignments) {
+        const equals = assignment.indexOf("=");
+        if (equals < 1) {
+          issues.push({
+            code: "INPUT_ASSIGNMENT",
+            input: "<assignment>",
+            message: "Expected name=value.",
+          });
+          continue;
+        }
+        const name = assignment.slice(0, equals);
+        const text = assignment.slice(equals + 1);
+        if (seen.has(name)) {
+          issues.push({
+            code: "INPUT_DUPLICATE",
+            input: name,
+            message: "Input is supplied more than once on the command line.",
+          });
+          continue;
+        }
+        seen.add(name);
+        const declaration = flow.inputs?.[name];
+        const meta = declaration === undefined ? undefined : inputMetadata(declaration);
+        if (secret) {
+          inputs[name] = { from_env: text };
+          continue;
+        }
+        if (meta?.secret) {
+          issues.push({
+            code: "INPUT_SECRET_REFERENCE",
+            input: name,
+            message: "Use --input-env for declared secrets.",
+          });
+          continue;
+        }
+        if (meta?.type === "number") {
+          if (!text.trim() || !Number.isFinite(Number(text))) {
+            issues.push({ code: "INPUT_TYPE", input: name, message: "Expected number." });
+            continue;
+          }
+          inputs[name] = Number(text);
+        } else if (meta?.type === "boolean") {
+          if (text !== "true" && text !== "false") {
+            issues.push({ code: "INPUT_TYPE", input: name, message: "Expected true or false." });
+            continue;
+          }
+          inputs[name] = text === "true";
+        } else inputs[name] = text;
+      }
+    }
+    if (issues.length) {
+      try {
+        resolveInputs(flow.inputs, undefined, io.env, {}, inputs);
+      } catch (error) {
+        if (error instanceof InputBindingError) issues.push(...error.issues);
+      }
+      throw new InputBindingError(issues);
+    }
+  }
+  resolveInputs(flow.inputs, undefined, io.env, {}, inputs);
+  return inputs;
+}
+
+function inputError(error: unknown, args: ParsedArgs, io: CommandIO): boolean {
+  if (!(error instanceof InputBindingError)) return false;
+  if (args.json)
+    io.stdout(
+      JSON.stringify(
+        { diagnostics: error.issues.map((issue) => ({ ...issue, severity: "error" })) },
+        null,
+        2,
+      ),
+    );
+  else io.stderr(error.message);
+  return true;
+}
+
+function commandError(argv: string[], io: CommandIO, code: string, message: string): void {
+  if (argv.includes("--json"))
+    io.stdout(
+      JSON.stringify({ ok: false, diagnostics: [{ code, severity: "error", message }] }, null, 2),
+    );
+  else io.stderr(message);
 }
 
 /**
@@ -390,7 +615,12 @@ export async function executeLint(argv: string[], io: CommandIO): Promise<{ exit
     validateCommandArgs(args);
   } catch (err) {
     if (err instanceof CliUsageError) {
-      io.stderr(err.message);
+      commandError(
+        argv,
+        io,
+        "CLI_USAGE",
+        argv.includes("--json") ? "Invalid command arguments." : err.message,
+      );
       return { exitCode: err.exitCode };
     }
     throw err;
@@ -402,12 +632,22 @@ export async function executeLint(argv: string[], io: CommandIO): Promise<{ exit
   } catch (err) {
     // IO/expansion failure (e.g. an unreadable glob root) → usage/IO error.
     const detail = err instanceof Error ? err.message : String(err);
-    io.stderr(`flightplan lint: ${detail}`);
+    commandError(
+      argv,
+      io,
+      "LINT_IO",
+      argv.includes("--json") ? "Lint paths could not be read." : `flightplan lint: ${detail}`,
+    );
     return { exitCode: EXIT.usage };
   }
 
   if (multi.results.length === 0) {
-    io.stderr("flightplan lint: no TOML files matched the given path(s).");
+    commandError(
+      argv,
+      io,
+      "LINT_NO_FILES",
+      "flightplan lint: no TOML files matched the given path(s).",
+    );
     return { exitCode: EXIT.usage };
   }
 
@@ -435,7 +675,12 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     validateCommandArgs(args);
   } catch (err) {
     if (err instanceof CliUsageError) {
-      io.stderr(err.message);
+      commandError(
+        argv,
+        io,
+        "CLI_USAGE",
+        argv.includes("--json") ? "Invalid command arguments." : err.message,
+      );
       return { exitCode: err.exitCode };
     }
     throw err;
@@ -455,16 +700,37 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
   // so the entry flow's [connect] (or the attach-localhost:9222 default) is authoritative and
   // imported flows' [connect] blocks are intentionally ignored.
   let config: ResolvedConfig;
+  let inputs: InputValues | undefined;
   try {
     const loaded = await loadFlowFile(flowPath, io.fs);
+    inputs = await readCliInputs(args, loaded.flow, io);
     const layers: Config[] = [];
     if (loaded.flow.config) layers.push(loaded.flow.config);
     // The flow-local [run] budgets override config.run (replaced wholesale by resolveConfig).
     if (loaded.flow.run) layers.push({ run: loaded.flow.run });
+    if (args.session !== null)
+      layers.push({
+        connect: {
+          mode: "session",
+          session_ref: args.session,
+          target_policy: args.targetId !== null ? "exact" : "selected",
+          ...(args.targetId !== null ? { target_id: args.targetId } : {}),
+        },
+      });
     config = resolveConfigWithDefaults(layers);
   } catch (err) {
+    if (inputError(err, args, io)) return { exitCode: EXIT.usage };
     const detail = err instanceof Error ? err.message : String(err);
-    io.stderr(`flightplan run: ${detail}`);
+    commandError(
+      argv,
+      io,
+      err instanceof InvocationError ? err.code : "RUN_UNAVAILABLE",
+      argv.includes("--json")
+        ? err instanceof InvocationError
+          ? err.code
+          : "Recipe could not be loaded or executed."
+        : `flightplan run: ${detail}`,
+    );
     return { exitCode: EXIT.usage };
   }
 
@@ -476,6 +742,11 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     env: io.env,
     out: resolve(io.cwd, args.out ?? DEFAULT_BASE_DIR),
   };
+  if (inputs !== undefined) runOpts.inputs = inputs;
+  if (args.idempotencyKey !== null) {
+    runOpts.idempotencyKey = args.idempotencyKey;
+    if (io.invocationStore) runOpts.invocationStore = io.invocationStore;
+  }
   if (args.frozen) runOpts.frozen = true;
   if (args.noLockWrite) runOpts.noLockWrite = true;
   if (args.lock !== null) runOpts.lockPath = resolve(io.cwd, args.lock);
@@ -483,7 +754,18 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
   if (args.to !== null) runOpts.toStep = args.to;
   if (args.json) runOpts.json = true;
   if (args.startTier !== null) runOpts.startTier = args.startTier;
-  if (io.driverFactory !== undefined) runOpts.driverFactory = io.driverFactory;
+  const namedSession =
+    args.session !== null
+      ? namedSessionDriverFactory(io.namedSessionBorrower ?? nativeNamedSessionBorrower, {
+          actionTimeoutMs: config.timeouts.action_ms,
+          navTimeoutMs: config.timeouts.nav_ms,
+          providerEnv: io.env,
+        })
+      : undefined;
+  if (namedSession) {
+    runOpts.driverFactory = namedSession.factory;
+    runOpts.sessionHandback = namedSession.handback;
+  } else if (io.driverFactory !== undefined) runOpts.driverFactory = io.driverFactory;
   if (io.aiRuntimeFactory !== undefined) runOpts.aiRuntimeFactory = io.aiRuntimeFactory;
   if (io.signal !== undefined) runOpts.signal = io.signal;
   if (io.timeoutMs !== undefined) runOpts.timeoutMs = io.timeoutMs;
@@ -494,12 +776,28 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     result = await runFlow(runOpts);
   } catch (err) {
     if (err instanceof RunInterruptedError) {
-      io.stderr(`flightplan run: ${err.message}`);
+      commandError(argv, io, err.code, `flightplan run: ${err.message}`);
       return { exitCode: err.code === "RUN_TIMEOUT" ? EXIT.deadline : EXIT.cancelled };
     }
+    if (err && typeof err === "object" && "runResult" in err) {
+      const preserved = err.runResult as Awaited<ReturnType<typeof runFlow>>;
+      if (args.json && preserved?.summary) io.stdout(JSON.stringify(preserved.summary, null, 2));
+      io.stderr("flightplan run: driver cleanup or session handback was not confirmed");
+      return { exitCode: EXIT.usage };
+    }
     // A throw escaping runFlow is an infra error (runFlow itself never throws for flow failures).
+    if (inputError(err, args, io)) return { exitCode: EXIT.usage };
     const detail = err instanceof Error ? err.message : String(err);
-    io.stderr(`flightplan run: ${detail}`);
+    commandError(
+      argv,
+      io,
+      err instanceof InvocationError ? err.code : "RUN_UNAVAILABLE",
+      argv.includes("--json")
+        ? err instanceof InvocationError
+          ? err.code
+          : "Recipe could not be loaded or executed."
+        : `flightplan run: ${detail}`,
+    );
     return { exitCode: EXIT.usage };
   }
 
@@ -512,4 +810,98 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     }
   }
   return { exitCode: result.exitCode };
+}
+
+/** Offline catalogue command shared by native and portable hosts. */
+export async function executeDiscovery(
+  argv: string[],
+  io: CommandIO,
+): Promise<{ exitCode: number }> {
+  try {
+    const args = parseArgs(argv);
+    validateCommandArgs(args);
+    const result = await executeCatalogue(args.positionals, io, args.command === "describe");
+    io.stdout(JSON.stringify(result, null, 2));
+    return { exitCode: result.diagnostics.length ? EXIT.failed : EXIT.ok };
+  } catch {
+    commandError(
+      argv,
+      io,
+      "DISCOVERY_UNAVAILABLE",
+      "flightplan discovery: invalid arguments or unreadable path",
+    );
+    return { exitCode: EXIT.usage };
+  }
+}
+
+/** Current-page inspection. Explicit named borrowing is required for browser observations. */
+export async function executeCheck(argv: string[], io: CommandIO): Promise<{ exitCode: number }> {
+  let driver: import("../driver/types.ts").Driver | undefined;
+  try {
+    const args = parseArgs(argv);
+    validateCommandArgs(args);
+    const flowPath = resolve(io.cwd, args.positionals[0]!);
+    const loaded = await loadFlowFile(flowPath, io.fs);
+    const inputs = await readCliInputs(args, loaded.flow, io);
+    // Binding and dependency validation precede connection acquisition.
+    const initial = await checkFlow({ flowPath, inputs, env: io.env, fs: io.fs });
+    if (
+      initial.diagnostics.some((diagnostic) => diagnostic.severity === "error") ||
+      initial.items.some((item) => item.status === "failed")
+    ) {
+      io.stdout(JSON.stringify(initial, null, 2));
+      return { exitCode: EXIT.failed };
+    }
+    if (args.session !== null) {
+      const connection = {
+        mode: "session" as const,
+        session_ref: args.session,
+        target_policy: args.targetId ? ("exact" as const) : ("selected" as const),
+        ...(args.targetId ? { target_id: args.targetId } : {}),
+      };
+      const adapter = namedSessionDriverFactory(
+        io.namedSessionBorrower ?? nativeNamedSessionBorrower,
+        { providerEnv: io.env },
+      );
+      driver = adapter.factory(connection, { signal: io.signal ?? new AbortController().signal });
+      await driver.connect(connection);
+    }
+    const report = driver
+      ? await checkFlow({ flowPath, inputs, env: io.env, fs: io.fs, driver })
+      : initial;
+    if (driver?.teardown) {
+      const acquired = driver;
+      driver = undefined;
+      await acquired.teardown();
+    }
+    io.stdout(JSON.stringify(report, null, 2));
+    return { exitCode: report.ok ? EXIT.ok : EXIT.failed };
+  } catch (error) {
+    if (error instanceof InputBindingError && argv.includes("--json")) {
+      io.stdout(
+        JSON.stringify(
+          {
+            ok: false,
+            diagnostics: error.issues.map((issue) => ({ ...issue, severity: "error" })),
+          },
+          null,
+          2,
+        ),
+      );
+    } else
+      commandError(
+        argv,
+        io,
+        "CHECK_UNAVAILABLE",
+        error instanceof InputBindingError
+          ? error.message
+          : "flightplan check: inspection unavailable; no action was dispatched",
+      );
+    return { exitCode: EXIT.usage };
+  } finally {
+    if (driver?.teardown)
+      await driver
+        .teardown()
+        .catch(() => io.stderr("flightplan check: session cleanup was not confirmed"));
+  }
 }

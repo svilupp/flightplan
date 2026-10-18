@@ -30,6 +30,22 @@ try {
       stdio: ["ignore", "pipe", "inherit"],
     }),
   );
+  const packagedPaths = new Set(packed[0].files.map((file) => file.path));
+  assert.ok(!packagedPaths.has("FINAL_REVIEW.md"));
+  assert.ok(!packagedPaths.has("docs/CALLABLE_RECIPES_IMPLEMENTATION_PLAN.md"));
+  assert.ok(!packagedPaths.has("docs/CALLABLE_RECIPES_VALIDATION.md"));
+  for (const path of ["docs/CALLABLE_RECIPES.md", "docs/BROWSER_PILOT_INTEGRATION.md"]) {
+    assert.ok(packagedPaths.has(path), `Missing maintained guide: ${path}`);
+  }
+  assert.ok(![...packagedPaths].some((path) => path.startsWith("docs/experiments/")));
+  for (const path of [
+    "docs/JEV.md",
+    "docs/schemas/config.schema.json",
+    "docs/skills/authoring-flightplan-workflows/SKILL.md",
+    "docs/skills/building-flightplan-automations/SKILL.md",
+  ]) {
+    assert.ok(packagedPaths.has(path), `Missing published documentation: ${path}`);
+  }
   const modules = join(temp, "node_modules");
   const flightplan = join(modules, "@svilupp", "flightplan");
   mkdirSync(flightplan, { recursive: true });
@@ -66,7 +82,19 @@ try {
   writeFileSync(
     join(temp, "consumer.mts"),
     `
-import type { FileSystemPort, RunOptions } from "@svilupp/flightplan";
+import { nativeOwnerActionDriverFactory, createNamedSessionYieldHost, type FileSystemPort, type RunOptions, type NamedSessionBorrow, type BorrowedOwnerActions, type OwnerActionPort } from "@svilupp/flightplan";
+const ownerFactory = nativeOwnerActionDriverFactory({ requiredAssurance: "owner-serialized-prechecked-native" });
+void ownerFactory; void createNamedSessionYieldHost;
+${
+  candidate
+    ? `import type {NamedSessionBorrow as BpLease, BorrowedOwnerActions as BpOwner} from "browser-pilot/adapters/node";
+import type {OwnerActionPort as BpPort} from "browser-pilot/core";
+type Expect<T extends true> = T;
+type NamedFits = Expect<BpLease extends NamedSessionBorrow ? true : false>;
+type StrictFits = Expect<BpOwner extends BorrowedOwnerActions ? true : false>;
+type PortFits = Expect<BpPort extends OwnerActionPort ? true : false>;`
+    : ""
+}
 const fs: FileSystemPort = {
   async readTextFile() { return ""; }, async writeTextFile() {}, async appendTextFile() {},
   async fileExists() { return false; }, async mkdir() {}, async writeBinaryFile(_path, bytes) {

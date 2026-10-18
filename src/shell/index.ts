@@ -1,5 +1,13 @@
 // Host-independent shell entry, sharing lint/run behavior with the native CLI.
-import { type CommandIO, EXIT, executeLint, executeRun, USAGE } from "../cli/commands.ts";
+import {
+  type CommandIO,
+  EXIT,
+  executeCheck,
+  executeDiscovery,
+  executeLint,
+  executeRun,
+  USAGE,
+} from "../cli/commands.ts";
 import type { AiRuntimeFactory, DriverFactory } from "../runner/types.ts";
 import type { FileSystemPort } from "../runtime.ts";
 
@@ -19,9 +27,17 @@ export interface FlightplanShellPorts {
   env?: Record<string, string | undefined>;
   /** Required for run. The host owns browser connection and session policy. */
   driverFactory?: DriverFactory;
+  invocationStore?: import("../invocation/index.ts").InvocationStore;
+  namedSessionBorrower?: import("../driver/named-session.ts").NamedSessionBorrower;
   aiRuntimeFactory?: AiRuntimeFactory;
   /** Both commands are enabled unless explicitly disabled. */
-  capabilities?: { lint?: boolean; run?: boolean };
+  capabilities?: {
+    lint?: boolean;
+    run?: boolean;
+    list?: boolean;
+    describe?: boolean;
+    check?: boolean;
+  };
   /** Maximum UTF-8 bytes per output stream. Defaults to 1 MiB; excess output fails. */
   limits?: { maxOutputBytes?: number };
   version?: string;
@@ -37,7 +53,7 @@ export interface FlightplanShellResult {
 const HELP_TEXT = `${USAGE}
 
 Shell entry notes:
-  Only "lint" and "run" are available through the "flightplan" shell command.
+  Available commands: lint, run, list, describe, check.
   Native-only commands: explain, report, sweep, migrate-effects.
 `;
 
@@ -54,7 +70,13 @@ async function dispatch(
   }
 
   const command = args[0];
-  if (command !== "lint" && command !== "run") {
+  if (
+    command !== "lint" &&
+    command !== "run" &&
+    command !== "list" &&
+    command !== "describe" &&
+    command !== "check"
+  ) {
     return {
       stdout: "",
       stderr: `flightplan: unknown subcommand '${command}'. Run 'flightplan --help' to list commands.\n`,
@@ -68,7 +90,11 @@ async function dispatch(
       exitCode: EXIT.usage,
     };
   }
-  if (command === "run" && ports.driverFactory === undefined) {
+  if (
+    command === "run" &&
+    ports.driverFactory === undefined &&
+    ports.namedSessionBorrower === undefined
+  ) {
     return {
       stdout: "",
       stderr:
@@ -88,9 +114,18 @@ async function dispatch(
   };
   if (context.signal !== undefined) io.signal = context.signal;
   if (ports.driverFactory !== undefined) io.driverFactory = ports.driverFactory;
+  if (ports.invocationStore !== undefined) io.invocationStore = ports.invocationStore;
+  if (ports.namedSessionBorrower !== undefined)
+    io.namedSessionBorrower = ports.namedSessionBorrower;
   if (ports.aiRuntimeFactory !== undefined) io.aiRuntimeFactory = ports.aiRuntimeFactory;
   if (ports.timeoutMs !== undefined) io.timeoutMs = ports.timeoutMs;
-  const { exitCode } = await (command === "lint" ? executeLint(args, io) : executeRun(args, io));
+  const { exitCode } = await (command === "lint"
+    ? executeLint(args, io)
+    : command === "run"
+      ? executeRun(args, io)
+      : command === "check"
+        ? executeCheck(args, io)
+        : executeDiscovery(args, io));
   return {
     stdout: stdout.join("\n") + (stdout.length ? "\n" : ""),
     stderr: stderr.join("\n") + (stderr.length ? "\n" : ""),

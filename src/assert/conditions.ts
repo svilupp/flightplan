@@ -620,11 +620,34 @@ export function result(
   equals: string | number | boolean | null | undefined,
   exists: boolean | undefined,
   opts: ConditionOpts,
+  numeric?: {
+    gt?: number | string;
+    gte?: number | string;
+    lt?: number | string;
+    lte?: number | string;
+  },
 ): Promise<AssertionResult> {
   const target = path ?? ".";
   const observed = resultAtPath(opts.actionResult, path);
-  const pass =
-    equals !== undefined
+  const numericEntry = Object.entries(numeric ?? {}).find(
+    ([key, v]) => ["gt", "gte", "lt", "lte"].includes(key) && v !== undefined,
+  );
+  const numericPass =
+    numericEntry !== undefined &&
+    typeof numericEntry[1] === "number" &&
+    Number.isFinite(numericEntry[1]) &&
+    typeof observed.value === "number" &&
+    Number.isFinite(observed.value) &&
+    (numericEntry[0] === "gt"
+      ? observed.value > numericEntry[1]
+      : numericEntry[0] === "gte"
+        ? observed.value >= numericEntry[1]
+        : numericEntry[0] === "lt"
+          ? observed.value < numericEntry[1]
+          : observed.value <= numericEntry[1]);
+  const pass = numericEntry
+    ? numericPass
+    : equals !== undefined
       ? observed.exists && observed.value === equals
       : observed.exists === (exists === true);
   const message = pass
@@ -778,7 +801,7 @@ export function evaluateDeterministic(
         assertion.from ?? assertion.capture,
       );
     case "result":
-      return result(assertion.path, assertion.equals, assertion.exists, opts);
+      return result(assertion.path, assertion.equals, assertion.exists, opts, assertion);
     case "ai_judge":
       throw new Error(
         "ai_judge is not a deterministic assertion (route via the engine to the Phase-4 stub)",

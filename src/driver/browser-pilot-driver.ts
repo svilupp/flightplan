@@ -31,7 +31,9 @@ import {
   type Step,
   TargetNotFoundError,
 } from "browser-pilot/core";
+import { type JevVisualEvidence, validateVisualEvidence } from "../ai/vision-evidence.ts";
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
+import { createRedactor, type Redactor } from "../redaction/index.ts";
 import { ambientEnv } from "../runtime.ts";
 import {
   AuthStateUnavailableError,
@@ -252,6 +254,16 @@ function acquireWithinContext(
  * page ops → `teardown()`.
  */
 export class BrowserPilotDriver implements Driver {
+  private readonly jevEvidenceChecks = new WeakMap<JevVisualEvidence, () => Promise<boolean>>();
+
+  async validateJevEvidence(evidence: JevVisualEvidence): Promise<boolean> {
+    try {
+      return (await this.jevEvidenceChecks.get(evidence)?.()) ?? false;
+    } catch {
+      return false;
+    }
+  }
+
   private dialogPolicy: DialogPolicy;
   private dialogFailure: string | undefined;
   /**
@@ -834,6 +846,45 @@ export class BrowserPilotDriver implements Driver {
     this.frameSelector = undefined;
   }
 
+  async extract(spec: import("./extract.ts").ExtractionSpec): Promise<unknown> {
+    const { extractionExpression, validateExtraction } = await import("./extract.ts");
+    const before = await this.pageState();
+    const documentBefore = await this.evaluateExpression(
+      "({ url: location.href, timeOrigin: performance.timeOrigin })",
+    );
+    const result = await this.evaluateExpression(extractionExpression(spec));
+    const documentAfter = await this.evaluateExpression(
+      "({ url: location.href, timeOrigin: performance.timeOrigin })",
+    );
+    const after = await this.pageState();
+    if (
+      JSON.stringify(before) !== JSON.stringify(after) ||
+      JSON.stringify(documentBefore) !== JSON.stringify(documentAfter)
+    )
+      throw new Error("extract page identity changed");
+    if (result && typeof result === "object" && "__flightplanExtractionError" in result)
+      throw new Error(String(result.__flightplanExtractionError));
+    validateExtraction(result, spec);
+    return result;
+  }
+  async documentIdentity(): Promise<string> {
+    return JSON.stringify({
+      page: await this.pageState(),
+      frame: this.currentFrame(),
+      document: await this.evaluateExpression(
+        "({ url: location.href, timeOrigin: performance.timeOrigin })",
+      ),
+    });
+  }
+  async extractionCandidates(
+    selector: string,
+  ): Promise<import("./extract.ts").ExtractionCandidate[]> {
+    const { extractionCandidatesExpression } = await import("./extract.ts");
+    return (await this.evaluateExpression(
+      extractionCandidatesExpression(selector),
+    )) as import("./extract.ts").ExtractionCandidate[];
+  }
+
   async currentUrl(): Promise<string> {
     return this.requirePage().url();
   }
@@ -1299,6 +1350,143 @@ export class BrowserPilotDriver implements Driver {
     return page.evaluate(expression);
   }
 
+  /** Conservative DOM-only capture policy. Opaque pixels and secret-bearing runs abstain. */
+  async captureJevEvidence(opts: {
+    refs: string[];
+    redactor?: Redactor;
+  }): Promise<JevVisualEvidence> {
+    const page = this.requirePage();
+    if (page.getCurrentFrame() !== null || this.frameSelector)
+      throw new Error("jev_transform_unknown");
+    if (opts.refs.length > 200) throw new Error("jev_result_invalid");
+    // A known secret might be rendered through CSS, a glyph, or a previous operation. Until
+    // region masking has a verified contract, never upload pixels from such a run.
+    if ((opts.redactor?.secretCount ?? 0) > 0) throw new Error("jev_pixels_unsafe");
+    const redactor = opts.redactor ?? createRedactor({ maskText: true });
+    const observedAtMs = Date.now();
+    const inspect = async () => {
+      const view = await page.evaluate<{
+        url: string;
+        width: number;
+        height: number;
+        scrollX: number;
+        scrollY: number;
+        dpr: number;
+        visualScale: number;
+        unsafe: boolean;
+        content: string;
+        structure: string;
+        layout: string;
+      }>(`(() => {
+        const nodes = Array.from(document.querySelectorAll('*'));
+        const unsafe = nodes.length > 10000 || nodes.some(el =>
+          /^(IFRAME|FRAME|IMG|CANVAS|VIDEO|OBJECT|EMBED)$/.test(el.tagName) || el.shadowRoot ||
+          el.matches('input[type=password], [data-secret], [data-sensitive], svg image, svg use') ||
+          ['backgroundImage','borderImageSource','listStyleImage','maskImage'].some(k => getComputedStyle(el)[k]?.includes('url(')) ||
+          ['::before','::after'].some(p => getComputedStyle(el,p).content?.includes('url('))
+        ) || document.getAnimations().some(a => a.playState === 'running');
+        return { url: location.href, width: innerWidth, height: innerHeight, scrollX, scrollY,
+          dpr: devicePixelRatio, visualScale: window.visualViewport?.scale ?? 1, unsafe,
+          structure: document.documentElement.outerHTML,
+          content: document.body.innerText + nodes.map(el => [
+            'value' in el ? String(el.value) : '',
+            el.matches('svg text, svg tspan') ? el.textContent : '',
+            ...['::before','::after'].map(p => getComputedStyle(el,p).content ?? '')
+          ].join(' ')).join('\\n'),
+          layout: JSON.stringify(nodes.map(el => { const r=el.getBoundingClientRect(); const c=getComputedStyle(el); return [el.tagName,r.x,r.y,r.width,r.height,c.visibility,c.opacity,c.color,c.backgroundColor,c.transform]; })) };
+      })()`);
+      if (!view || view.unsafe || redactor.redactText(view.content) !== view.content)
+        throw new Error("jev_pixels_unsafe");
+      if (view.visualScale !== 1) throw new Error("jev_transform_unknown");
+      const geometry: JevVisualEvidence["geometry"] = {};
+      const identities: Record<string, number> = {};
+      for (const ref of opts.refs) {
+        if (!/^e\d+$/.test(ref) && !/^ref:e\d+$/.test(ref)) throw new Error("jev_result_invalid");
+        const key = ref.replace(/^ref:/, "");
+        const backendNodeId = page.exportRefMap()[key];
+        if (!backendNodeId) throw new Error("jev_snapshot_stale");
+        identities[ref] = backendNodeId;
+        const resolved = await page.cdpClient.send<{ object: { objectId?: string } }>(
+          "DOM.resolveNode",
+          { backendNodeId },
+        );
+        const objectId = resolved.object.objectId;
+        if (!objectId) throw new Error("jev_snapshot_stale");
+        try {
+          const result = await page.cdpClient.send<{
+            result: { value?: { x: number; y: number; width: number; height: number } };
+          }>("Runtime.callFunctionOn", {
+            objectId,
+            returnByValue: true,
+            functionDeclaration: `function() {
+              if (!this.isConnected || this.ownerDocument !== document || this.disabled || this.getAttribute('aria-disabled') === 'true') return null;
+              const r = this.getBoundingClientRect(), style = getComputedStyle(this);
+              const hit = document.elementFromPoint(r.x+r.width/2, r.y+r.height/2);
+              if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 || r.width <= 0 || r.height <= 0 || !(hit === this || this.contains(hit))) return null;
+              return {x:r.x,y:r.y,width:r.width,height:r.height};
+            }`,
+          });
+          if (!result.result.value || page.exportRefMap()[key] !== backendNodeId)
+            throw new Error("jev_snapshot_stale");
+          geometry[ref] = result.result.value;
+        } finally {
+          await page.cdpClient.send("Runtime.releaseObject", { objectId });
+        }
+      }
+      return { view, geometry, identities };
+    };
+    const before = await inspect();
+    const data_base64 = await page.screenshot({ format: "png" });
+    const after = await inspect();
+    if (
+      page !== this.requirePage() ||
+      page.getCurrentFrame() !== null ||
+      JSON.stringify(before) !== JSON.stringify(after)
+    )
+      throw new Error("jev_snapshot_stale");
+    // Read the PNG IHDR, rather than assuming screenshot pixels equal CSS viewport units.
+    let header: string;
+    try {
+      header = atob(data_base64.slice(0, 44));
+    } catch {
+      throw new Error("jev_result_invalid");
+    }
+    if (header.slice(0, 8) !== "\x89PNG\r\n\x1a\n" || header.slice(12, 16) !== "IHDR")
+      throw new Error("jev_result_invalid");
+    const dimension = (offset: number) =>
+      header.charCodeAt(offset) * 0x1000000 +
+      (header.charCodeAt(offset + 1) << 16) +
+      (header.charCodeAt(offset + 2) << 8) +
+      header.charCodeAt(offset + 3);
+    const { view } = before;
+    const evidence: JevVisualEvidence = {
+      captureId: crypto.randomUUID(),
+      url: view.url,
+      frameId: page.targetId,
+      signature: crypto.randomUUID(),
+      observedAtMs,
+      image: { format: "png", data_base64, width: dimension(16), height: dimension(20) },
+      geometry: before.geometry,
+      viewport: {
+        width: view.width,
+        height: view.height,
+        scrollX: view.scrollX,
+        scrollY: view.scrollY,
+        dpr: view.dpr,
+      },
+      pixelsSafe: true,
+    };
+    validateVisualEvidence(evidence, opts.refs);
+    this.jevEvidenceChecks.set(
+      evidence,
+      async () =>
+        page === this.requirePage() &&
+        page.getCurrentFrame() === null &&
+        JSON.stringify(before) === JSON.stringify(await inspect()),
+    );
+    return evidence;
+  }
+
   // --- screenshot ---
 
   async screenshot(opts?: ScreenshotOpts): Promise<string> {
@@ -1344,10 +1532,13 @@ export class BrowserPilotDriver implements Driver {
       const b64 = opts ? await page.screenshot(opts) : await page.screenshot();
       const fsSpec = "node:fs/promises";
       const pathSpec = "node:path";
-      const { mkdir, writeFile } = (await import(
-        /* @vite-ignore */ fsSpec
-      )) as typeof import("node:fs/promises");
-      const { dirname } = (await import(/* @vite-ignore */ pathSpec)) as typeof import("node:path");
+      const { mkdir, writeFile } = (await import(/* @vite-ignore */ fsSpec)) as {
+        mkdir: (path: string, options: { recursive: true }) => Promise<unknown>;
+        writeFile: (path: string, bytes: Uint8Array) => Promise<void>;
+      };
+      const { dirname } = (await import(/* @vite-ignore */ pathSpec)) as {
+        dirname: (path: string) => string;
+      };
       await mkdir(dirname(path), { recursive: true });
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       await writeFile(path, bytes);

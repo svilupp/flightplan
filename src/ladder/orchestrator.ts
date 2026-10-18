@@ -111,6 +111,32 @@ export async function resolveStep(
 ): Promise<LadderResult> {
   const now = ctx.now ?? Date.now;
   const attempts: ResolutionAttempt[] = [];
+  if ("resolve" in step && step.resolve === "ai") {
+    // Semantic intent deliberately has no target-cache dependency, including target memory.
+    const freshCtx = { ...ctx, lock: undefined };
+    const vision = "tier_hint" in step && step.tier_hint === "vision";
+    const available = vision
+      ? typeof ctx.ai?.resolveL3 === "function"
+      : typeof ctx.ai?.resolveL2 === "function";
+    if (!available)
+      return {
+        execution: {
+          ok: false,
+          tier: "L2",
+          escalate: false,
+          dispatchState: "not_dispatched",
+          error: "resolve=ai requires an available AI chooser",
+        },
+        attempts,
+      };
+    const started = now();
+    const prior: StepExecution = { ok: false, tier: "L1", escalate: true };
+    const execution = vision
+      ? await ctx.ai!.resolveL3!(step, prior, freshCtx)
+      : await ctx.ai!.resolveL2!(step, prior, freshCtx);
+    attempts.push(attemptOf(execution, now() - started));
+    return { execution, attempts };
+  }
 
   // --- Cross-origin frame bypass (switch_frame context) ------------------------------------
   // browser-pilot 0.2.1 can dispatch fill/click/select (and more) inside a cross-origin OOPIF

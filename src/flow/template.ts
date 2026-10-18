@@ -13,6 +13,13 @@
 // Canonical reference: PLAN.md §5 (Phase 1) and PROPOSAL "Data flow and templating".
 
 import { ambientEnv } from "../runtime.ts";
+import {
+  bindInputs,
+  type InputDeclaration,
+  type InputValue,
+  type InputValues,
+  inputScalar,
+} from "./input.ts";
 
 /** Raised when templating references something that cannot be resolved. */
 export class TemplateError extends Error {
@@ -24,7 +31,7 @@ export class TemplateError extends Error {
 
 /** Substitution context. `inputs` are the declared inputs (+ `with` overrides). */
 export interface TemplateContext {
-  inputs: Record<string, string>;
+  inputs: InputValues;
   /** Defaults to `process.env`. Override for hermetic tests. */
   env?: Record<string, string | undefined>;
   /** Values captured by earlier runtime steps. */
@@ -46,7 +53,7 @@ export interface TemplateRef {
 // `${ <source>.<name> }` — source is `inputs` or `env`; name allows letters/digits/_/.,-.
 // Whitespace inside the braces is tolerated. Anything else is left untouched (and, if it
 // looks like a `${...}` token with an unknown source, reported by applyTemplating).
-const TOKEN_RE = /\$\{\s*([a-zA-Z_][\w]*)\s*\.\s*([a-zA-Z_][\w.-]*)\s*\}/g;
+const TOKEN_RE = /\$\{\s*([a-zA-Z_][\w]*)\s*\.\s*([a-zA-Z_][\w.:-]*)\s*\}/g;
 
 /**
  * Find every `${inputs.*}` / `${env.*}` reference in a string. Pure (no resolution); used by
@@ -81,7 +88,7 @@ export function applyTemplating(value: string, ctx: TemplateContext): string {
             `Declare it under [inputs] or pass it via an import's \`with\` clause.`,
         );
       }
-      return v;
+      return ctx.deferCaptures ? protectInputLiterals(inputScalar(v, name)) : inputScalar(v, name);
     }
     if (source === "env") {
       const v = env[name];
@@ -131,7 +138,7 @@ export interface LoopContext {
 }
 
 // `${ item }`, `${ item.key }`, `${ loop.index }`, `${ loop.index1 }`. Whitespace tolerated.
-const LOOP_TOKEN_RE = /\$\{\s*(item|loop)(?:\s*\.\s*([a-zA-Z_][\w.-]*))?\s*\}/g;
+const LOOP_TOKEN_RE = /\$\{\s*(item|loop)(?:\s*\.\s*([a-zA-Z_][\w.:-]*))?\s*\}/g;
 
 /**
  * Substitute the loop tokens (`${item}`, `${item.key}`, `${loop.index}`, `${loop.index1}`) in a
@@ -203,14 +210,40 @@ export function hasLoopToken(value: string): boolean {
 // `${ inputs.<name> }` only — used by the `run` flatten pass (./run.ts), which resolves a
 // child's `${inputs.*}` against its effective (with-overridden) inputs at LOAD time while
 // deliberately leaving `${env.*}` for the runner's normal templating pass.
-const INPUTS_TOKEN_RE = /\$\{\s*inputs\s*\.\s*([a-zA-Z_][\w.-]*)\s*\}/g;
+const LITERAL_INPUT_PREFIX = "\u0000flightplan:literal:";
+function protectInputLiterals<T>(value: T): T {
+  if (typeof value === "string")
+    return value
+      .replaceAll(LITERAL_INPUT_PREFIX, `${LITERAL_INPUT_PREFIX}0`)
+      .replaceAll("${", `${LITERAL_INPUT_PREFIX}1`) as T;
+  if (Array.isArray(value)) return value.map(protectInputLiterals) as T;
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, protectInputLiterals(child)]),
+    ) as T;
+  return value;
+}
+/** Restore input text only after the final template pass, so child bindings cannot evaluate caller text. */
+export function restoreInputLiterals<T>(value: T): T {
+  if (typeof value === "string")
+    return value.replace(new RegExp(`${LITERAL_INPUT_PREFIX}([01])`, "g"), (_, code: string) =>
+      code === "0" ? LITERAL_INPUT_PREFIX : "${",
+    ) as T;
+  if (Array.isArray(value)) return value.map(restoreInputLiterals) as T;
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, restoreInputLiterals(child)]),
+    ) as T;
+  return value;
+}
+const INPUTS_TOKEN_RE = /\$\{\s*inputs\s*\.\s*([a-zA-Z_][\w.:-]*)\s*\}/g;
 
 /**
  * Substitute ONLY `${inputs.*}` tokens against `inputs`, leaving `${env.*}` (and anything
  * else) untouched. Throws {@link TemplateError} for an undeclared input — a child step must
  * not carry an unresolvable input reference past the flatten pass.
  */
-export function applyInputsTemplating(value: string, inputs: Record<string, string>): string {
+export function applyInputsTemplating(value: string, inputs: InputValues): string {
   return value.replace(INPUTS_TOKEN_RE, (raw, name: string) => {
     const v = inputs[name];
     if (v === undefined) {
@@ -219,13 +252,16 @@ export function applyInputsTemplating(value: string, inputs: Record<string, stri
           `Declare it under the flow's [inputs] or pass it via the \`run\` step's \`with\`.`,
       );
     }
-    return v;
+    return protectInputLiterals(inputScalar(v, name));
   });
 }
 
 /** Recursively apply {@link applyInputsTemplating} to every string leaf. Returns a new structure. */
-export function applyInputsTemplatingDeep<T>(value: T, inputs: Record<string, string>): T {
+export function applyInputsTemplatingDeep<T>(value: T, inputs: InputValues): T {
   if (typeof value === "string") {
+    const match = value.match(/^\$\{\s*inputs\.([\w.:-]+)\s*\}$/);
+    if (match?.[1] && Object.hasOwn(inputs, match[1]))
+      return protectInputLiterals(structuredClone(inputs[match[1]])) as T;
     return applyInputsTemplating(value, inputs) as T;
   }
   if (Array.isArray(value)) {
@@ -248,6 +284,13 @@ export function applyInputsTemplatingDeep<T>(value: T, inputs: Record<string, st
  */
 export function applyTemplatingDeep<T>(value: T, ctx: TemplateContext): T {
   if (typeof value === "string") {
+    const match = value.match(/^\$\{\s*inputs\.([\w.:-]+)\s*\}$/);
+    if (match?.[1] && Object.hasOwn(ctx.inputs, match[1]))
+      return (
+        ctx.deferCaptures
+          ? protectInputLiterals(structuredClone(ctx.inputs[match[1]]))
+          : structuredClone(ctx.inputs[match[1]])
+      ) as T;
     return applyTemplating(value, ctx) as T;
   }
   if (Array.isArray(value)) {
@@ -273,33 +316,27 @@ export function applyTemplatingDeep<T>(value: T, ctx: TemplateContext): T {
  * `${env.*}` / `${inputs.*}` references from the parent.
  */
 export function resolveInputs(
-  declared: Record<string, string> | undefined,
+  declared: Record<string, InputDeclaration> | undefined,
   withOverrides: Record<string, string> | undefined,
   env?: Record<string, string | undefined>,
-  parentInputs?: Record<string, string>,
-): Record<string, string> {
-  const resolved: Record<string, string> = {};
+  parentInputs?: InputValues,
+  supplied?: InputValues,
+  requireInputs = true,
+): InputValues {
   const baseEnv = env ?? ambientEnv();
-
-  // First resolve `with` overrides against the parent's scope (env + parent inputs).
-  const resolvedWith: Record<string, string> = {};
-  if (withOverrides) {
-    const parentCtx: TemplateContext = { inputs: parentInputs ?? {}, env: baseEnv };
-    for (const [k, v] of Object.entries(withOverrides)) {
-      resolvedWith[k] = applyTemplating(v, parentCtx);
-    }
+  const overrides: InputValues = {};
+  for (const [name, value] of Object.entries(withOverrides ?? {})) {
+    overrides[name] = applyTemplatingDeep(value, { inputs: parentInputs ?? {}, env: baseEnv });
   }
-
-  // Then resolve the module's own declared inputs against env (and itself, progressively).
-  if (declared) {
-    for (const [k, v] of Object.entries(declared)) {
-      if (k in resolvedWith) {
-        // `with` override wins — skip templating the declaration's default.
-        continue;
-      }
-      resolved[k] = applyTemplating(v, { inputs: resolved, env: baseEnv });
-    }
-  }
-
-  return { ...resolved, ...resolvedWith };
+  return bindInputs(
+    declared,
+    { ...overrides, ...supplied },
+    baseEnv,
+    (value: InputValue, prior: InputValues) =>
+      applyTemplatingDeep(value, { inputs: prior, env: baseEnv }),
+    supplied === undefined &&
+      Object.values(declared ?? {}).every((value) => typeof value === "string"),
+    requireInputs,
+    new Set(Object.keys(overrides).filter((name) => !Object.hasOwn(supplied ?? {}, name))),
+  );
 }

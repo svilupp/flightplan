@@ -112,13 +112,17 @@ export async function runAssertion(
         ...(ctx.stepId !== undefined ? { stepId: ctx.stepId } : {}),
       });
       result.when = phase;
+      result.outcome ??= result.pass ? "pass" : "fail";
       result.purpose = assertionPurpose(assertion);
       return result;
     }
     throw new Phase4NotImplementedError();
   }
   const opts = resolveConditionOpts(assertion, ctx);
+  if (assertion.type === "result" && assertion.step)
+    opts.actionResult = ctx.actionResults?.[assertion.step];
   const result = await evaluateDeterministic(assertion, opts);
+  result.outcome = result.pass ? "pass" : "fail";
   // Stamp the resolved phase (the evaluator defaults it to 'after').
   result.when = assertionPhase(assertion);
   result.purpose = assertionPurpose(assertion);
@@ -154,6 +158,7 @@ export async function runAssertions(
       if (isPhase4NotImplemented(err)) {
         result = {
           type: "ai_judge",
+          outcome: "unknown",
           pass: false,
           message: err.message,
           durationMs: 0,

@@ -4,6 +4,8 @@
 
 export { memoryFileSystem } from "./adapters/memory.ts";
 export { nodeFileSystem } from "./adapters/node/index.ts";
+export type { ExtractionMapper, ExtractionMapRequest } from "./ai/extraction-map.ts";
+export { createJevExtractionMapper } from "./ai/extraction-map.ts";
 export * from "./ai/index.ts";
 export type { CreateProviderOptions, DefaultGenerateOptions, ProviderFamily } from "./ai/sdk.ts";
 // Node-flavored: `src/index.ts` is not one of the worker-portability fitness gate's walked
@@ -21,6 +23,12 @@ export * from "./assert/index.ts";
 export * from "./config/index.ts";
 export * from "./driver/index.ts";
 export * from "./flow/index.ts";
+export * from "./guard/index.ts";
+export type { CheckItem, CheckReport } from "./inspection/check.ts";
+export { checkFlow } from "./inspection/check.ts";
+export type { InvocationClaim, InvocationRecord, InvocationStore } from "./invocation/index.ts";
+export { InvocationError, MemoryInvocationStore } from "./invocation/index.ts";
+export { NodeInvocationStore } from "./invocation/node.ts";
 export * from "./ladder/index.ts";
 export * from "./lint/index.ts";
 export * from "./lock/index.ts";

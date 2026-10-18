@@ -1,3 +1,4 @@
+import { jevUsageCost } from "./cost.ts";
 // Flightplan — budget tracking + the budget-exceeded error (PLAN.md §4 "Budgets and verdicts" /
 // §5 Phase 4; PROPOSAL "Budgets and verdicts"). Hard ceilings: exceeding any one makes the run
 // fail fast. This module provides the tracker + the error type only — `max_steps` enforcement and
@@ -136,5 +137,128 @@ export class BudgetTracker {
     if (max !== undefined && this.cost_usd > max) {
       throw new BudgetExceededError("max_cost_usd", `Budget exceeded: max_cost_usd (${max})`);
     }
+  }
+}
+
+/** A reservation is single-use and remains charged when a request's billing is unknown. */
+export interface JevRequestReservation {
+  recordBytes?(bytes: number): void;
+  readonly signal: AbortSignal;
+  settle(inputTokens: number | null, servedModel: string): void;
+  fail(): void;
+}
+const jevReservations = new WeakSet<JevRequestReservation>();
+/** Transport-only one-shot claim: rejects forged or reused reservations before any HTTP call. */
+export function claimJevReservation(reservation: JevRequestReservation): void {
+  if (!jevReservations.delete(reservation)) throw new Error("jev_reservation_invalid");
+}
+export class JevRequestBudget {
+  requests = 0;
+  unknownCostRequests = 0;
+  bytes = 0;
+  private readonly steps = new Map<string, { requests: number; deadline: number }>();
+  constructor(
+    private readonly options: {
+      maxCallsPerStep: number;
+      maxRequestsPerRun: number;
+      budget: BudgetTracker;
+      timeoutMs?: number;
+      now?: () => number;
+    },
+  ) {}
+  private now(): number {
+    return this.options.now?.() ?? performance.now();
+  }
+  /** Call before first evidence capture; repeated calls never reset the allowance or deadline. */
+  beginStep(stepId: string, enclosingDeadlineMs?: number): void {
+    if (!this.steps.has(stepId))
+      this.steps.set(stepId, {
+        requests: 0,
+        deadline: Math.min(this.now() + 8000, enclosingDeadlineMs ?? Infinity),
+      });
+  }
+  /** Bound browser evidence work by the same deadline as HTTP reservations. */
+  async withinStep<T>(
+    stepId: string,
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    signal?.throwIfAborted();
+    this.beginStep(stepId);
+    const deadline = this.steps.get(stepId)!.deadline;
+    const remaining = deadline - this.now();
+    if (remaining <= 0) throw new Error("jev_timeout");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
+    try {
+      const expired = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("jev_timeout")), remaining);
+        abort = () => reject(signal!.reason);
+        signal?.addEventListener("abort", abort, { once: true });
+      });
+      const value = await Promise.race([operation(), expired]);
+      signal?.throwIfAborted();
+      if (this.now() >= deadline) throw new Error("jev_timeout");
+      return value;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (abort) signal?.removeEventListener("abort", abort);
+    }
+  }
+  reserve(stepId: string, model: string, signal?: AbortSignal): JevRequestReservation {
+    signal?.throwIfAborted();
+    this.beginStep(stepId);
+    const step = this.steps.get(stepId)!;
+    const remaining = step.deadline - this.now();
+    if (remaining <= 0) throw new Error("jev_timeout");
+    if (
+      step.requests >= this.options.maxCallsPerStep ||
+      this.requests >= this.options.maxRequestsPerRun
+    )
+      throw new Error("jev_budget_exhausted");
+    // Default API context is capped at 64k; long-context headers are never enabled.
+    const bound = jevUsageCost(model, 64000);
+    const budget = this.options.budget;
+    if (
+      budget.limits.max_cost_usd !== undefined &&
+      (bound === null || budget.cost_usd + bound > budget.limits.max_cost_usd)
+    )
+      throw new BudgetExceededError("max_cost_usd");
+    budget.noteModelCall();
+    step.requests++;
+    this.requests++;
+    if (bound !== null) budget.addCost(bound);
+    let settled = false;
+    const timeout = AbortSignal.timeout(
+      Math.max(1, Math.floor(Math.min(remaining, this.options.timeoutMs ?? 3000))),
+    );
+    const reservation: JevRequestReservation = {
+      recordBytes: (bytes) => {
+        if (!Number.isSafeInteger(bytes) || bytes < 0 || settled)
+          throw new Error("jev_reservation_invalid");
+        this.bytes += bytes;
+      },
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      settle: (tokens, servedModel) => {
+        if (settled) throw new Error("jev_reservation_consumed");
+        settled = true;
+        jevReservations.delete(reservation);
+        const cost = jevUsageCost(servedModel, tokens);
+        if (cost === null) {
+          this.unknownCostRequests++;
+          return;
+        }
+        budget.addCost(cost - (bound ?? 0));
+      },
+      fail: () => {
+        if (!settled) {
+          settled = true;
+          jevReservations.delete(reservation);
+          this.unknownCostRequests++;
+        }
+      },
+    };
+    jevReservations.add(reservation);
+    return reservation;
   }
 }

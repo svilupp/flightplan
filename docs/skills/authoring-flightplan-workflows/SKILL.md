@@ -11,7 +11,7 @@ Read [references/benchmark-learnings.md](references/benchmark-learnings.md) when
 Shopify/Swap-style admin SPAs, mutations, popups, cached browser-pilot dependencies, or proof artifacts.
 
 Assume the `flightplan` command is already available. Examples use `flightplan ...`; use
-`npx flightplan ...` or `bunx flightplan ...` when invoking from a package-managed project, and
+`npx @svilupp/flightplan ...` or `bunx @svilupp/flightplan ...` when invoking from a package-managed project, and
 `bun run flightplan ...` from this checkout.
 
 ## Operating contract
@@ -190,8 +190,7 @@ This is the recommended default. Precedence per role, field-by-field: explicit r
 `default` field > built-in registry. Role blocks deep-merge over `default`; `fallbacks` arrays
 replace wholesale, they do not merge. Footgun: if `default` sets `model` but omits `fallbacks`,
 roles keep the built-in OpenRouter fallback slugs — set `fallbacks = []` in `default` when using
-a non-OpenRouter provider. Older flightplan versions reject `[config.ai.models.default]` as an
-unknown key.
+a non-OpenRouter provider.
 
 For advanced, mixed setups keep per-role `[config.ai.models.<role>]` blocks (e.g. cheap resolver,
 stronger planner), or route through a native provider by setting `[config.ai] provider = "google"
@@ -287,7 +286,7 @@ and Swap failure patterns that motivated these rules.
 
 ## Hosted and borrowed browser acquisition
 
-Read [hosted/session guidance](../../cloudflare-hosted.md) when selecting a
+Read `docs/cloudflare-hosted.md` in the Flightplan checkout when selecting a
 Cloudflare provider or embedding a host-owned session. `mode = "hosted"` owns
 its allocation; `mode = "session"` requires a host acquirer, `session_ref` and
 explicit `target_policy` (`exact` also requires `target_id`). Credentials remain
@@ -305,3 +304,21 @@ demo login/cart/checkout proof; its demo completion is not a real payment oracle
 Keep credentials in environment references. Read the examples README before
 running: the verified Chrome 154 fixture uses a disposable profile with credential
 saving disabled; default fresh-profile launches retained an input-delivery failure.
+
+## JEV, recipes and shared sessions
+
+Read `docs/JEV.md` in the Flightplan checkout for profile configuration and JEV assertions.
+Inspect `flightplan config <flow> --json` before running; repeat all required ceilings when
+replacing a run table. Image permission does not bypass capture safety. Keep deterministic
+postconditions alongside model assertions and never retry an uncertain mutation.
+
+Read `docs/CALLABLE_RECIPES.md` for typed inputs, entry/outcome conditions, extraction and outputs.
+Keep business loops in the host. Prefer explicit extraction selectors; secret fields require them.
+`resolve = "ai"` requests fresh selection without target-lock reuse. Use `list`/`describe` for
+discovery and `check` for current entry inspection only. Secret inputs use `--input-env`;
+retries reuse one `--idempotency-key`. A new key does not prove a mutation is safe to repeat.
+
+Read `docs/BROWSER_PILOT_INTEGRATION.md` for named sessions, guards and host yield. Require verified
+handback and fresh observations before resuming BP actions. Local guards cannot override owner
+policy. Native assurance requires trusted host opt-in and `browser.dialog = "fail"`.
+Yield requires return assertions and a fresh grant; it cannot restore a crashed runner cursor.

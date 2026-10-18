@@ -4,6 +4,8 @@
 // artifacts to execute a flow end-to-end (the Phase 2 capstone). The CLI's `run` command and
 // the unit tests program against these exports. Canonical reference: PLAN.md §5 Phase 2.
 
+export type { CheckpointStore, YieldCheckpoint, YieldHost, YieldIdentity } from "./checkpoints.ts";
+export { memoryCheckpointStore, resumeYield, runYield } from "./checkpoints.ts";
 export { RunInterruptedError } from "./control.ts";
 export {
   computeVerdict,

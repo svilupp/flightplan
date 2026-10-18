@@ -591,6 +591,21 @@ export interface ResolveAllOpts {
  * never kills a BYO Chrome; Mode B: detach + kill the launched Chrome).
  */
 export interface Driver {
+  /** Fixed DOM projection only: no author JavaScript and no input events. */
+  extract?(spec: import("./extract.ts").ExtractionSpec): Promise<unknown>;
+  extractionCandidates?(selector: string): Promise<import("./extract.ts").ExtractionCandidate[]>;
+  documentIdentity?(): Promise<string>;
+  /** Revalidate captured DOM geometry and document identity without acquiring another frame. */
+  validateJevEvidence?(
+    evidence: import("../ai/vision-evidence.ts").JevVisualEvidence,
+  ): Promise<boolean>;
+
+  /** Optional verified viewport capture. Must reject unsafe pixels and detectable state changes. */
+  captureJevEvidence?(opts: {
+    refs: string[];
+    redactor?: import("../redaction/index.ts").Redactor;
+  }): Promise<import("../ai/vision-evidence.ts").JevVisualEvidence>;
+
   // --- lifecycle ---
 
   /** Resolve the connection (Mode A attach / Mode B launch) and acquire a page. */

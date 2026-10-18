@@ -62,6 +62,12 @@ export {
   type DriverAcquisition,
   MockDriver,
 } from "./driver/index.ts";
+export type {
+  NamedSessionBorrow,
+  NamedSessionBorrower,
+  SessionHandback,
+} from "./driver/named-session.ts";
+export { namedSessionDriverFactory } from "./driver/named-session.ts";
 // ---- Flow loading / parsing ----
 export type {
   AiJudgeAssertion,
@@ -88,6 +94,17 @@ export {
   loadFlowFileFlattened,
   parseFlowFile,
 } from "./flow/index.ts";
+export type { InputDeclaration, InputIssue, InputValue, InputValues } from "./flow/input.ts";
+export { bindInputs, InputBindingError } from "./flow/input.ts";
+export type {
+  ActionGuardOptions,
+  ActionProposal,
+  GuardObservation,
+  GuardVerdict,
+} from "./guard/index.ts";
+export { createGuardedDriver, createJevGuard, GuardBlockedError } from "./guard/index.ts";
+export type { InvocationClaim, InvocationRecord, InvocationStore } from "./invocation/index.ts";
+export { InvocationError, MemoryInvocationStore } from "./invocation/index.ts";
 export type {
   Diagnostic,
   LintFileOptions,
@@ -105,6 +122,13 @@ export {
   lintPaths,
   lintText,
 } from "./lint/index.ts";
+export type {
+  CheckpointStore,
+  YieldCheckpoint,
+  YieldHost,
+  YieldIdentity,
+} from "./runner/checkpoints.ts";
+export { memoryCheckpointStore, resumeYield, runYield } from "./runner/checkpoints.ts";
 // ---- Runner: runFlow + its options/result/cancellation types ----
 export {
   computeVerdict,
@@ -123,6 +147,5 @@ export type {
 export type { FileSystemPort } from "./runtime.ts";
 // ---- Filesystem port + capability/env primitives ----
 export { ambientEnv, CapabilityError, expandGlob, listTomlFiles } from "./runtime.ts";
-
 // ---- Telemetry sink seam (test/host injection point; no Logfire SDK import here) ----
 export type { TelemetrySink } from "./telemetry/index.ts";

@@ -221,3 +221,26 @@ pick actually clicked.
   interactive transitions are client-side. Reloading resets to the initial state.
 - **No external network calls** and **no third-party assets** (SVGs are inline) — the pages
   render identically offline, keeping signatures and locks stable.
+
+## JEV fixtures
+
+`/jev/<name>` mounts thirteen local fixture families. Each page exposes test-only `window.__jevFixture.state()`, `reset()` and `barrier(name)`. Reset clears the result and click ledger and increments capture revision. Barriers (`release`, `dismiss`, `move`, `replace`, `reorder`) change state explicitly, without timers. Expectations live in `jev-oracles.ts` and must never enter model candidate packets.
+
+| ID | Name | Implemented variants / contract |
+| --- | --- | --- |
+| J01 | `baseline` | Continue versus Cancel; `selected:q1`, count 1 |
+| J02 | `duplicates` | Billing Save (`q2`); `reordered`, `identical` |
+| J03 | `icons` | Trash (`q1`); `reordered`, `disabled`; SVG has no accessible meaning |
+| J04 | `context` | Billing icon (`q2`); `reordered` |
+| J05 | `absent` | Default absent; `present`, `multiple` |
+| J06 | `geometry` | Default viewport; `scroll` adds content height; `iframe` exercises refusal |
+| J07 | `actionability` | Default overlay and hidden duplicate; `disabled`; explicit dismiss barrier |
+| J08 | `stale` | Explicit move, replacement and reorder barriers |
+| J09 | `injection` | Hostile instructions beside correct and decoy controls |
+| J10 | `drift` | `b` testid rename, `c` synonym, `d` glyph, `e` removal |
+| J11 | `mutation` | Submission ledger; `delayed` waits for release; `navigate` changes route before acknowledgement |
+| J12 | `diagnosis` | `wrong` deterministic result; `spinner` visible loading text |
+| J13 | `redaction` | Password, account and SVG secret canaries |
+
+Browser tests use fake model responses to verify capture, replay and refusal behavior. They do not
+measure live model accuracy. See [JEV configuration](../../docs/JEV.md).

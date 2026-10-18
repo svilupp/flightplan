@@ -9,7 +9,7 @@
 
 import type { Step } from "../flow/types.ts";
 import type { ResolveContext, StepExecution } from "../ladder/index.ts";
-import type { CandidateChooser } from "./chooser.ts";
+import type { CandidateChooser, ChooseResult } from "./chooser.ts";
 import type { CandidatePacketEntry } from "./resolve-common.ts";
 import {
   actOnPick,
@@ -87,14 +87,62 @@ export async function resolveL2(
   step: Step,
   _prior: StepExecution,
   ctx: ResolveContext,
+  shadow?: CandidateChooser,
+  signal?: AbortSignal,
+  verifyFresh = false,
 ): Promise<StepExecution> {
+  signal?.throwIfAborted();
   const { elements, ranked, signatureBasis, intentText, action, contextByRef } =
     await gatherCandidates(step, ctx);
   const packet = buildCandidatePacket(ranked, contextByRef);
   // note_in: the FRESH stored note (advisory context) for this target, if any (DESIGN §4).
   const noteIn = await storedNoteForStep(step, ctx);
-  const chooseCtx = { step, action, ...(noteIn !== undefined ? { note: noteIn } : {}) };
+  let verifiedObservation: { index: number; serialized: string } | undefined;
+  const chooseCtx = {
+    step,
+    action,
+    ...(noteIn !== undefined ? { note: noteIn } : {}),
+    ...(verifyFresh
+      ? {
+          verificationEvidence: async (index: number) => {
+            const selected = ranked[index];
+            const competitor = ranked.find(
+              (candidate, i) => i !== index && candidate.ref !== selected?.ref,
+            );
+            if (!selected?.ref) return undefined;
+            const fresh = await ctx.driver.snapshot({ attributes: true });
+            const project = (ref: string | undefined) => {
+              const node = fresh.interactiveElements.find((element) => element.ref === ref);
+              if (!node) return undefined;
+              const attributes = Object.fromEntries(
+                Object.entries(node.attributes ?? {}).filter(([key]) =>
+                  ["title", "aria-description", "data-action", "type", "placeholder"].includes(key),
+                ),
+              );
+              return Object.keys(attributes).length ? attributes : undefined;
+            };
+            const candidate = project(selected.ref);
+            const alternative = project(competitor?.ref);
+            if (!candidate || JSON.stringify(candidate) === JSON.stringify(alternative))
+              return undefined;
+            const evidence = { candidate, alternative: alternative ?? null };
+            verifiedObservation = { index, serialized: JSON.stringify(evidence) };
+            return evidence;
+          },
+        }
+      : {}),
+  };
 
+  const observeShadow = async (result: ChooseResult, execution?: StepExecution): Promise<void> => {
+    if (!shadow || !execution?.ok) return;
+    try {
+      // Compare the original packet only after authoritative work has spent its budget.
+      await shadow.choose(intentText, packet, chooseCtx);
+      await shadow.observeAuthoritative?.(result, execution);
+    } catch {
+      /* observation only */
+    }
+  };
   let lastReason = "L2: no chooser available";
   for (const chooser of choosers) {
     const result = await chooser.choose(intentText, packet, chooseCtx);
@@ -103,6 +151,33 @@ export async function resolveL2(
         lastReason = `${chooser.kind}: pick index ${result.index} out of range`;
         continue;
       }
+      signal?.throwIfAborted();
+      if (verifyFresh) {
+        const fresh = await gatherCandidates(step, ctx);
+        if (
+          JSON.stringify(fresh.ranked) !== JSON.stringify(ranked) ||
+          JSON.stringify(fresh.signatureBasis) !== JSON.stringify(signatureBasis)
+        ) {
+          return escalateExecution("L2", {
+            ranked,
+            intentText,
+            action,
+            error: "jev_snapshot_stale",
+          });
+        }
+      }
+      if (verifiedObservation) {
+        const observed = verifiedObservation;
+        const current = await chooseCtx.verificationEvidence?.(observed.index);
+        if (!current || JSON.stringify(current) !== observed.serialized)
+          return escalateExecution("L2", {
+            ranked,
+            intentText,
+            action,
+            error: "jev_snapshot_stale",
+          });
+      }
+      signal?.throwIfAborted();
       const exec = await actOnPick(step, ctx, {
         tier: "L2",
         chosen: ranked[result.index]!,
@@ -118,6 +193,7 @@ export async function resolveL2(
       // `ranked` is sorted best-first, so `index === 0` with a real fuzzy score means text ranking
       // and the model agree. Only a generative chooser (LLM) ever sets `note`.
       const corroborated = result.index === 0 && (ranked[0]?.score ?? 0) > 0;
+      await observeShadow(result, exec);
       return attachEmittedNote(exec, result.note, {
         corroborated,
         confidence: result.confidence,

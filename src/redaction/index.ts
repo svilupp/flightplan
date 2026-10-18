@@ -15,6 +15,7 @@
 // This module is a leaf: it imports only the `Step` flow type. Nothing here imports `ai/`,
 // `runner/`, the driver, or the SDK — so it is trivially unit-testable and free of cycles.
 
+import type { InputValues } from "../flow/input.ts";
 import type { Step } from "../flow/types.ts";
 
 /** The replacement token substituted for every redacted span. */
@@ -53,6 +54,7 @@ export interface RedactorOptions {
 
 /** A pure redaction policy. When `enabled` is false every method is the identity function. */
 export interface Redactor {
+  addSecrets(values: Iterable<string>): void;
   /** True iff this redactor will alter any input (has secrets OR `mask_text` is on). */
   readonly enabled: boolean;
   /** Number of distinct secret values this redactor masks. */
@@ -62,7 +64,7 @@ export interface Redactor {
   /** A known-secret value → {@link REDACTED} wholesale; otherwise {@link redactText}. */
   redactValue(v: string): string;
   /** Map a `{ key: value }` input bag through {@link redactValue} (the `run_start.inputs` path). */
-  redactInputs(inputs: Record<string, string>): Record<string, string>;
+  redactInputs(inputs: InputValues): InputValues;
   /** Deep-walk an object/array, redacting every string leaf (the `ai.jsonl` response path). */
   redactJson<T>(value: T): T;
 }
@@ -83,7 +85,7 @@ export function createRedactor(opts: RedactorOptions): Redactor {
   const secretSet = new Set(secretList);
 
   const piiPatterns = maskText ? (opts.piiPatterns ?? DEFAULT_PII_PATTERNS) : [];
-  const enabled = maskText || secretList.length > 0;
+  let enabled = maskText || secretList.length > 0;
 
   function redactText(s: string): string {
     if (!enabled || typeof s !== "string" || s.length === 0) return s;
@@ -105,12 +107,8 @@ export function createRedactor(opts: RedactorOptions): Redactor {
     return redactText(v);
   }
 
-  function redactInputs(inputs: Record<string, string>): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(inputs)) {
-      out[k] = redactValue(v);
-    }
-    return out;
+  function redactInputs(inputs: InputValues): InputValues {
+    return redactJson(inputs);
   }
 
   function walk(value: unknown): unknown {
@@ -130,8 +128,21 @@ export function createRedactor(opts: RedactorOptions): Redactor {
   }
 
   return {
-    enabled,
-    secretCount: secretList.length,
+    get enabled() {
+      return enabled;
+    },
+    get secretCount() {
+      return secretList.length;
+    },
+    addSecrets(values) {
+      for (const value of values)
+        if (value && !secretSet.has(value)) {
+          secretSet.add(value);
+          secretList.push(value);
+        }
+      secretList.sort((a, b) => b.length - a.length);
+      enabled = maskText || secretList.length > 0;
+    },
     redactText,
     redactValue,
     redactInputs,
@@ -167,10 +178,7 @@ function collectStringLeaves(value: unknown, out: Set<string>): void {
   }
 }
 
-export function gatherSecretValues(
-  steps: readonly Step[],
-  inputs: Record<string, string> = {},
-): Set<string> {
+export function gatherSecretValues(steps: readonly Step[], inputs: InputValues = {}): Set<string> {
   const secrets = new Set<string>();
   for (const step of steps) {
     // `secret` is declared on the fill step in the schema, but honor it on ANY verb that carries a

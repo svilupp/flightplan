@@ -22,6 +22,7 @@ import type {
   DispatchState,
   MatchedCondition,
 } from "../driver/types.ts";
+import type { InputValues } from "../flow/input.ts";
 import type {
   AdvisoryVerdictKind,
   AssertType,
@@ -43,6 +44,8 @@ export const LADDER_TIERS = ["L0", "L1", "L2", "L3", "L4"] as const;
  * `role` is the narrow model-role union (PLAN.md §4 `model_usage[]`).
  */
 export interface ModelUsage {
+  /** Requests whose billed cost is unknown; numeric cost is only the known subtotal. */
+  unknown_cost_calls?: number;
   role: ModelRoleName;
   model: string;
   calls: number;
@@ -77,7 +80,7 @@ export interface RunStartEvent {
   runId: string;
   flowId: string;
   /** Flow inputs after templating; values may be redacted upstream (secret fills). */
-  inputs: Record<string, string>;
+  inputs: InputValues;
   /** Compact, human-readable config summary (not the full Config — caller decides shape). */
   configSummary: Record<string, string | number | boolean>;
   /** The run limits in force (max_steps / max_cost_usd / etc.), null fields omitted by caller. */
@@ -231,7 +234,12 @@ export interface ResolutionAttemptEvent {
 }
 
 /** Any event written to trace.jsonl. */
-export type TraceEvent = BrowserActionEvent | ResolutionAttemptEvent;
+export type GuardDecisionEvent = import("../guard/types.ts").GuardObservation & {
+  type: "guard_decision";
+  ts: number;
+};
+
+export type TraceEvent = BrowserActionEvent | ResolutionAttemptEvent | GuardDecisionEvent;
 
 // ---------------------------------------------------------------------------
 // ai.jsonl events — model calls (Phase 4 emits these; the type is defined now)
@@ -262,6 +270,29 @@ export const AI_CALL_ROLES = [
  * secret. (PLAN.md §5 Phase 5; this module's brief.)
  */
 export interface AiCallEvent {
+  /** Bounded, credential-free decision metadata. No request evidence or image content. */
+  jev?: {
+    profile: string;
+    policyVersion: string;
+    strategy: string;
+    requestedModel: string;
+    requestCount: number;
+    latencyMs: number;
+    costKnown: boolean;
+    requestBytes?: number;
+    captureId?: string;
+    candidateCount?: number;
+    evidenceAgeMs?: number;
+    preprocessingVersion?: string;
+    rawUsage?: { inputTokens: number | null; outputTokens: number | null };
+    dispatched: false;
+    shadow?: {
+      candidate: number | null;
+      authoritativeCandidate: number | null;
+      disagreement: boolean;
+      actionSucceeded?: boolean;
+    };
+  };
   type: "ai_call";
   ts: number;
   role: AiCallRole;
@@ -342,6 +373,10 @@ export interface WebMcpEvidence {
  * fields) so the CLI serializer can pass it through directly.
  */
 export interface RunSummary {
+  idempotency_key?: string;
+  session_handback?: import("../driver/named-session.ts").SessionHandback;
+  outputs?: Record<string, unknown>;
+  invocation_status?: "not_started" | "completed" | "failed";
   /**
    * Additive schema-version marker for the `summary.json` / `--json` wire shape. Bumped only on
    * a breaking shape change (never for additive fields); consumers that don't recognize a

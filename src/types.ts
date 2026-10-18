@@ -47,6 +47,8 @@ export const STEP_DOS = [
   "wait",
   "assert",
   "ai_pick",
+  "extract",
+  "yield",
   "run",
   "switch_frame",
   "switch_to_main",

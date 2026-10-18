@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import {
   createAiRuntime,
+  createNamedSessionYieldHost,
   getBrowserPilotProvenance,
   MockDriver,
+  nativeOwnerActionDriverFactory,
+  nativeOwnerActionsBorrower,
   RunInterruptedError,
   resolveConfigWithDefaults,
   runFlow,
 } from "@svilupp/flightplan";
 
 assert.equal(getBrowserPilotProvenance().packageVersion, process.argv[2]);
+assert.equal(typeof nativeOwnerActionDriverFactory(), "function");
+assert.equal(typeof createNamedSessionYieldHost, "function");
+assert.equal(typeof nativeOwnerActionsBorrower, "function");
 
 // ---- Packed-exports gate (workers-slice-2 §7.4 / U6 task 4) --------------------------------
 // Exercise every subpath export a worker host actually needs, from the PACKED tarball (this
