@@ -1,4 +1,4 @@
-import { BudgetTracker, JevRequestBudget } from "../ai/budget.ts";
+import { type BudgetLimits, BudgetTracker, JevRequestBudget } from "../ai/budget.ts";
 import { JEV_PROFILE_MODEL } from "../ai/jev-policy.ts";
 import { FetchJevTransport, type JevRequest } from "../ai/typesafe.ts";
 import { type JevVisualEvidence, validateVisualEvidence } from "../ai/vision-evidence.ts";
@@ -13,6 +13,8 @@ export interface JevGuardOptions {
   maxRequests?: number;
   /** Separate guard accounting, so shadow never consumes the authoritative chooser budget. */
   budget?: BudgetTracker;
+  /** Global zero limits prohibit remote work; positive guard accounting remains separate. */
+  globalLimits?: BudgetLimits;
   imageEvidence?(
     proposal: Readonly<ActionProposal>,
     signal: AbortSignal,
@@ -33,6 +35,14 @@ export function createJevGuard(options: JevGuardOptions) {
   return async (proposal: Readonly<ActionProposal>, signal: AbortSignal): Promise<GuardVerdict> => {
     try {
       signal.throwIfAborted();
+      const limits = options.globalLimits;
+      if (
+        limits?.max_model_calls === 0 ||
+        limits?.max_cost_usd === 0 ||
+        (options.imageEvidence && limits?.max_screenshots === 0)
+      )
+        return { decision: "unknown", reason: "global_model_budget_denied" };
+      budget.assertModelCallAllowed();
       if (!options.apiKey.trim()) return { decision: "unknown", reason: "credentials_unavailable" };
       const request: JevRequest = {
         model: options.model ?? JEV_PROFILE_MODEL,
@@ -57,6 +67,7 @@ export function createJevGuard(options: JevGuardOptions) {
       };
       let image: JevVisualEvidence | undefined;
       if (options.imageEvidence) {
+        budget.noteScreenshot();
         const boundImage = await options.imageEvidence(proposal, signal);
         if (
           boundImage.proposalId !== proposal.id ||
@@ -70,7 +81,6 @@ export function createJevGuard(options: JevGuardOptions) {
           return { decision: "unknown", reason: "image_page_mismatch" };
         if (!options.validateImage || !(await options.validateImage(image)))
           return { decision: "unknown", reason: "image_stale" };
-        budget.noteScreenshot();
         request.assets = {
           guard_image: {
             type: "image",

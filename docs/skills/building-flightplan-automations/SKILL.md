@@ -30,7 +30,7 @@ Read [references/automation-quality.md](references/automation-quality.md) for be
 patterns and the release checklist. For TOML syntax, read the `authoring-flightplan-workflows` skill.
 
 Assume the `flightplan` command is already available. Examples use `flightplan ...`; use
-`npx flightplan ...` or `bunx flightplan ...` when invoking from a package-managed project, and
+`npx @svilupp/flightplan ...` or `bunx @svilupp/flightplan ...` when invoking from a package-managed project, and
 `bun run flightplan ...` from this checkout.
 
 ## Build lifecycle
@@ -103,12 +103,17 @@ enabled = false
 
 [run]
 max_steps = 20
+max_model_calls = 0
+max_screenshots = 0
+max_cost_usd = 0
 assertions = "eager"
 assert_timeout_ms = 6000
 ```
 
 Use ordered targets with stable selectors first and one concise natural-language anchor last. Mark
-every action with `effect`. Add a semantic readiness assertion after navigation or delayed hydration.
+every action with `effect`. Attach a readiness postcondition to navigation steps. Preconditions run
+before the step acts.
+Use explicit `css:` selectors in assertions and `value = ""` for empty fields.
 
 ### 4. Harden each effect
 
@@ -199,8 +204,19 @@ requires:
 - artifact retention with redaction;
 - serial execution when resources overlap.
 
-Keep the planner disabled for safety proofs. Enable AI tiers only in a separate, bounded experiment with
-a clear goal and explicit cost budget.
+AI is disabled by default. Enable `[config.ai] enabled = true` only for an authorized experiment
+with explicit budgets; ambient keys do not enable AI. A configured remote guard requires that
+permission, including shadow mode, and fails preflight otherwise. Zero call/cost limits also gate
+remote guards; an unavailable enforcing guard blocks dispatch. Trusted injected guards stay active.
+Recording is independent; set `[config.browser] record = false` when page images must not be recorded.
+
+Use `lint --deny-warnings` before strict replay. Sweep accepts the same `--input`, `--input-env`, and
+`--inputs-file` bindings as run and prepares the complete campaign before starting any trial.
+An AI-disabled baseline unit fails without dispatch; inspect `sweep.json` as well as run reports.
+For raw attach, serialize externally and do not overlap a named owner session. Keyboard input
+requires verified focus; opt in to selected-tab activation with `[config.connect] foreground = true`.
+Keep keys in separate steps and assert their effect. Use `goto_ms` for document deadlines and
+`nav_ms` for optional settling; a step's navigation timeout overrides document loading only.
 
 ## Completion checklist
 
@@ -247,6 +263,9 @@ Keep business loops in the host. Prefer explicit extraction selectors; secret fi
 `resolve = "ai"` requests fresh selection without target-lock reuse. Use `list`/`describe` for
 discovery and `check` for current entry inspection only. Secret inputs use `--input-env`;
 retries reuse one `--idempotency-key`. A new key does not prove a mutation is safe to repeat.
+Child and hook secret inputs share run-wide redaction; secret extraction in either disables
+recording for the whole run. Changed dependencies or nonsecret environment bindings conflict with
+an existing invocation key. Reconcile the earlier outcome before issuing a new key after an upgrade.
 
 Read `docs/BROWSER_PILOT_INTEGRATION.md` for named sessions, guards and host yield. Require verified
 handback and fresh observations before resuming BP actions. Local guards cannot override owner

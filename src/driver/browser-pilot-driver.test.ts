@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TargetNotFoundError } from "browser-pilot";
+import { type Step, TargetNotFoundError } from "browser-pilot";
 import { CookieStateError } from "browser-pilot/core";
+import { createGuardedDriver } from "../guard/driver.ts";
 import { BrowserPilotDriver, getBrowserPilotProvenance } from "./browser-pilot-driver.ts";
 import { AuthStateUnavailableError } from "./connect-resolution.ts";
 import type { Page } from "./index.ts";
+import { KeyboardPreflightError } from "./keyboard.ts";
+import type { NavigationFailure } from "./navigation.ts";
 
 interface TestPage {
   targetId: string;
@@ -36,6 +39,167 @@ function seedDriver(driver: BrowserPilotDriver, browser: unknown, activePage: Pa
   internals.browser = browser;
   internals.activePage = activePage;
 }
+
+function keyboardFixture(foreground = false, focused = false) {
+  const calls: string[] = [];
+  const driver = new BrowserPilotDriver();
+  const page = {
+    cdpClient: {
+      send: async () => {
+        calls.push("activate");
+      },
+    },
+    evaluate: async () => {
+      calls.push("check");
+      return focused;
+    },
+    press: async () => {
+      calls.push("press");
+    },
+    waitForNavigation: async () => {},
+    batch: async (steps: Step[]) => {
+      calls.push("batch");
+      return {
+        success: true,
+        totalDurationMs: 0,
+        steps: steps.map((step, index) => ({
+          index,
+          action: step.action,
+          success: true,
+          durationMs: 0,
+        })),
+      };
+    },
+  } as unknown as Page;
+  seedDriver(driver, {}, page);
+  Object.assign(driver, { connection: { kind: "attach", foreground, openedTargetIds: [] } });
+  return { driver, calls };
+}
+
+test("background attach refuses plain and modified keys without activation or dispatch", async () => {
+  const { driver, calls } = keyboardFixture();
+  await expect(driver.press("Escape")).rejects.toBeInstanceOf(KeyboardPreflightError);
+  await expect(driver.press("a", { modifiers: ["Control"] })).rejects.toMatchObject({
+    dispatchState: "not_dispatched",
+    retrySafe: true,
+  });
+  const result = await driver.batch([{ action: "press", key: "Escape" }]);
+  expect(result.steps[0]).toMatchObject({
+    dispatchState: "not_dispatched",
+    retrySafe: true,
+    attempts: 0,
+  });
+  expect(calls).toEqual(["check", "check", "check"]);
+});
+
+test("foreground activation must pass verification and cannot partially execute a mixed batch", async () => {
+  const denied = keyboardFixture(true);
+  await expect(denied.driver.press("Escape")).rejects.toBeInstanceOf(KeyboardPreflightError);
+  expect(denied.calls).toEqual(["activate", ...Array<string>(10).fill("check")]);
+  const ready = keyboardFixture(true, true);
+  await ready.driver.press("Escape");
+  expect(ready.calls).toEqual(["activate", "check", "batch"]);
+  ready.calls.length = 0;
+  const result = await ready.driver.batch([
+    { action: "click", selector: "#save" },
+    { action: "press", key: "Enter" },
+  ]);
+  expect(result.success).toBe(false);
+  expect(result.steps.every((step) => step.dispatchState === "not_dispatched")).toBe(true);
+  expect(ready.calls).toEqual([]);
+});
+
+test.each([false, true])(
+  "unfocused attach refuses a shortcut batch before dispatch (foreground: %s)",
+  async (foreground) => {
+    const { driver, calls } = keyboardFixture(foreground);
+    const result = await driver.batch([{ action: "shortcut", combo: "Control+a" }]);
+    expect(result.success).toBe(false);
+    expect(result.steps[0]).toMatchObject({
+      action: "shortcut",
+      success: false,
+      dispatchState: "not_dispatched",
+      retrySafe: true,
+      attempts: 0,
+    });
+    expect(calls).toEqual(
+      foreground ? ["activate", ...Array<string>(10).fill("check")] : ["check"],
+    );
+  },
+);
+
+test("a mixed click and shortcut batch is rejected before any action", async () => {
+  const { driver, calls } = keyboardFixture(true, true);
+  const result = await driver.batch([
+    { action: "click", selector: "#save" },
+    { action: "shortcut", combo: "Control+s" },
+  ]);
+  expect(result.success).toBe(false);
+  expect(result.steps.map((step) => step.action)).toEqual(["click", "shortcut"]);
+  expect(result.steps.every((step) => step.dispatchState === "not_dispatched")).toBe(true);
+  expect(calls).toEqual([]);
+});
+
+test("foreground shortcut batches dispatch only after focus verification", async () => {
+  const { driver, calls } = keyboardFixture(true, true);
+  const result = await driver.batch([{ action: "shortcut", combo: "Control+a" }]);
+  expect(result.success).toBe(true);
+  expect(result.steps[0]).toMatchObject({ action: "shortcut", success: true });
+  expect(calls).toEqual(["activate", "check", "batch"]);
+});
+
+test("guard rejection occurs before foreground activation", async () => {
+  const { driver, calls } = keyboardFixture(true, true);
+  const guarded = createGuardedDriver(
+    driver,
+    {
+      mode: "enforce",
+      policyVersion: "test",
+      evaluate: async () => ({ decision: "deny", reason: "test" }),
+    },
+    (text) => text,
+  );
+  await expect(guarded.press("Escape")).rejects.toThrow();
+  expect(calls).not.toContain("activate");
+  expect(calls).not.toContain("batch");
+});
+
+test("goto overrides only document load and preserves the settle ceiling", async () => {
+  const waits: Array<{ phase: string; timeout: number | undefined }> = [];
+  const driver = new BrowserPilotDriver({ gotoTimeoutMs: 15000, navTimeoutMs: 700 });
+  const page = {
+    goto: async (_url: string, options: { timeout?: number }) => {
+      waits.push({ phase: "document", timeout: options.timeout });
+    },
+    waitForNavigation: async (options: { timeout?: number }) => {
+      waits.push({ phase: "settle", timeout: options.timeout });
+    },
+  } as unknown as Page;
+  seedDriver(driver, {}, page);
+  await driver.goto("https://example.test", { timeout: 9000 });
+  await driver.goto("https://example.test");
+  expect(waits).toEqual([
+    { phase: "document", timeout: 9000 },
+    { phase: "settle", timeout: 700 },
+    { phase: "document", timeout: 15000 },
+    { phase: "settle", timeout: 700 },
+  ]);
+});
+
+test("settle failures retain their phase and independent deadline", async () => {
+  const driver = new BrowserPilotDriver({ gotoTimeoutMs: 15000, navTimeoutMs: 700 });
+  seedDriver(driver, {}, {
+    goto: async () => {},
+    waitForNavigation: async () => {
+      throw new Error("settle timeout");
+    },
+  } as unknown as Page);
+  await expect(driver.goto("https://example.test", { timeout: 9000 })).rejects.toMatchObject({
+    code: "NAVIGATION_FAILED",
+    phase: "settle",
+    timeoutMs: 700,
+  } satisfies Partial<NavigationFailure>);
+});
 
 describe("BrowserPilotDriver popup integration", () => {
   test("passes opener and target filters, then switches to the pinned popup once", async () => {

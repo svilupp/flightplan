@@ -50,12 +50,14 @@
 // match is: a `*`-glob if the pattern contains `*`, else a case-sensitive SUBSTRING match
 // (so `/checkout` matches `https://x/checkout?ok=1`). VALUE match is EXACT string equality.
 
+import { InvalidSelectorError } from "../driver/normalize-selector.ts";
 import type {
   InteractiveElement,
   PageSnapshot,
   PageStateObservation,
   SnapshotNode,
 } from "../driver/types.ts";
+import { looksLikeUnprefixedAssertionSelector } from "../flow/normalize-target.ts";
 import type { Assertion } from "../flow/types.ts";
 import type { AssertType } from "../types.ts";
 import type { AssertionResult, ConditionOpts } from "./types.ts";
@@ -168,6 +170,7 @@ interface ParsedTarget {
   raw: string;
 }
 function parseTarget(target: string): ParsedTarget {
+  target = target.trim();
   if (target.startsWith("ref:")) return { kind: "ref", raw: target.slice("ref:".length) };
   if (target.startsWith("role:")) {
     const rest = target.slice("role:".length);
@@ -180,11 +183,16 @@ function parseTarget(target: string): ParsedTarget {
   // Explicit `css:` escape hatch for bare CSS (e.g. `css:tr`, `css:div.card`) — mirror
   // `flow/normalize-target.ts`: STRIP the prefix and treat it as synthetic so it resolves via
   // `driver.elementState` (real DOM) rather than being name-matched against the AX snapshot.
-  if (target.startsWith("css:")) {
+  if (/^css:/i.test(target)) {
     return { kind: "synthetic", raw: target.slice("css:".length).trim() };
   }
   if (target.startsWith("[") || target.startsWith(".") || target.startsWith("#")) {
     return { kind: "synthetic", raw: target };
+  }
+  if (looksLikeUnprefixedAssertionSelector(target)) {
+    throw new InvalidSelectorError(
+      `Selector ${JSON.stringify(target)} looks like CSS; prefix it with css:`,
+    );
   }
   return { kind: "plain", raw: target };
 }
@@ -262,10 +270,9 @@ interface TargetState {
  *    verify presence/visibility/text/count of arbitrary, incl. non-interactive, DOM elements. The
  *    DOM work lives in browser-pilot; flightplan just reads the returned `ElementState`.
  *  - SEMANTIC targets (`role:`/`text:`/`plain`) and `ref:` — or ANY target when `elementState` is
- *    unavailable (feature-detected) — keep the EXACT snapshot-based behaviour: presence/visibility
- *    from {@link targetVisible}, count from {@link matchingElements}, text derived from matched
- *    element names/values (with the same AX-tree fallback `text()` uses). This guarantees no
- *    regression for the AX-resolvable targets every existing test exercises.
+ *    unavailable (feature-detected) — use the snapshot: presence/visibility from
+ *    {@link targetVisible}, count from matching AX nodes and interactive refs, and text from
+ *    matched names/values (with the same AX-tree fallback `text()` uses).
  */
 async function resolveTargetState(
   target: string,
@@ -287,9 +294,24 @@ async function resolveTargetState(
       ...(s.selected !== undefined ? { selected: s.selected } : {}),
     };
   }
-  // Snapshot path (semantic targets, or `elementState` unavailable → no behaviour change).
+  // Snapshot path for semantic targets, or when `elementState` is unavailable.
   const snapshot = await source();
   const els = matchingElements(snapshot, target);
+  const nodes: SnapshotNode[] = [];
+  const visit = (node: SnapshotNode, matchedAncestor: boolean): void => {
+    const matches = matchesNodeTarget(node, target);
+    const textChild = /^(statictext|inlinetextbox)$/i.test(node.role);
+    // Text leaves repeat their containing control/heading's name in Chrome's AX tree.
+    // Keep standalone text nodes, but count a matched ancestor and its text only once.
+    const duplicateText =
+      (parsed.kind === "text" || parsed.kind === "plain") && textChild && matchedAncestor;
+    if (matches && !duplicateText) nodes.push(node);
+    for (const child of node.children ?? []) visit(child, matchedAncestor || matches);
+  };
+  for (const node of snapshot.accessibilityTree) visit(node, false);
+  // AX nodes and interactive elements describe the same elements. Deduplicate by snapshot ref.
+  const refs = new Set(nodes.map((node) => node.ref));
+  const count = nodes.length + els.filter((element) => !refs.has(element.ref)).length;
   const present = targetVisible(snapshot, target);
   let text: string;
   if (els.length > 0) {
@@ -308,7 +330,7 @@ async function resolveTargetState(
   return {
     present,
     visible: present,
-    count: els.length,
+    count,
     text,
     value: first?.value ?? null,
     ...(first?.checked !== undefined ? { checked: first.checked } : {}),
@@ -687,7 +709,7 @@ export function value(
 /**
  * `count` — the number of elements matching the target EQUALS `n`. For synthetic/CSS targets the
  * count comes from `driver.elementState` (so non-interactive rows the AX snapshot omits are
- * counted correctly); semantic targets keep counting matching interactive snapshot elements.
+ * counted correctly); semantic targets count matching AX nodes and interactive refs.
  */
 export function count(target: string, n: number, opts: ConditionOpts): Promise<AssertionResult> {
   return poll("count", target, opts, async (source) => {

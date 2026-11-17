@@ -69,6 +69,8 @@ export interface LintContext {
  * precomputed for the rules.
  */
 export interface ImportLintInfo {
+  /** Actual callable flows and entry hooks, excluding unused library imports. */
+  executedFlows?: readonly FlowFile[];
   /** Per-reference resolution outcome. */
   refs: ResolvedRef[];
   /** A detected import cycle (over the combined import+run DAG), as its path chain. */

@@ -79,7 +79,7 @@ async function readAiCalls(runDir: string): Promise<Array<Record<string, unknown
 }
 
 function defaultConfig(overrides: Partial<ResolvedConfig["run"]> = {}): ResolvedConfig {
-  return resolveConfigWithDefaults([{ run: { ...overrides } }]);
+  return resolveConfigWithDefaults([{ ai: { enabled: true } }, { run: { ...overrides } }]);
 }
 
 interface FakeResponse {
@@ -725,7 +725,10 @@ describe("runFlow AI — JEV classifier (fake fetch)", () => {
     d.enqueueBatchResult(makeSuccessBatch("role:button:Create order")); // L2 (JEV pick) acts
 
     const fetchFn = fakeJevFetch([jevResponse("c0", 0.97, { c0: 0.97, none_of_the_above: 0.03 })]);
-    const config = resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]);
+    const config = resolveConfigWithDefaults([
+      { ai: { enabled: true } },
+      { ai: { classifier: "jev" } },
+    ]);
     const factory: AiRuntimeFactory = (deps) =>
       createAiRuntime({ ...deps, jevApiKey: "fixture-jev-key", fetchFn });
 
@@ -780,6 +783,7 @@ describe("runFlow AI — JEV classifier (fake fetch)", () => {
 
     const fetchFn = fakeJevFetch([jevResponse("c0", 0.97, { c0: 0.97, none_of_the_above: 0.03 })]);
     const config = resolveConfigWithDefaults([
+      { ai: { enabled: true } },
       { ai: { classifier: "jev" }, run: { max_model_calls: 0 } },
     ]);
     const factory: AiRuntimeFactory = (deps) =>
@@ -822,7 +826,10 @@ target = "Primary action"
     d.enqueueBatchResult(makeSuccessBatch("role:button:Primary action")); // L2 (JEV pick) acts
 
     const fetchFn = fakeJevFetch([jevResponse("c0", 0.97, { c0: 0.97, none_of_the_above: 0.03 })]);
-    const config = resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]);
+    const config = resolveConfigWithDefaults([
+      { ai: { enabled: true } },
+      { ai: { classifier: "jev" } },
+    ]);
     const factory: AiRuntimeFactory = (deps) =>
       createAiRuntime({ ...deps, jevApiKey: "fixture-jev-key", fetchFn });
 
@@ -848,7 +855,10 @@ describe("runFlow AI — explicit classifier fail-fast (D1)", () => {
   test('classifier="jev" with no TYPESAFE_API_KEY (and no OPENROUTER key) throws ClassifierConfigError naming BOTH default env NAMEs', async () => {
     const { flowPath, outDir } = await writeFlow(clickFlow("ai.jev.missingkey", "Create order"));
     const d = new MockDriver();
-    const config = resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]);
+    const config = resolveConfigWithDefaults([
+      { ai: { enabled: true } },
+      { ai: { classifier: "jev" } },
+    ]);
 
     // No aiRuntimeFactory injected — exercises the REAL buildAiRuntime path. optsFor's env is {}
     // (hermetic), so neither TYPESAFE_API_KEY nor OPENROUTER_API_KEY (nor JEV_API_KEY) is present.
@@ -865,6 +875,7 @@ describe("runFlow AI — explicit classifier fail-fast (D1)", () => {
     const { flowPath, outDir } = await writeFlow(clickFlow("ai.jev.explicitenv", "Create order"));
     const d = new MockDriver();
     const config = resolveConfigWithDefaults([
+      { ai: { enabled: true } },
       { ai: { classifier: "jev", jev_api_key_env: "MY_TYPESAFE_KEY" } },
     ]);
 
@@ -885,7 +896,10 @@ describe("runFlow AI — explicit classifier fail-fast (D1)", () => {
   test('classifier="llm" with no generative provider key throws ClassifierConfigError', async () => {
     const { flowPath, outDir } = await writeFlow(clickFlow("ai.llm.missingkey", "Create order"));
     const d = new MockDriver();
-    const config = resolveConfigWithDefaults([{ ai: { classifier: "llm" } }]);
+    const config = resolveConfigWithDefaults([
+      { ai: { enabled: true } },
+      { ai: { classifier: "llm" } },
+    ]);
 
     const run = runFlow(optsFor(flowPath, outDir, d, config));
     await expect(run).rejects.toBeInstanceOf(ClassifierConfigError);
@@ -912,7 +926,10 @@ describe("runFlow AI — JEV-only runtime (partial, no generate)", () => {
     const fetchFn = fakeJevFetch([
       jevResponse("none_of_the_above", 1.0, { c0: 0, none_of_the_above: 1 }),
     ]);
-    const config = resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]);
+    const config = resolveConfigWithDefaults([
+      { ai: { enabled: true } },
+      { ai: { classifier: "jev" } },
+    ]);
     const factory: AiRuntimeFactory = (deps) =>
       createAiRuntime({ ...deps, jevApiKey: "fixture-jev-key", fetchFn });
 
@@ -947,7 +964,10 @@ inputs = ["text"]
     const { flowPath, outDir } = await writeFlow(flowSource);
     const d = new MockDriver();
     const fetchFn = fakeJevFetch([jevResponse("c0", 0.9, { c0: 0.9, none_of_the_above: 0.1 })]);
-    const config = resolveConfigWithDefaults([{ ai: { classifier: "jev" } }]);
+    const config = resolveConfigWithDefaults([
+      { ai: { enabled: true } },
+      { ai: { classifier: "jev" } },
+    ]);
     const factory: AiRuntimeFactory = (deps) =>
       createAiRuntime({ ...deps, jevApiKey: "fixture-jev-key", fetchFn });
 
@@ -959,4 +979,32 @@ inputs = ["text"]
     expect(result.summary.failed_assertions[0]?.type).toBe("ai_judge");
     expect(result.summary.failed_assertions[0]?.detail).toContain("Phase 4");
   });
+});
+
+test("explicit local heuristic resolves L2 under zero remote limits", async () => {
+  const { flowPath, outDir } = await writeFlow(clickFlow("ai.local-only", "Create order"));
+  const driver = new MockDriver().setSnapshot(orderSnapshot());
+  driver.setResolveAll([
+    makeRankedCandidate({ ref: "e1", role: "button", name: "Create order", score: 0.95 }),
+  ]);
+  driver.setSignature(`${ORDER_URL}|s`);
+  driver.enqueueBatchResult(makeFailureBatch("hidden"));
+  driver.enqueueBatchResult(makeSuccessBatch("role:button:Create order"));
+  const result = await runFlow(
+    optsFor(
+      flowPath,
+      outDir,
+      driver,
+      resolveConfigWithDefaults([
+        {
+          ai: { enabled: true, classifier: "heuristic" },
+          run: { max_model_calls: 0, max_screenshots: 0, max_cost_usd: 0 },
+        },
+      ]),
+    ),
+  );
+  expect(result.summary.verdict).toBe("passed");
+  expect(result.summary.steps[0]?.tier).toBe("L2");
+  expect(await readAiCalls(result.runDir)).toEqual([]);
+  expect(driver.callsTo("screenshot")).toHaveLength(0);
 });

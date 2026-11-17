@@ -44,8 +44,9 @@ import {
   resolveAuthPlan,
 } from "./connect-resolution.ts";
 import { normalizeBatchResult } from "./dispatch-metadata.ts";
-import { clickStep, pressStep, submitOptions } from "./navigation.ts";
-import { normalizeSelectorArg } from "./normalize-selector.ts";
+import { KeyboardPreflightError } from "./keyboard.ts";
+import { clickStep, NavigationFailure, pressStep, submitOptions } from "./navigation.ts";
+import { InvalidSelectorError, normalizeSelectorArg } from "./normalize-selector.ts";
 import type {
   ActionOpts,
   BatchOptions,
@@ -91,10 +92,12 @@ export type DialogPolicy = NativeDialogPolicy;
  */
 export const DEFAULT_ACTION_TIMEOUT_MS = 5000;
 /**
- * Default client-side navigation-SETTLE ceiling (ms) for the post-`goto`/`press`
+ * Default client-side settle ceiling (ms) for `goto` and post-`press`
  * `waitForNavigation({ optional:true })` wait (`[timeouts] nav_ms`).
  */
 export const DEFAULT_NAV_TIMEOUT_MS = 2000;
+/** Default document-navigation ceiling, independent of optional navigation settling. */
+export const DEFAULT_GOTO_TIMEOUT_MS = 30000;
 
 /** Read the browser-pilot package/source/build identity without opening a browser connection. */
 export function getBrowserPilotProvenance(): BrowserPilotProvenance {
@@ -118,11 +121,13 @@ export interface BrowserPilotDriverOptions {
    */
   actionTimeoutMs?: number;
   /**
-   * Default client-side navigation-settle timeout (ms) for the post-`goto`/`press`
-   * `waitForNavigation({ optional:true })` wait — the resolved `[timeouts] nav_ms` (default
-   * {@link DEFAULT_NAV_TIMEOUT_MS} = 2000). The runner passes `config.timeouts.nav_ms`.
+   * Optional post-`goto`/modified-`press` settle timeout (ms) — `[timeouts] nav_ms` (default
+   * {@link DEFAULT_NAV_TIMEOUT_MS} = 2000). The runner passes `config.timeouts.nav_ms`. Direct constructors
+   * that omit gotoTimeoutMs also use an explicitly supplied navTimeoutMs for legacy document loading.
    */
   navTimeoutMs?: number;
+  /** Document load ceiling; an explicit legacy navTimeoutMs is the fallback when absent. */
+  gotoTimeoutMs?: number;
   /**
    * Author-declared EXTRA attribute names (`[resolve] attributes`, e.g. `data-cmd`) the deterministic
    * resolver may use as selector hooks (Fix 2 BONUS). The driver merges these into EVERY enriched
@@ -145,8 +150,9 @@ export interface BrowserPilotDriverOptions {
 /** Internal record of how the connection was acquired (drives teardown semantics). */
 interface AttachConnection {
   kind: "attach";
-  /** Tab names we opened with `newPage` so teardown closes only those. */
-  openedPages: string[];
+  foreground: boolean;
+  /** Exact targets created by this driver; reused user tabs are never owned. */
+  openedTargetIds: string[];
 }
 /** Minimal shape of chrome-launcher's `LaunchedChrome` — enough for kill()/port. */
 interface LaunchedChrome {
@@ -273,10 +279,11 @@ export class BrowserPilotDriver implements Driver {
    */
   readonly actionTimeoutMs: number;
   /**
-   * Default client-side navigation-settle ceiling (ms) after goto/press (`[timeouts] nav_ms`).
+   * Optional navigation settle ceiling (ms), from `[timeouts] nav_ms`.
    * Public + readonly for the same reason as {@link actionTimeoutMs}.
    */
   readonly navTimeoutMs: number;
+  readonly gotoTimeoutMs: number;
   /**
    * Author-declared extra selector-hook attributes (`[resolve] attributes`), merged into every
    * enriched snapshot + resolveAll (Fix 2 BONUS). Readonly for diagnostics; empty by default.
@@ -308,6 +315,7 @@ export class BrowserPilotDriver implements Driver {
     this.dialogPolicy = options.dialogPolicy ?? "dismiss";
     this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
     this.navTimeoutMs = options.navTimeoutMs ?? DEFAULT_NAV_TIMEOUT_MS;
+    this.gotoTimeoutMs = options.gotoTimeoutMs ?? options.navTimeoutMs ?? DEFAULT_GOTO_TIMEOUT_MS;
     this.resolveAttributes = options.resolveAttributes ?? [];
   }
 
@@ -419,21 +427,24 @@ export class BrowserPilotDriver implements Driver {
     } // else: leave undefined → browser-pilot auto-discovers (may throw multiple-local-browsers)
 
     const args: ResolvedAttachConnectArgs = buildAttachConnectArgs(cfg, resolvedWsUrl);
-    this.browser = await this.connectNative(args);
-    this.connection = { kind: "attach", openedPages: [] };
+    const browser = await this.connectNative(args);
+    this.browser = browser;
+    const openedTargetIds: string[] = [];
+    this.connection = { kind: "attach", openedTargetIds, foreground: cfg.foreground === true };
 
     // Acquire a page. Never hijack the user's current tab: open a fresh one unless an
     // explicit targetUrl asks to reuse a matching tab.
     if (cfg.targetUrl) {
       this.activePage = await this.browser.page(undefined, { targetUrl: cfg.targetUrl });
     } else {
-      const before = await this.listPageNames();
-      // Flightplan owns the page it drives; browser-pilot preserves DOM click effects in a
-      // background target without foregrounding the browser window.
-      this.activePage = await (this.browser as Browser).newPage();
-      const after = await this.listPageNames();
-      const opened = after.filter((n) => !before.includes(n));
-      this.connection.openedPages.push(...opened);
+      // Register ownership before page initialization, which can fail after target creation.
+      const { targetId } = await browser.cdpClient.send<{ targetId: string }>(
+        "Target.createTarget",
+        { url: "about:blank", background: true },
+        null,
+      );
+      openedTargetIds.push(targetId);
+      this.activePage = await browser.page(undefined, { targetId });
     }
     await this.installDialogHandler();
   }
@@ -675,6 +686,7 @@ export class BrowserPilotDriver implements Driver {
 
     try {
       const popup = await browser.expectNewPage(action, options);
+      if (this.connection?.kind === "attach") this.connection.openedTargetIds.push(popup.targetId);
       const targetProvenance = popup.getTargetProvenance();
       if (expectation.targetId !== undefined && popup.targetId !== expectation.targetId) {
         return {
@@ -748,12 +760,6 @@ export class BrowserPilotDriver implements Driver {
     };
   }
 
-  private async listPageNames(): Promise<string[]> {
-    if (!this.browser) return [];
-    const targets = await this.browser.listTargets();
-    return targets.map((t) => (t as { name?: string }).name ?? "").filter(Boolean);
-  }
-
   async page(): Promise<PageHandle> {
     return this.requirePage();
   }
@@ -788,11 +794,37 @@ export class BrowserPilotDriver implements Driver {
     const conn = this.connection;
     const browser = this.browser;
     try {
-      if (conn?.kind === "attach" && browser && "closePage" in browser) {
-        // Close only the tabs we opened; never touch the user's tabs.
-        for (const name of conn.openedPages) {
+      if (conn?.kind === "attach" && browser && "cdpClient" in browser) {
+        // Failed/undeclared popup observations still leave targets owned by our opener.
+        // Resolve descendants before closing parents; unrelated and reused tabs stay intact.
+        const owned = new Set(conn.openedTargetIds);
+        try {
+          const { targetInfos } = await browser.cdpClient.send<{
+            targetInfos: Array<{ targetId: string; openerId?: string; type: string }>;
+          }>("Target.getTargets", {}, null, { timeout: 5000 });
+          let changed = true;
+          while (changed) {
+            changed = false;
+            for (const target of targetInfos) {
+              if (
+                target.type === "page" &&
+                target.openerId &&
+                owned.has(target.openerId) &&
+                !owned.has(target.targetId)
+              ) {
+                owned.add(target.targetId);
+                changed = true;
+              }
+            }
+          }
+        } catch {
+          // A broken connection must not prevent cleanup of already-known targets.
+        }
+        for (const targetId of [...owned].reverse()) {
           try {
-            await browser.closePage(name);
+            await browser.cdpClient.send("Target.closeTarget", { targetId }, null, {
+              timeout: 5000,
+            });
           } catch {
             // tab may already be gone; non-fatal
           }
@@ -832,13 +864,19 @@ export class BrowserPilotDriver implements Driver {
     // event internally. Always pass the driver's navigation ceiling so the raw CDP
     // Page.navigate command is bounded by `[timeouts].nav_ms` even when the runner calls
     // driver.goto(url) without per-step options.
-    await page.goto(url, { timeout: opts?.timeout ?? this.navTimeoutMs });
-    // DRIVER DEFAULT (PLAN §3): settle any follow-on client-side navigation so the page is
-    // quiescent for the next snapshot/assertion. `optional:true` → never throws if nothing
-    // navigates (the common case: bp's goto already settled the top-level load).
+    const timeout = opts?.timeout ?? this.gotoTimeoutMs;
+    try {
+      await page.goto(url, { timeout });
+    } catch (cause) {
+      throw new NavigationFailure(cause, timeout);
+    }
+    // A step's document timeout never extends the optional client-side settle window.
     if (opts?.waitForNavigation ?? true) {
-      // Bound the client-side settle to the configured nav ceiling (default 2000), not bp's ~30s.
-      await page.waitForNavigation({ optional: true, timeout: opts?.timeout ?? this.navTimeoutMs });
+      try {
+        await page.waitForNavigation({ optional: true, timeout: this.navTimeoutMs });
+      } catch (cause) {
+        throw new NavigationFailure(cause, this.navTimeoutMs, "settle");
+      }
     }
     // A top-level navigation resets any frame context (browser-pilot resets its own frame state on
     // navigation); drop our re-entry selector so a later snapshot never tries to re-enter a frame
@@ -994,7 +1032,17 @@ export class BrowserPilotDriver implements Driver {
    */
   async elementState(selector: string): Promise<ElementState> {
     const page = this.requirePage();
-    return page.elementState(normalizeSelectorArg(selector));
+    const normalized = normalizeSelectorArg(selector);
+    // BP 0.8 treats CSS syntax errors as no matches. Validate syntax before an absence check.
+    if (!/^(?:role:|text:)/.test(normalized)) {
+      const valid = await page.evaluate<boolean>(`(() => {
+        try { document.createDocumentFragment().querySelector(${JSON.stringify(normalized)}); return true; }
+        catch { return false; }
+      })()`);
+      if (valid !== true)
+        throw new InvalidSelectorError(`Invalid CSS selector ${JSON.stringify(normalized)}`);
+    }
+    return page.elementState(normalized);
   }
 
   /**
@@ -1013,6 +1061,36 @@ export class BrowserPilotDriver implements Driver {
 
   async batch(steps: Step[], opts?: BatchOptions): Promise<BatchResult> {
     const page = this.requirePage();
+    if (
+      this.connection?.kind === "attach" &&
+      steps.some((step) => step.action === "press" || step.action === "shortcut")
+    ) {
+      try {
+        // A single batch call cannot recheck focus between its actions. Reject before any
+        // earlier click can dispatch; splitting would destroy the batch's receipt semantics.
+        if (steps.length !== 1)
+          throw new KeyboardPreflightError(
+            "Raw attach requires keyboard actions in separate steps.",
+          );
+        await this.prepareKeyboard(page);
+      } catch (error) {
+        if (!(error instanceof KeyboardPreflightError)) throw error;
+        return {
+          success: false,
+          totalDurationMs: 0,
+          steps: steps.map((step, index) => ({
+            index,
+            action: step.action,
+            success: false,
+            durationMs: 0,
+            error: error.message,
+            dispatchState: "not_dispatched",
+            retrySafe: true,
+            attempts: 0,
+          })),
+        };
+      }
+    }
     // DRIVER DEFAULT: any navigating step (click/submit/press) that did not set
     // `waitForNavigation` is defaulted to `true` so browser-pilot's `'auto'` never leaks.
     // Also normalize each step's `selector` (strip Flightplan's `css:` authoring prefix) so a
@@ -1118,6 +1196,28 @@ export class BrowserPilotDriver implements Driver {
     return page.hover(normalizeSelectorArg(sel), passThroughActionOpts(opts, this.actionTimeoutMs));
   }
 
+  private async prepareKeyboard(page: Page): Promise<void> {
+    if (this.connection?.kind !== "attach") return;
+    try {
+      // This method is reached through the guarded action boundary, after approval.
+      if (this.connection.foreground) await page.cdpClient.send("Page.bringToFront");
+      // Chrome may acknowledge activation before its focus event reaches the renderer.
+      const checks = this.connection.foreground ? 10 : 1;
+      for (let attempt = 0; attempt < checks; attempt++) {
+        const ready = await page.evaluate<boolean>(
+          'document.visibilityState === "visible" && document.hasFocus()',
+        );
+        if (ready === true) return;
+        if (attempt + 1 < checks) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } catch {
+      throw new KeyboardPreflightError("Could not verify keyboard focus; no key was sent.");
+    }
+    throw new KeyboardPreflightError(
+      "Selected tab is not visible and focused; focus it or set [config.connect] foreground = true. No key was sent.",
+    );
+  }
+
   async press(
     key: string,
     opts?: { modifiers?: Array<"Control" | "Shift" | "Alt" | "Meta"> },
@@ -1126,6 +1226,7 @@ export class BrowserPilotDriver implements Driver {
     // void and never settles navigation; the one-step batch gives us both a boolean and the
     // forced `waitForNavigation`. Modifiers (if any) are applied via the direct press first.
     const page = this.requirePage();
+    await this.prepareKeyboard(page);
     if (opts?.modifiers && opts.modifiers.length > 0) {
       await page.press(key, { modifiers: opts.modifiers });
       // best-effort settle after a modified keypress, bounded by the nav ceiling (not bp's ~30s)

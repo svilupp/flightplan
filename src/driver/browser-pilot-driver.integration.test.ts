@@ -29,7 +29,7 @@ describe("BrowserPilotDriver background automation page", () => {
 
   afterAll(async () => {
     await driver?.teardown();
-    await server?.stop();
+    await server?.stop(true);
   });
 
   integrationTest(

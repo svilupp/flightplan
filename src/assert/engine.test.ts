@@ -170,3 +170,85 @@ describe("eager short-circuit is fast (no real sleeping; deadlines are virtual)"
     expect(realElapsed).toBeLessThan(2000);
   });
 });
+
+describe("assertion selector regressions", () => {
+  for (const selector of [
+    "h1",
+    "nav[aria-label='Main navigation']",
+    "div.card",
+    "input:checked",
+    "form input",
+    "input + button",
+    "img.hero",
+    "button, input",
+    "button:first-of-type",
+    "iframe",
+    "H1",
+    "*",
+    "my-widget",
+    "svg path",
+  ]) {
+    for (const assertion of [
+      { type: "hidden", selector },
+      { type: "count", selector, count: 0 },
+    ] as const) {
+      test(`rejects ambiguous CSS syntax in ${assertion.type}: ${selector}`, async () => {
+        const result = await runAssertion(assertion, ctx(new MockDriver()));
+        expect(result.pass).toBe(false);
+        expect(result.message).toContain("prefix it with css:");
+      });
+    }
+  }
+
+  test("counts non-interactive AX nodes without double-counting interactive refs", async () => {
+    const driver = new MockDriver().setSnapshot(
+      makeSnapshot({
+        accessibilityTree: [
+          { ref: "e1", role: "heading", name: "Tasks" },
+          {
+            ref: "e2",
+            role: "button",
+            name: "Tasks",
+            children: [
+              {
+                ref: "e3",
+                role: "StaticText",
+                name: "Tasks",
+                children: [{ ref: "e4", role: "InlineTextBox", name: "Tasks" }],
+              },
+            ],
+          },
+        ],
+        interactiveElements: [{ ref: "e2", selector: "#tasks", role: "button", name: "Tasks" }],
+      }),
+    );
+    expect(
+      (
+        await runAssertion(
+          { type: "count", selector: "role:heading:Tasks", count: 0, timeout_ms: 1 },
+          ctx(driver),
+        )
+      ).pass,
+    ).toBe(false);
+    expect(
+      (await runAssertion({ type: "count", selector: "role:heading:Tasks", count: 1 }, ctx(driver)))
+        .pass,
+    ).toBe(true);
+    expect(
+      (await runAssertion({ type: "count", selector: "text:Tasks", count: 2 }, ctx(driver))).pass,
+    ).toBe(true);
+  });
+
+  test("colon-separated accessible names remain usable", async () => {
+    const driver = new MockDriver().setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "textbox", name: "label: Email" }),
+        ],
+      }),
+    );
+    expect(
+      (await runAssertion({ type: "visible", selector: "label: Email" }, ctx(driver))).pass,
+    ).toBe(true);
+  });
+});

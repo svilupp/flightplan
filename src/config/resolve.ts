@@ -83,13 +83,14 @@ export const DEFAULT_PLAN = {
 /**
  * Default action/navigation wall-clock ceilings (`[timeouts]`). `action_ms` bounds browser-pilot's
  * ~30s actionability default so a disabled/wrong LEADING selector fails fast (≈5s) and escalates
- * instead of dead-hanging (the measured admin-crud 30s L0 stall); `nav_ms` bounds the post-action
- * client-side navigation SETTLE. Threaded into `BrowserPilotDriver` by the runner
- * (`actionTimeoutMs`/`navTimeoutMs`). Mergeable key-by-key; a per-step `timeout_ms` overrides
+ * instead of dead-hanging (the measured admin-crud 30s L0 stall). `goto_ms` bounds document loading;
+ * `nav_ms` bounds optional navigation settling. Threaded into `BrowserPilotDriver` by the runner
+ * (`actionTimeoutMs`/`gotoTimeoutMs`/`navTimeoutMs`). Mergeable key-by-key; a per-step `timeout_ms` overrides
  * `action_ms` for that action.
  */
 export const DEFAULT_TIMEOUTS = {
   action_ms: 5000,
+  goto_ms: 30000,
   nav_ms: 2000,
   // Flat post-action AX-tree settle before the next step's single L1 snapshot (the runner's
   // `LADDER_SETTLE_MS`). `0` disables it. Kept in sync with the runner's fallback constant.
@@ -106,6 +107,7 @@ export const DEFAULT_TIMEOUTS = {
  * in AFTER all layers are merged, keyed off the FINAL resolved `provider`, and only when the user
  * did not set `api_key_env` explicitly. */
 export const DEFAULT_AI = {
+  enabled: false,
   provider: "openrouter",
   // Provider-independent (unlike `api_key_env`), so these go straight into the
   // built-in defaults layer rather than being filled in post-merge.
@@ -306,6 +308,8 @@ export function resolveConfig(layers: ReadonlyArray<Config>): Config {
  * a {@link ResolvedConfig} with the always-present sections (`run`, `redaction`) guaranteed.
  */
 export function resolveConfigWithDefaults(layers: ReadonlyArray<Config>): ResolvedConfig {
+  // Read authored values before built-in defaults erase whether nav_ms was explicit.
+  const authoredTimeouts = resolveConfig(layers).timeouts;
   const merged = resolveConfig([BUILTIN_DEFAULTS, ...layers]);
   // Re-validate the merged shape (defense-in-depth; cheap, and catches a bad CLI override).
   const parsed = ConfigSchema.parse(merged);
@@ -321,6 +325,10 @@ export function resolveConfigWithDefaults(layers: ReadonlyArray<Config>): Resolv
     plan: { ...DEFAULT_PLAN, ...parsed.plan },
     // Action/nav ceilings always present: an unset key keeps its default (mergeable), so
     // `action_ms` (5000) and `nav_ms` (2000) are guaranteed for the driver.
-    timeouts: { ...DEFAULT_TIMEOUTS, ...parsed.timeouts },
+    timeouts: {
+      ...DEFAULT_TIMEOUTS,
+      ...parsed.timeouts,
+      goto_ms: authoredTimeouts?.goto_ms ?? authoredTimeouts?.nav_ms ?? DEFAULT_TIMEOUTS.goto_ms,
+    },
   };
 }

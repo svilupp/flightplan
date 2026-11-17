@@ -1,6 +1,6 @@
 version = 2
 source = "examples/flows/signature.toml"
-source_hash = "sha256:e1087c940133f52ff5dd61c29b870c301b4705b8571b8e58e2cc8c8cc059fe4e"
+source_hash = "sha256:510ebbf28216a3c75c21785ae219e5690b61decfdb25066b93bc6b6f272328af"
 description = "Continue past the signature gate and assert the deterministic result"
 
 [[targets]]

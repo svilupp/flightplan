@@ -1,6 +1,6 @@
 version = 2
 source = "examples/flows/gauntlet.toml"
-source_hash = "sha256:a876a3559c0417fc3727dfdad745b5c55080bdf13e1f9d7eadc963b6d1c08961"
+source_hash = "sha256:77f17cfab1a513946790ba3cc82d058bae7d40d61b427f66ed4b9dad0f3e81b5"
 description = "Resolve and save the billing address among identical Save buttons"
 
 [[targets]]

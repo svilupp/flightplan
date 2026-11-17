@@ -8,6 +8,7 @@ description = "JEV visual recovery for an unlabeled icon with bounded screenshot
 base_url = "http://localhost:3000"
 
 [config.ai]
+enabled = true
 classifier = "jev"
 
 [config.ai.jev]

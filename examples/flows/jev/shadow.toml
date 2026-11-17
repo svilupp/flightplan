@@ -8,6 +8,7 @@ description = "JEV shadow comparison after heuristic selection without controlli
 base_url = "http://localhost:3000"
 
 [config.ai]
+enabled = true
 classifier = "heuristic"
 
 [config.ai.jev]

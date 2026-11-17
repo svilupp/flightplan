@@ -260,8 +260,14 @@ Save failures (`saveAuthState` rejecting) are always a non-fatal warning, never 
 ## API-key conditions
 
 No key is needed when a run resolves at L0/L1 and performs no AI-backed assertion or step. A warm
-lock replay is also keyless when it stays at L0. Set `OPENROUTER_API_KEY` before a run that can
-invoke L2 resolver, L3 vision, L4 advisor, L5 planner, `ai_pick`, or `ai_judge`:
+lock replay is also keyless when it stays at L0. To permit L2 resolver, L3 vision, L4 advisor,
+L5 planner, `ai_pick` escalation, or `ai_judge`, enable AI in the entry flow and set
+`OPENROUTER_API_KEY`:
+
+```toml
+[config.ai]
+enabled = true
+```
 
 ```sh
 export OPENROUTER_API_KEY=...
@@ -308,6 +314,9 @@ A compatibility borrower has raw authority and does not enforce owner policy.
 ## Action guards
 
 ```toml
+[config.ai]
+enabled = true
+
 [config.guard]
 mode = "shadow"
 policy = "Allow reading orders. Deny refunds, payments, and deletions."
@@ -318,7 +327,11 @@ timeout_ms = 3000
 max_evaluations = 100
 ```
 
-`shadow` evaluates actions with a separate budget but cannot veto them, including on timeout or
+Remote guards require explicit AI permission, including shadow mode. Global zero call/cost limits
+block evaluation before transport, and zero screenshot limits block model image capture. See
+[execution policy](EXECUTION_POLICY.md) for migration and trusted host callback behavior.
+
+`shadow` evaluates actions with a separate positive budget but cannot veto them, including on timeout or
 observer failure. `enforce` blocks deny and unknown verdicts before input. It requires a trusted
 dispatcher and negotiated assurance; missing support fails with `atomic_dispatch_unavailable`
 or `dispatch_assurance_unavailable`. Start in shadow to evaluate a policy against your own fixtures.

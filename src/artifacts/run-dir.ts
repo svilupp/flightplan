@@ -17,7 +17,7 @@
 // the CLI `-o`/`--out` flag (ParsedArgs.out → `createRun({ baseDir })`).
 //
 // Determinism: `runId` generation takes an injectable clock (`now()`) and id source
-// (`genId()`), defaulting to the real wall clock + crypto random. Tests inject fixed ones so
+// (`genId()`), defaulting to the real wall clock + random suffix. Tests inject fixed ones so
 // runIds and the directory name are reproducible (this module's brief; PLAN.md determinism
 // note).
 //
@@ -98,17 +98,22 @@ export interface CreateRunOptions {
   now?: () => number;
   /**
    * Injected id source for the runId's short random/sequence suffix. Defaults to an 8-char
-   * lowercase base36 token from `crypto.getRandomValues`. Tests inject a fixed value.
+   * lowercase base36 token, using Web Crypto when available. Tests inject a fixed value.
    */
   genId?: () => string;
   /** Override the whole runId (skips generation entirely). Useful for resume/tests. */
   runId?: string;
 }
 
-/** Default short-id source: 8 lowercase base36 chars from CSPRNG bytes. */
+/** Default short-id source: 8 lowercase base36 chars for artifact directory uniqueness. */
 function defaultGenId(): string {
   const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else {
+    // Node 18 has no global Web Crypto by default. Run IDs are artifact labels, never
+    // authorization tokens; ordinary randomness preserves the synchronous portable API.
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
   let out = "";
   for (const b of bytes) {
     out += (b % 36).toString(36);

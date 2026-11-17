@@ -39,3 +39,12 @@ export function normalizeSelectorArg(selector: string | string[]): string | stri
 export function normalizeSelectorArg(selector: string | string[]): string | string[] {
   return Array.isArray(selector) ? selector.map(normalizeSelector) : normalizeSelector(selector);
 }
+
+/** A selector cannot be interpreted; absence assertions must not treat it as zero matches. */
+export class InvalidSelectorError extends Error {
+  readonly code = "INVALID_SELECTOR";
+  constructor(message = "Invalid CSS selector") {
+    super(message);
+    this.name = "InvalidSelectorError";
+  }
+}

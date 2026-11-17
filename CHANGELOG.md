@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0] - 2026-11-06
+
+- Require explicit AI permission with `[config.ai] enabled = true`. See [migration details](docs/EXECUTION_POLICY.md).
+- Add separate navigation deadlines, keyboard focus checks, strict lint and sweep preflight.
+- Fix invocation replay, composed secret handling, assertions, browser cleanup and Node 18 run IDs. Update docs and skills.
+- Existing invocation keys can return `INVOCATION_CONFLICT` after upgrading; reconcile the previous outcome before choosing a new key.
+
 ## [0.5.0] - 2026-10-18
 
 - Build reusable recipes with typed inputs, page data extraction, and JSON outputs. Discover recipes with `list` and `describe`; inspect their starting state with `check`.

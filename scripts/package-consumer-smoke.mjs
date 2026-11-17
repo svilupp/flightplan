@@ -233,7 +233,9 @@ for (const modality of ["text", "screenshot"]) {
   const result = await runFlow({
     ...options,
     flowSource,
-    config: resolveConfigWithDefaults([{ run: { max_model_calls: 1, max_screenshots: 1 } }]),
+    config: resolveConfigWithDefaults([
+      { ai: { enabled: true }, run: { max_model_calls: 1, max_screenshots: 1 } },
+    ]),
     aiRuntimeFactory: (deps) =>
       createAiRuntime({
         ...deps,

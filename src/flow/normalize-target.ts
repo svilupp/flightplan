@@ -113,3 +113,43 @@ export function cssOnlyTarget(target: string | readonly string[] | undefined): s
   if (selectorCount !== 1 || cssSelector === undefined) return undefined;
   return cssSelector;
 }
+
+/**
+ * Heuristic: does an NL-classified `target` entry actually look like an unprefixed selector
+ * (CSS id/class, attribute selector, xpath, a CSS combinator)? If so the author probably meant
+ * a selector and should use the `css:` prefix — misclassification is otherwise impossible by
+ * construction (v002-2), but this catches the likely-a-typo case.
+ */
+export function looksLikeUnprefixedSelector(value: string): boolean {
+  const v = value.trim();
+  if (v.length === 0) return false;
+  // xpath
+  if (v.startsWith("//") || v.startsWith("(/")) return true;
+  // explicit engine prefixes some tools use (not part of flightplan's whitelist)
+  if (/^(css=|xpath=)/.test(v)) return true;
+  // id / class selectors at the start
+  if (/^[#.][A-Za-z_]/.test(v)) return true;
+  // attribute selector [data-testid='x'] / [name="y"] mid-string or at the start
+  if (/\[[A-Za-z][\w-]*([~|^$*]?=|\])/.test(v)) return true;
+  // CSS child combinator: a `>` between selector-ish tokens (NL prose never uses ` > ` this way).
+  if (/[\w#.\]]\s*>\s*[\w#.[]/.test(v)) return true;
+  return false;
+}
+
+// These checks apply only to assertions. Bare action targets can still be natural language.
+const ASSERTION_HTML_TAG =
+  /^(html|head|body|base|link|meta|style|title|address|article|aside|footer|header|h[1-6]|hgroup|main|nav|section|search|blockquote|dd|div|dl|dt|figcaption|figure|hr|li|menu|ol|p|pre|ul|a|abbr|b|bdi|bdo|br|cite|code|data|dfn|em|i|kbd|mark|q|rp|rt|ruby|s|samp|small|span|strong|sub|sup|time|u|var|wbr|area|audio|img|map|track|video|embed|iframe|object|picture|source|canvas|noscript|script|del|ins|caption|col|colgroup|table|tbody|td|tfoot|th|thead|tr|button|datalist|fieldset|form|input|label|legend|meter|optgroup|option|output|progress|select|textarea|details|dialog|summary|slot|template|svg|path|g|rect|circle|ellipse|line|polyline|polygon|text|defs|symbol|use|clipPath|mask|foreignObject|math|mi|mo|mn|ms|mtext|\*|[a-z][\w]*-[\w-]+)(?=$|[\s.#[:>+~,|])(.*)$/is;
+
+/** Assertion selectors must disambiguate bare tags from names with css: or text:. */
+export function looksLikeUnprefixedAssertionSelector(value: string): boolean {
+  if (looksLikeUnprefixedSelector(value)) return true;
+  const suffix = ASSERTION_HTML_TAG.exec(value.trim())?.[2];
+  if (suffix === undefined) return false;
+  return (
+    suffix === "" ||
+    /^[.#[]/.test(suffix) ||
+    /^:[\w-]+(?:\(|$)/.test(suffix) ||
+    /^\s*[>+~,|]/.test(suffix) ||
+    /^\s+[\w*#.[:]/.test(suffix)
+  );
+}

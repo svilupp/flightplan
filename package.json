@@ -1,6 +1,6 @@
 {
   "name": "@svilupp/flightplan",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "TOML-defined browser workflows with deterministic assertions, effect-aware retry policy, selector locks, and a layered resolver backed by browser-pilot.",
   "license": "MIT",
   "repository": {

@@ -138,7 +138,13 @@ export function resolveModulePath(modulePath: string, importerPath: string): str
  */
 export async function resolveImports(
   root: LoadedFlow,
-  opts?: { env?: Record<string, string | undefined>; fs?: FileSystemPort; inputs?: InputValues },
+  opts?: {
+    env?: Record<string, string | undefined>;
+    fs?: FileSystemPort;
+    inputs?: InputValues;
+    /** Static graph inspection does not require input values or credentials. */
+    bindInputs?: boolean;
+  },
 ): Promise<ImportGraph> {
   const env = opts?.env ?? ambientEnv();
   const fs = opts?.fs;
@@ -162,14 +168,17 @@ export async function resolveImports(
     onStack.add(path);
     stack.push(path);
 
-    const inputs = resolveInputs(
-      loaded.flow.inputs,
-      undefined,
-      env,
-      {},
-      loaded.path === root.path ? opts?.inputs : undefined,
-      loaded.path === root.path,
-    );
+    const inputs =
+      opts?.bindInputs === false
+        ? {}
+        : resolveInputs(
+            loaded.flow.inputs,
+            undefined,
+            env,
+            {},
+            loaded.path === root.path ? opts?.inputs : undefined,
+            loaded.path === root.path,
+          );
     const refs = extractRefs(loaded.flow);
     const children: string[] = [];
 

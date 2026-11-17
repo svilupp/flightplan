@@ -22,6 +22,7 @@ import {
   parseFlowFile,
   resolveImports,
 } from "../flow/index.ts";
+import { collectExecutedFlows } from "../flow/run.ts";
 import { defaultFileSystem } from "../fs-default.ts";
 import { dirname, isAbsolute, resolve } from "../paths.ts";
 import { expandGlob, type FileSystemPort, listTomlFiles } from "../runtime.ts";
@@ -142,9 +143,10 @@ async function resolveImportInfo(
   // loads them, including transitive imports and path-form run references).
   let cycle: string[] | null = null;
   let scope: ImportScopeModule[] | null = null;
+  let executedFlows: ImportLintInfo["executedFlows"];
   if (refs.every((r) => r.exists)) {
     try {
-      const graph = await resolveImports(loaded, { fs });
+      const graph = await resolveImports(loaded, { fs, bindInputs: false });
       // Annotate every direct ref with the referenced module's flow id + declared inputs.
       for (const ref of refs) {
         const node = graph.nodes.get(ref.resolved);
@@ -158,6 +160,7 @@ async function resolveImportInfo(
         path: m.path,
         inputNames: Object.keys(m.flow.inputs ?? {}),
       }));
+      executedFlows = collectExecutedFlows(loaded, graph).map((file) => file.flow);
     } catch (err) {
       if (err instanceof ImportCycleError) cycle = err.chain;
       // Other resolution errors (a malformed transitive import) are reported by linting that
@@ -165,7 +168,7 @@ async function resolveImportInfo(
     }
   }
 
-  return { refs, cycle, scope };
+  return { refs, cycle, scope, ...(executedFlows ? { executedFlows } : {}) };
 }
 
 /** Options for {@link lintFile}. */

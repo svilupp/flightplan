@@ -90,6 +90,8 @@ export interface RunOptions {
    * modules and locks still resolve through `fs` (or the real filesystem when `fs` is omitted).
    */
   flowSource?: string;
+  /** Prepared source snapshots for imports and hooks; artifact storage still uses fs. */
+  flowSources?: ReadonlyMap<string, string>;
   /**
    * Injectable filesystem for every run-path file operation (flow/import loading, lock read/
    * write, artifact writes). Defaults to the real Node filesystem (`nodeFileSystem`), so default

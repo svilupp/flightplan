@@ -12,8 +12,14 @@
 //
 // Canonical reference: PLAN.md §5 (Phase 1 ruleset) + §8 (starter ruleset).
 
+import { executionPolicyIssues, resolveExecutionPolicy } from "../config/execution-policy.ts";
 import { collectRefs, isRunFlowPath } from "../flow/index.ts";
-import { classifyLocator, normalizeTarget } from "../flow/normalize-target.ts";
+import {
+  classifyLocator,
+  looksLikeUnprefixedAssertionSelector,
+  looksLikeUnprefixedSelector,
+  normalizeTarget,
+} from "../flow/normalize-target.ts";
 import { dirname, isAbsolute, resolve } from "../paths.ts";
 import { AI_JUDGE_INPUTS, ASSERT_TYPES, ASSERT_WHENS, FILE_KINDS, STEP_DOS } from "../types.ts";
 import { diag, type LintContext, type RawDoc, type Rule } from "./context.ts";
@@ -294,7 +300,14 @@ const stepsRequiredFields: Rule = {
       const id = stepId(step, i);
       const requireField = (field: string, kind = "non-empty value"): void => {
         const v = step[field];
-        const ok = v !== undefined && v !== null && !(typeof v === "string" && v.length === 0);
+        const ok =
+          v !== undefined &&
+          v !== null &&
+          !(
+            typeof v === "string" &&
+            v.length === 0 &&
+            !(["fill", "select"].includes(verb) && field === "value")
+          );
         if (!ok) {
           out.push(
             diag(
@@ -405,7 +418,19 @@ const stepsOnFailGotoExists: Rule = {
     const out: Diagnostic[] = [];
     steps.forEach((step, i) => {
       const onFail = step.on_fail;
-      if (!isRecord(onFail)) return;
+      if (!isRecord(onFail)) {
+        if (onFail !== undefined)
+          out.push(
+            diag(
+              ctx,
+              "steps/on-fail-goto-exists",
+              "error",
+              'on_fail must be a table, for example on_fail = { goto = "recovery_step", max = 1 }.',
+              { stepId: stepId(step, i), location: `steps[${i}].on_fail` },
+            ),
+          );
+        return;
+      }
       const goto = onFail.goto;
       if (typeof goto !== "string" || goto.length === 0) {
         out.push(
@@ -664,7 +689,7 @@ const templatingWithInputsDeclared: Rule = {
 // Assertion rules
 // ---------------------------------------------------------------------------
 
-/** Iterate every assertion across all steps with its step id + location. */
+/** Iterate step and recipe-boundary assertions with their step id and location. */
 function eachAssertion(
   doc: RawDoc | null,
   fn: (a: Record<string, unknown>, sid: string, loc: string) => void,
@@ -675,6 +700,13 @@ function eachAssertion(
       fn(a, sid, `steps[${i}].assert[${j}]`);
     });
   });
+  for (const phase of ["before", "after"]) {
+    const assertions = doc?.[phase];
+    if (!Array.isArray(assertions)) continue;
+    assertions.forEach((assertion, index) => {
+      if (isRecord(assertion)) fn(assertion, `@flightplan:${phase}`, `${phase}[${index}]`);
+    });
+  }
 }
 
 const assertSupportedType: Rule = {
@@ -745,7 +777,7 @@ const assertRequiredFields: Rule = {
       }
       const requireStr = (field: string): void => {
         const v = a[field];
-        if (typeof v !== "string" || v.length === 0) {
+        if (typeof v !== "string" || (v.length === 0 && !(t === "value" && field === "value"))) {
           out.push(
             diag(
               ctx,
@@ -1248,27 +1280,37 @@ const stepsTargetNeedsNl: Rule = {
   },
 };
 
-/**
- * Heuristic: does an NL-classified `target` entry actually look like an unprefixed selector
- * (CSS id/class, attribute selector, xpath, a CSS combinator)? If so the author probably meant
- * a selector and should use the `css:` prefix — misclassification is otherwise impossible by
- * construction (v002-2), but this catches the likely-a-typo case.
- */
-function looksLikeUnprefixedSelector(value: string): boolean {
-  const v = value.trim();
-  if (v.length === 0) return false;
-  // xpath
-  if (v.startsWith("//") || v.startsWith("(/")) return true;
-  // explicit engine prefixes some tools use (not part of flightplan's whitelist)
-  if (/^(css=|xpath=)/.test(v)) return true;
-  // id / class selectors at the start
-  if (/^[#.][A-Za-z_]/.test(v)) return true;
-  // attribute selector [data-testid='x'] / [name="y"] mid-string or at the start
-  if (/\[[A-Za-z][\w-]*([~|^$*]?=|\])/.test(v)) return true;
-  // CSS child combinator: a `>` between selector-ish tokens (NL prose never uses ` > ` this way).
-  if (/[\w#.\]]\s*>\s*[\w#.[]/.test(v)) return true;
-  return false;
-}
+const assertUnprefixedSelector: Rule = {
+  id: "assert/unprefixed-selector",
+  severity: "error",
+  description: "CSS-looking assertion selectors must use the css: prefix.",
+  run(ctx) {
+    const out: Diagnostic[] = [];
+    eachAssertion(ctx.doc, (assertion, sid, location) => {
+      for (const field of ["selector", "landmark"]) {
+        const value = assertion[field];
+        if (
+          typeof value !== "string" ||
+          /^[.#[]/.test(value.trim()) ||
+          classifyLocator(value) !== "nl" ||
+          !looksLikeUnprefixedAssertionSelector(value)
+        )
+          continue;
+        out.push(
+          diag(
+            ctx,
+            "assert/unprefixed-selector",
+            "error",
+            `Assertion in step \`${sid}\` treats ${JSON.stringify(value)} as a name, not CSS. ` +
+              `Use ${JSON.stringify(`css:${value}`)}.`,
+            { stepId: sid, location: `${location}.${field}` },
+          ),
+        );
+      }
+    });
+    return out;
+  },
+};
 
 const stepsTargetUnprefixedSelector: Rule = {
   id: "steps/target-unprefixed-selector",
@@ -1816,19 +1858,20 @@ const effectUnspecified: Rule = {
 const effectDangerousVerb: Rule = {
   id: "effect/dangerous-verb",
   severity: "warning",
-  description: "Mutation-like verbs should be explicitly marked at_most_once.",
+  description: "Explicit repeatable effects need a deterministic postcondition.",
   run(ctx) {
     return rawSteps(ctx.doc).flatMap((step, i) =>
       ["click", "fill", "select", "press", "ai_pick"].includes(String(step.do)) &&
       step.effect !== undefined &&
-      step.effect !== "at_most_once"
+      step.effect !== "at_most_once" &&
+      !hasDeterministicPostcondition(step)
         ? [
             diag(
               ctx,
               "effect/dangerous-verb",
               "warning",
-              `Step \`${stepId(step, i)}\` uses a mutation-capable verb without ` +
-                'effect = "at_most_once". Review the effect annotation before running it.',
+              `Step \`${stepId(step, i)}\` declares a repeatable effect without a deterministic ` +
+                "postcondition. Add an outcome check and review whether the effect is safe to repeat.",
               { stepId: stepId(step, i), location: "effect" },
             ),
           ]
@@ -1983,10 +2026,34 @@ const assertionCriticalBroadMatch: Rule = {
 // The registry — ordered; append to extend.
 // ---------------------------------------------------------------------------
 
+const explicitAiPermission: Rule = {
+  id: "ai/explicit-permission",
+  severity: "error",
+  description: "AI-dependent configuration and assertions require explicit AI permission.",
+  run(ctx) {
+    const config = ctx.flow?.config ?? ctx.config ?? {};
+    const flows = ctx.imports?.executedFlows ?? (ctx.flow ? [ctx.flow] : []);
+    return executionPolicyIssues(
+      resolveExecutionPolicy(config),
+      config,
+      flows.flatMap((flow) => flow.steps),
+      {
+        assertions: flows.flatMap((flow) => [...(flow.before ?? []), ...(flow.after ?? [])]),
+      },
+    ).map((issue) =>
+      diag(ctx, "ai/explicit-permission", "error", issue.message, {
+        ...(issue.stepId ? { stepId: issue.stepId } : {}),
+        location: issue.feature,
+      }),
+    );
+  },
+};
+
 /** All flow + config rules, in reporting order. */
 export const RULES: readonly Rule[] = [
   headerRequiredFields,
   headerValidKind,
+  explicitAiPermission,
   importsResolve,
   importsNoCycle,
   importsNoWith,
@@ -2006,6 +2073,7 @@ export const RULES: readonly Rule[] = [
   stepsTextHintUnscoped,
   assertSupportedType,
   assertRequiredFields,
+  assertUnprefixedSelector,
   resultAssertionScope,
   resultCaptureScope,
   assertAiJudgeShape,

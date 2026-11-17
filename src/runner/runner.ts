@@ -26,6 +26,7 @@
 //
 // Canonical references: PLAN.md §3 (driver lifecycle), §4 (RunSummary / verdict), §5 Phase 2.
 
+import { BudgetTracker, resolveBudgetLimits } from "../ai/budget.ts";
 import { createJevExtractionMapper, type ExtractionMapper } from "../ai/extraction-map.ts";
 import {
   type AiRuntime,
@@ -56,6 +57,7 @@ import {
   type AssertionResult,
   runAssertions,
 } from "../assert/index.ts";
+import { type ExecutionPolicy, ExecutionPolicyError } from "../config/execution-policy.ts";
 import { jevApiKeyEnvLabel, resolveJevApiKeyEnv } from "../config/resolve.ts";
 import type { CacheConfig, ConnectConfig, ResolvedConfig } from "../config/types.ts";
 import {
@@ -81,18 +83,15 @@ import type {
   WebMcpCallResult,
 } from "../driver/index.ts";
 import { selectorUsedToStrategy } from "../driver/index.ts";
-import { validateBoundSteps } from "../flow/bound.ts";
-import { type ImportGraph, resolveImports, resolveModulePath } from "../flow/imports.ts";
-import { gatherInputSecrets, type InputValues, isInputJson } from "../flow/input.ts";
+import { KeyboardPreflightError } from "../driver/keyboard.ts";
+import { NavigationFailure } from "../driver/navigation.ts";
+import type { ImportGraph } from "../flow/imports.ts";
+import { type InputValues, isInputJson } from "../flow/input.ts";
 import { computeSourceHash } from "../flow/load.ts";
 import { describeTarget, normalizeTarget } from "../flow/normalize-target.ts";
 import { loadFlowFileFlattened } from "../flow/run.ts";
-import {
-  applyTemplatingDeep,
-  resolveInputs,
-  restoreInputLiterals,
-  type TemplateContext,
-} from "../flow/template.ts";
+import { pinSourceFiles } from "../flow/source-files.ts";
+import { applyTemplatingDeep, resolveInputs, restoreInputLiterals } from "../flow/template.ts";
 import type {
   AiJudgeAssertion,
   Assertion,
@@ -128,8 +127,8 @@ import {
   resolveLockWriteMode,
   type SessionImport,
 } from "../lock/index.ts";
-import { isAbsolute, relative as relativePath, resolve as resolvePath } from "../paths.ts";
-import { createRedactor, gatherSecretValues, REDACTED, type Redactor } from "../redaction/index.ts";
+import { dirname, isAbsolute, relative as relativePath, resolve as resolvePath } from "../paths.ts";
+import { createRedactor, REDACTED, type Redactor } from "../redaction/index.ts";
 import { ambientEnv, type FileSystemPort } from "../runtime.ts";
 import {
   aiCallEventAttrs,
@@ -162,6 +161,7 @@ import {
   isSyntheticRepairStepId,
   runPathRepair,
 } from "./path-repair.ts";
+import { prepareRun, templateFlow } from "./prepare.ts";
 import type { DriverFactory, RunClock, RunOptions, RunResult } from "./types.ts";
 
 /** The default API-key env var when `[ai].api_key_env` is unset (PLAN.md §4 / §8 risk #5). */
@@ -325,6 +325,7 @@ function freshRunState(): RunState {
  * no-secret / no-token / no-record run is behavior-identical to before).
  */
 interface RunServices {
+  policy: ExecutionPolicy;
   extractionMapper?: ExtractionMapper;
   yieldHost?: YieldHost;
   recipeBinding: string;
@@ -456,27 +457,6 @@ async function maybePersistScreenshot(
     if (services.mediaFs) throw error;
     /* media capture is best-effort — never fail the run on a frame persist error */
   }
-}
-
-// ---------------------------------------------------------------------------
-// Templating
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve a flow's effective inputs and apply templating to every step. The import graph is
- * resolved first so the root flow's inputs (and any `with` overrides from importing flows, when
- * this flow is itself imported) are in scope — but for a directly-invoked flow the root node's
- * inputs are simply its declared `[inputs]` resolved against env.
- */
-function templateFlow(
-  flow: FlowFile,
-  inputs: InputValues,
-  env: Record<string, string | undefined>,
-): { steps: Step[]; inputs: InputValues } {
-  const ctx: TemplateContext = { inputs, env, deferCaptures: true };
-  // Template the step list (deep — covers urls, values, hints, assertion text/selectors).
-  const steps = validateBoundSteps(flow.steps.map((s) => applyTemplatingDeep(s, ctx)));
-  return { steps, inputs };
 }
 
 // ---------------------------------------------------------------------------
@@ -941,6 +921,13 @@ async function performStepAction(
           Object.entries(step.fields).filter(([name]) => !fieldMap[name]),
         );
         if (Object.keys(missing).length) {
+          if (services.policy.ai === "disabled")
+            return {
+              ok: false,
+              dispatchState: "not_dispatched",
+              error:
+                "Extraction map unavailable; AI is disabled. Supply field selectors or explicitly enable AI.",
+            };
           if (!services.extractionMapper || !driver.extractionCandidates)
             throw new Error(
               "extract field map requires an available mapper and candidate capability",
@@ -1012,6 +999,7 @@ async function performStepAction(
             : {}),
         };
       } catch (error) {
+        if (isBudgetExceeded(error)) throw error;
         return {
           ok: false,
           dispatchState: "not_dispatched",
@@ -1020,15 +1008,47 @@ async function performStepAction(
       }
     }
     case "goto": {
-      await driver.goto(step.url);
-      return { ok: true };
+      const start = clock.now();
+      let error: string | undefined;
+      try {
+        await driver.goto(
+          step.url,
+          step.timeout_ms === undefined ? undefined : { timeout: step.timeout_ms },
+        );
+      } catch (cause) {
+        if (!(cause instanceof NavigationFailure)) throw cause;
+        error = services.redactor.redactText(
+          `goto failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+      const ba = {
+        action: "goto",
+        selectorOrIntent: services.redactor.redactText(step.url),
+        ok: error === undefined,
+        durationMs: clock.now() - start,
+      };
+      await writers.trace.emitBrowserAction(ba);
+      span.event(
+        TELEMETRY_EVENTS.browserAction,
+        browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
+      );
+      // A timeout may follow dispatch. Preserve that uncertainty so on_fail cannot repeat it.
+      return error === undefined ? { ok: true } : { ok: false, error, dispatchState: "uncertain" };
     }
     case "wait": {
       await clock.sleep(step.ms);
       return { ok: true };
     }
     case "press": {
-      const ok = await driver.press(step.key);
+      let ok: boolean;
+      let preflightError: KeyboardPreflightError | undefined;
+      try {
+        ok = await driver.press(step.key);
+      } catch (error) {
+        if (!(error instanceof KeyboardPreflightError)) throw error;
+        ok = false;
+        preflightError = error;
+      }
       const ba = {
         action: "press",
         selectorOrIntent: services.redactor.redactText(step.key),
@@ -1040,6 +1060,13 @@ async function performStepAction(
         TELEMETRY_EVENTS.browserAction,
         browserActionEventAttrs({ type: "browser_action", ts: 0, ...ba }),
       );
+      if (preflightError)
+        return {
+          ok: false,
+          error: preflightError.message,
+          dispatchState: "not_dispatched",
+          retrySafe: true,
+        };
       return ok ? { ok: true } : { ok: false, error: `press ${step.key} failed` };
     }
     case "assert": {
@@ -1491,6 +1518,9 @@ async function performStepAction(
       } else {
         result = await resolve();
       }
+      if (services.policy.ai === "disabled" && !result.execution.ok && result.execution.escalate) {
+        result.execution.error = `${result.execution.error ?? "Deterministic target resolution failed"}; AI is disabled. Scope the target or explicitly enable AI.`;
+      }
       const selectorOrIntent = ladderSelectorOrIntent(step);
       await emitLadderTrace(
         writers,
@@ -1882,7 +1912,15 @@ async function executeSteps(
               ? { anchor: describeTarget(step.target) }
               : {}),
         });
-        recordStepSummary(state, step, false, undefined, "precondition (before) failed", false);
+        recordStepSummary(
+          state,
+          step,
+          false,
+          undefined,
+          "precondition (before) failed",
+          false,
+          clock.now() - stepStart,
+        );
         endStep(false, clock.now() - stepStart, false);
         if (jump !== null) {
           cursor = jump;
@@ -2152,7 +2190,7 @@ async function executeSteps(
         ...(action.popup ? { popup: action.popup } : {}),
         ...(action.webmcp ? { webmcp: action.webmcp } : {}),
       });
-      recordStepSummary(state, step, stepOk, action.tier, action.error, healed, {
+      recordStepSummary(state, step, stepOk, action.tier, action.error, healed, durationMs, {
         ...action,
         ...(transportAmbiguous ? { transportAmbiguous: true } : {}),
         ...(Object.keys(persistedCaptured).length > 0 ? { captures: persistedCaptured } : {}),
@@ -2213,7 +2251,7 @@ async function executeSteps(
       //   - A hard infra error (state.runError) ALWAYS aborts regardless of mode.
       if (
         stepAssertCtx.mode === "eager" &&
-        (!action.ok || (afterFailed && stepAssertCtx.failOnAssertion))
+        ((!action.ok && !rescuePassed) || (afterFailed && stepAssertCtx.failOnAssertion))
       ) {
         state.aborted = true;
       }
@@ -2270,7 +2308,7 @@ async function executeSteps(
               ? { anchor: describeTarget(step.target) }
               : {}),
         });
-        recordStepSummary(state, step, false, undefined, detail, false);
+        recordStepSummary(state, step, false, undefined, detail, false, clock.now() - stepStart);
         endStep(false, clock.now() - stepStart, false);
         break;
       }
@@ -2470,9 +2508,10 @@ function recordStepSummary(
   tier: LadderTier | undefined,
   error: string | undefined,
   healed: boolean,
+  durationMs: number,
   metadata?: StepActionOutcome,
 ): void {
-  const row: StepSummary = { stepId: step.id, do: step.do, ok, healed, durationMs: 0 };
+  const row: StepSummary = { stepId: step.id, do: step.do, ok, healed, durationMs };
   if (metadata?.effect !== undefined) row.effect = metadata.effect;
   else if (step.effect !== undefined) row.effect = step.effect;
   if (metadata?.anchor !== undefined) row.anchor = metadata.anchor;
@@ -2624,6 +2663,8 @@ async function runHookFlow(
  * RunInterruptedError after bounded cleanup, without fabricating a successful run summary.
  */
 export async function runFlow(opts: RunOptions): Promise<RunResult> {
+  // Hooks and the redactor must use the same values even if the host rotates credentials.
+  opts = { ...opts, env: { ...(opts.env ?? ambientEnv()) } };
   if (opts.idempotencyKey !== undefined) {
     const factory =
       opts.driverFactory ??
@@ -2702,34 +2743,26 @@ async function runFlowImpl(
   const clock = opts.clock ?? systemRunClock;
   const env = opts.env ?? ambientEnv();
   const artifactClock: ArtifactClock = () => clock.now();
-  const fs: FileSystemPort = opts.fs ?? (await defaultFileSystem());
+  const sourceFs: FileSystemPort = opts.fs ?? (await defaultFileSystem());
 
   // --- (1) load + import-resolve + template ---
   // Load with `run` steps flattened into namespaced child steps (PLAN_v002 v002-8) — the
   // runner always executes against the final concrete step list. When `opts.flowSource` is set,
   // the root flow is parsed from that in-memory text instead of read from disk (`flowPath` is
   // still the nominal path for imports/locks/relative resolution).
-  const loaded = await loadFlowFileFlattened(opts.flowPath, {
-    env,
-    fs,
-    ...(opts.flowSource !== undefined ? { flowSource: opts.flowSource } : {}),
-    ...(opts.inputs !== undefined ? { inputs: opts.inputs } : {}),
-  });
-  // Resolve the import graph (root node carries this flow's resolved inputs).
-  const graph = await resolveImports(loaded, {
-    env,
-    fs,
-    ...(opts.inputs !== undefined ? { inputs: opts.inputs } : {}),
-  });
-  const rootNode = graph.nodes.get(graph.rootPath);
-  const inputs = rootNode?.inputs ?? resolveInputs(loaded.flow.inputs, undefined, env, {});
-  const { steps: allSteps } = templateFlow(loaded.flow, inputs, env);
-  // Known hook bindings must fail before any root setup/action or browser acquisition.
-  for (const hook of [loaded.flow.setup, loaded.flow.teardown]) {
-    if (!hook) continue;
-    const hookFlow = await loadFlowFileFlattened(resolveModulePath(hook, loaded.path), { env, fs });
-    templateFlow(hookFlow.flow, resolveInputs(hookFlow.flow.inputs, undefined, env, {}), env);
-  }
+  const {
+    loaded,
+    graph,
+    inputs,
+    steps: allSteps,
+    hookSteps,
+    policy,
+    policyIssues,
+    sourceTexts,
+    secrets,
+  } = await prepareRun(opts, sourceFs, env);
+  if (policyIssues.length) throw new ExecutionPolicyError(policyIssues);
+  const fs = pinSourceFiles(sourceFs, sourceTexts);
   if ((opts.fromStep || opts.toStep) && allSteps.some((step) => "__boundary" in step)) {
     throw new Error("Debugging slices cannot skip required invocation boundaries");
   }
@@ -2749,19 +2782,8 @@ async function runFlowImpl(
   const writers = await openArtifactWriters(runDir, artifactClock, fs);
 
   // --- (2.05) redaction (Phase 5) — secrets + PII masked before anything is logged/traced/sent ---
-  // Gather every `secret:true` fill value (+ backing inputs) across the ROOT steps AND the
-  // setup/teardown hook nodes (the import graph already loaded them), so hook secrets are masked in
-  // the shared run.jsonl / trace.jsonl / ai.jsonl too. `mask_text` (default fail-closed `true`)
-  // gates PII scrubbing; secret values are masked unconditionally. Disabled redactor = identity.
-  const secrets = new Set<string>([
-    ...gatherSecretValues(steps, inputs),
-    ...gatherInputSecrets(loaded.flow.inputs, inputs),
-  ]);
-  for (const node of graph.nodes.values()) {
-    if (node.relation !== "setup" && node.relation !== "teardown") continue;
-    const { steps: hookSteps } = templateFlow(node.loaded.flow, node.inputs, env);
-    for (const v of gatherSecretValues(hookSteps, node.inputs)) secrets.add(v);
-  }
+  // Preparation collects secret inputs and payloads from every actual call site and hook.
+  // Secret values remain masked even when PII-pattern scrubbing is disabled.
   const redactor = createRedactor({
     maskText: opts.config.redaction.mask_text ?? true,
     secrets,
@@ -2779,7 +2801,10 @@ async function runFlowImpl(
   // The bundle of cross-cutting P5 services threaded through the loop + hooks (no-op when disabled).
   const activeSpan: { current: SpanHandle } = { current: runSpan };
   const onWarn = opts.onWarn ?? ((m: string) => console.error(m));
+  const injectedMapper = opts.extractionMapper;
+  const mapperBudget = new BudgetTracker(resolveBudgetLimits(opts.config));
   const services: RunServices = {
+    policy,
     ...(opts.yieldHost
       ? { yieldHost: { ...opts.yieldHost, signal: opts.signal ?? opts.yieldHost.signal } }
       : {}),
@@ -2790,13 +2815,20 @@ async function runFlowImpl(
         ...(step.dispatchState ? { dispatchState: step.dispatchState } : {}),
       })),
     redactor,
-    ...(opts.extractionMapper ? { extractionMapper: opts.extractionMapper } : {}),
+    ...(policy.ai === "enabled" && injectedMapper
+      ? {
+          extractionMapper: async (request: Parameters<ExtractionMapper>[0]) => {
+            mapperBudget.noteModelCall();
+            return injectedMapper(request);
+          },
+        }
+      : {}),
     runSpan,
     activeSpan,
     onWarn,
     record:
       opts.config.browser?.record === true &&
-      !steps.some(
+      ![...allSteps, ...hookSteps].some(
         (step) => step.do === "extract" && Object.values(step.fields).some((field) => field.secret),
       ),
     ...(injectedFs ? { mediaFs: fs } : {}),
@@ -2839,13 +2871,17 @@ async function runFlowImpl(
   };
 
   // --- (2.1) build the AI runtime (Phase 4), gated on the test seam / API-key presence ---
-  // Injected factory (tests) wins; otherwise build the real OpenRouter-backed runtime ONLY when
+  // Explicit AI permission gates every factory. Within that permission, an injected factory wins;
+  // otherwise build the real OpenRouter-backed runtime ONLY when
   // the configured API-key env var is present. No factory + no key → no runtime → AI tiers are
   // unavailable and the run behaves exactly as in P2/P3 (`ctx.ai`/`assertCtx.aiJudge` stay unset).
   // The redactor + the `onAiCall` telemetry bridge are threaded into the runtime so ai.jsonl is
   // redacted and ai_call telemetry lands on the active step span.
-  let runtime = await buildAiRuntime(opts, env, writers, clock, redactor, onAiCall);
-  const extractionKey = resolveJevApiKeyEnv(opts.config.ai?.jev_api_key_env, env).value;
+  let runtime = await buildAiRuntime(opts, policy, env, writers, clock, redactor, onAiCall);
+  const extractionKey =
+    policy.ai === "enabled"
+      ? resolveJevApiKeyEnv(opts.config.ai?.jev_api_key_env, env).value
+      : undefined;
   if (!services.extractionMapper && runtime && extractionKey)
     services.extractionMapper = createJevExtractionMapper({
       apiKey: extractionKey,
@@ -2965,6 +3001,7 @@ async function runFlowImpl(
           timeoutMs: configuredGuard.timeout_ms,
           maxEvaluations: configuredGuard.max_evaluations,
           evaluate: createJevGuard({
+            globalLimits: resolveBudgetLimits(opts.config),
             apiKey: env[configuredGuard.api_key_env] ?? "",
             policy: configuredGuard.policy,
             model: configuredGuard.model,
@@ -3013,7 +3050,7 @@ async function runFlowImpl(
     // `state.runError` (verdict `error`, matching connect()'s own failure handling) — auth must be
     // in place, or the run must fail, before any navigation.
     if (!state.aborted && opts.config.auth && driver.applyAuth) {
-      const authPaths = { flowDir: dirOf(loaded.path), cwd: opts.cwd };
+      const authPaths = { flowDir: dirname(loaded.path), cwd: opts.cwd };
       try {
         await driver.applyAuth(opts.config.auth, env, authPaths);
       } catch (err) {
@@ -3071,7 +3108,7 @@ async function runFlowImpl(
     if (loaded.flow.setup && !state.aborted) {
       await runHookFlow(
         loaded.flow.setup,
-        dirOf(loaded.path),
+        dirname(loaded.path),
         env,
         driver,
         ladder,
@@ -3137,7 +3174,7 @@ async function runFlowImpl(
       driver.saveAuthState
     ) {
       try {
-        const authPaths = { flowDir: dirOf(loaded.path), cwd: opts.cwd };
+        const authPaths = { flowDir: dirname(loaded.path), cwd: opts.cwd };
         const cookieFileRef = resolveAuthPlan(opts.config.auth, env, authPaths).cookieFileRef;
         if (cookieFileRef) {
           const saved = await driver.saveAuthState(cookieFileRef);
@@ -3157,7 +3194,7 @@ async function runFlowImpl(
       try {
         await runHookFlow(
           loaded.flow.teardown,
-          dirOf(loaded.path),
+          dirname(loaded.path),
           env,
           driver,
           ladder,
@@ -3271,7 +3308,7 @@ async function runFlowImpl(
 
 /**
  * Build the AI runtime for a run, or `undefined` when AI is unavailable. The injected
- * `aiRuntimeFactory` (tests) takes precedence; otherwise the real OpenRouter-backed runtime is
+ * AI permission is checked first. `aiRuntimeFactory` then takes precedence; otherwise the runtime is
  * built ONLY when the configured API-key env var (`[ai].api_key_env`, default `OPENROUTER_API_KEY`)
  * is present in `env`. No factory + no key → `undefined` (AI tiers stay unwired; P2/P3 behavior).
  * The runner NEVER statically imports the AI SDK — the default-generate branch below reaches
@@ -3325,12 +3362,14 @@ function loadDefaultGenerateModule(): Promise<DefaultGenerateModule> {
 
 async function buildAiRuntime(
   opts: RunOptions,
+  policy: ExecutionPolicy,
   env: Record<string, string | undefined>,
   writers: ArtifactWriters,
   clock: RunClock,
   redactor: Redactor,
   onAiCall: (event: Omit<AiCallEvent, "ts" | "type">) => void,
 ): Promise<AiRuntime | undefined> {
+  if (policy.ai === "disabled") return undefined;
   if (opts.aiRuntimeFactory) {
     return opts.aiRuntimeFactory({
       config: opts.config,
@@ -3593,14 +3632,20 @@ function intentChangedPatchBody(step: Step, verdict: AdvisoryIntentChangedVerdic
  */
 export function defaultDriverFactory(
   _cfg: ConnectConfig,
-  timeouts?: { action_ms: number; nav_ms: number },
+  timeouts?: { action_ms: number; goto_ms?: number; nav_ms: number },
   resolveAttributes?: readonly string[],
   dialog?: DialogPolicy,
   acquisition?: Pick<BrowserPilotDriverOptions, "acquisitionContext" | "providerEnv">,
 ): Driver {
   return new BrowserPilotDriver({
     ...acquisition,
-    ...(timeouts ? { actionTimeoutMs: timeouts.action_ms, navTimeoutMs: timeouts.nav_ms } : {}),
+    ...(timeouts
+      ? {
+          actionTimeoutMs: timeouts.action_ms,
+          gotoTimeoutMs: timeouts.goto_ms ?? timeouts.nav_ms,
+          navTimeoutMs: timeouts.nav_ms,
+        }
+      : {}),
     ...(resolveAttributes && resolveAttributes.length > 0 ? { resolveAttributes } : {}),
     ...(dialog ? { dialogPolicy: dialog } : {}),
   });
@@ -3669,12 +3714,6 @@ export function trimStepRange(
  */
 export function resolveFlowGoal(flow: FlowFile): string {
   return flow.goal ?? flow.description;
-}
-
-/** Directory of a file path (no node:path import needed — last slash split). */
-function dirOf(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i >= 0 ? path.slice(0, i) : ".";
 }
 
 /**

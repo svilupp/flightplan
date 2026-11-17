@@ -248,6 +248,9 @@ test("unsupported batch semantics and automatic dialog dismissal fail before own
   await expect(driver.press("Enter", { modifiers: ["Control"] })).rejects.toThrow(
     "action_options_unsupported",
   );
+  await expect(driver.goto("https://example.test", { timeout: 30000 })).rejects.toThrow(
+    "action_options_unsupported",
+  );
   expect(f.events).toEqual([]);
   await driver.teardown();
 });

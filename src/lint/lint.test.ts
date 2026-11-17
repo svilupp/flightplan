@@ -19,6 +19,52 @@ import {
 } from "./index.ts";
 import type { MultiLintResult } from "./types.ts";
 
+test.each(["run", "id-run", "setup", "teardown"])(
+  "lint checks the entry AI policy for %s",
+  async (relation) => {
+    const fs = memoryFileSystem();
+    const header = 'version=1\nkind="flow"\nid="root"\ndescription="policy"\n';
+    const reference =
+      relation === "run" || relation === "id-run"
+        ? `${relation === "id-run" ? 'imports=["./child.toml"]\n' : ""}[[steps]]\nid="call"\ndo="run"\nflow="${relation === "id-run" ? "child" : "./child.toml"}"`
+        : `${relation}="./child.toml"\n[[steps]]\nid="wait"\ndo="wait"\nms=0`;
+    await fs.writeTextFile("/flow.toml", header + reference);
+    await fs.writeTextFile(
+      "/child.toml",
+      header.replace('id="root"', 'id="child"') +
+        '[config.ai]\nenabled=true\n[[steps]]\nid="judge"\ndo="assert"\nassert=[{type="ai_judge",prompt="Ready?"}]',
+    );
+    const result = await lintFile("/flow.toml", { fs });
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ ruleId: "ai/explicit-permission", severity: "error" }),
+    );
+    await fs.writeTextFile(
+      "/flow.toml",
+      header + 'imports=["./child.toml"]\n[[steps]]\nid="wait"\ndo="wait"\nms=0',
+    );
+    expect(
+      (await lintFile("/flow.toml", { fs })).diagnostics.some(
+        (d) => d.ruleId === "ai/explicit-permission",
+      ),
+    ).toBe(false);
+  },
+);
+
+test.each(["before", "after"])("selector lint includes %s recipe boundaries", async (phase) => {
+  const result = await lintText(
+    `version=1\nkind="flow"\nid="boundary"\ndescription="boundary"\n[[${phase}]]\ntype="hidden"\nselector="h1"\n[[steps]]\nid="wait"\ndo="wait"\nms=0`,
+    "/flow.toml",
+    { fs: memoryFileSystem() },
+  );
+  expect(result.diagnostics).toContainEqual(
+    expect.objectContaining({
+      ruleId: "assert/unprefixed-selector",
+      severity: "error",
+      location: `${phase}[0].selector`,
+    }),
+  );
+});
+
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "__fixtures__");
 const repoRoot = resolve(here, "..", "..");
@@ -311,6 +357,8 @@ prompt = "The order was created."
 kind = "flow"
 id = "x"
 description = "screenshot judge, registry without vision"
+[config.ai]
+enabled = true
 
 [config.ai.models.resolver]
 model = "openai/gpt-x"
@@ -1239,4 +1287,104 @@ describe("lintText over an injected FileSystemPort", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+});
+
+describe("dashboard authoring regressions", () => {
+  const header = 'version=1\nkind="flow"\nid="regression"\ndescription="Regression fixture"\n';
+  test("allows empty fill/select values and an exact empty value assertion", async () => {
+    for (const action of ["fill", "select"]) {
+      const result = await lintText(
+        header +
+          `
+[[steps]]
+id="clear"
+do="${action}"
+target=["css:#field", "the draft field"]
+effect="idempotent"
+value=""
+[[steps.assert]]
+type="value"
+selector="css:#field"
+value=""
+`,
+        "/regression/empty.toml",
+        { fs: memoryFileSystem(), cwd: "/regression" },
+      );
+      expect(result.diagnostics).toEqual([]);
+    }
+  });
+  test("rejects CSS-looking assertion selectors and supplies a correction", async () => {
+    for (const selector of [
+      "h1",
+      "nav[aria-label='Main navigation']",
+      "div.card",
+      "input:checked",
+    ]) {
+      const result = await lintText(
+        header +
+          `
+[[steps]]
+id="absent"
+do="assert"
+[[steps.assert]]
+type="hidden"
+selector="${selector}"
+`,
+        "/regression/selector.toml",
+        { fs: memoryFileSystem(), cwd: "/regression" },
+      );
+      expect(result.ok).toBe(false);
+      expect(
+        result.diagnostics.some(
+          (d) => d.ruleId === "assert/unprefixed-selector" && d.message.includes("css:"),
+        ),
+      ).toBe(true);
+    }
+  });
+  test("shows the on_fail table shape for a string value", async () => {
+    const result = await lintText(
+      `${header}[[steps]]\nid="pause"\ndo="wait"\nms=1\non_fail="self"`,
+      "/regression/on-fail.toml",
+      { fs: memoryFileSystem(), cwd: "/regression" },
+    );
+    expect(result.ok).toBe(false);
+    expect(
+      result.diagnostics.some((d) =>
+        d.message.includes('on_fail = { goto = "recovery_step", max = 1 }'),
+      ),
+    ).toBe(true);
+  });
+  test("keeps the effect warning when an explicit repeatable action has no outcome check", async () => {
+    const result = await lintText(
+      header +
+        '[[steps]]\nid="close"\ndo="click"\ntarget=["css:#close", "the Close button"]\neffect="idempotent"',
+      "/regression/effect.toml",
+      { fs: memoryFileSystem(), cwd: "/regression" },
+    );
+    expect(result.diagnostics.some((d) => d.ruleId === "effect/dangerous-verb")).toBe(true);
+  });
+});
+
+test("plain target names and colon-separated assertion names are not mistaken for CSS", async () => {
+  const result = await lintFlowFile("names.toml", {
+    sourceText: `version=1
+kind="flow"
+id="names"
+description="Names"
+[[steps]]
+id="act"
+do="click"
+effect="idempotent"
+target="header"
+[[steps.assert]]
+type="visible"
+selector="label: Email"
+`,
+  });
+  expect(result.diagnostics.map((diagnostic) => diagnostic.ruleId)).not.toContain(
+    "steps/target-unprefixed-selector",
+  );
+  expect(result.diagnostics.map((diagnostic) => diagnostic.ruleId)).not.toContain(
+    "assert/unprefixed-selector",
+  );
 });

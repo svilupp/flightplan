@@ -132,6 +132,9 @@
               "type": "string",
               "minLength": 1
             },
+            "foreground": {
+              "type": "boolean"
+            },
             "sessionName": {
               "type": "string",
               "minLength": 1
@@ -241,6 +244,9 @@
     "ai": {
       "type": "object",
       "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
         "provider": {
           "type": "string",
           "enum": [
@@ -727,6 +733,11 @@
     "timeouts": {
       "type": "object",
       "properties": {
+        "goto_ms": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
         "action_ms": {
           "type": "integer",
           "exclusiveMinimum": 0,

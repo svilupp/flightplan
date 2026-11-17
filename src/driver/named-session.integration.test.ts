@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { launch } from "chrome-launcher";
 import { resolveConfigWithDefaults } from "../config/resolve.ts";
@@ -43,6 +43,7 @@ browserTest(
     const makeYieldHost = runtime?.createNamedSessionYieldHost ?? createNamedSessionYieldHost;
     const dir = await mkdtemp(join(tmpdir(), "fp-owner-real-"));
     const session = `fp-owner-${crypto.randomUUID()}`;
+    const sessionDirectory = join(homedir(), ".browser-pilot", "sessions", session);
     await mkdir(join(dir, "profile"));
     const chrome = await launch({
       chromeFlags: [
@@ -316,6 +317,8 @@ browserTest(
       await chrome.kill();
       await proxy.stop(true);
       await pageServer.stop(true);
+      await rm(`${sessionDirectory}.json`, { force: true });
+      await rm(sessionDirectory, { recursive: true, force: true });
       await rm(dir, { recursive: true, force: true });
     }
   },

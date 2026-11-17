@@ -61,6 +61,8 @@ flightplan run ./flows/open-order.toml --input order_id=D123 --input-env token=O
 ```
 
 The equivalent JSON value is `{"token":{"from_env":"ORDER_TOKEN"}}`.
+Secret input values are redacted across the shared run artifacts, including each callable child
+and setup/teardown hook's own bindings.
 
 ## Conditions and results
 
@@ -107,11 +109,11 @@ required = true
 
 The reader projects rows in one DOM evaluation. `source` accepts `text`, `value`, or `attribute`; field types are `string`, `number`, and `boolean`. `selector = "."` reads the row itself. Optional missing fields are omitted. Empty collections return `[]`. Missing required values, duplicate field matches, row overflow, malformed numbers, and changed document identity fail the step. Formatted currency text is not coerced to a number.
 
-Omitting a field selector requests bounded field-map learning. Supply `description` when the field name is insufficient. The default mapper uses JEV with environment credentials, finite durable candidates, one independent choice per field, shared model budgets, and conservative confidence/probability gates. Hosts can inject `RunOptions.extractionMapper`.
+Omitting a field selector requests bounded field-map learning. Learning requires `[config.ai] enabled = true`; cached maps can replay with AI disabled. Supply `description` when the field name is insufficient. The default mapper uses JEV with environment credentials, finite durable candidates, one independent choice per field, shared model budgets, and conservative confidence/probability gates. Hosts can inject `RunOptions.extractionMapper`.
 
 Validated maps are stored under `[[extractions]]` in the normal lock file after the step's assertions pass. They contain selectors and schema/page/frame gates, never extracted records. Warm runs read current rows. Frozen stale maps fail; `--no-lock-write` preserves lock bytes. Document identity and candidate evidence are rechecked after model latency.
 
-Declare `secret = true` on sensitive fields. Such rows require explicit selectors before candidate acquisition. Sensitive DOM markers are excluded from learned evidence. Result captures and outputs inherit secret taint; recording is disabled for recipes declaring secret extraction fields.
+Declare `secret = true` on sensitive fields. Such rows require explicit selectors before candidate acquisition. Sensitive DOM markers are excluded from learned evidence. Result captures and outputs inherit secret taint. Secret extraction in any callable child or setup/teardown hook disables recording for the whole run.
 
 ## Fresh semantic choices
 
@@ -124,7 +126,7 @@ resolve = "ai"
 effect = "idempotent"
 ```
 
-`resolve = "ai"` uses fresh candidates and skips target-lock reads, writes, and learned target memory. `ai_pick` shares the same policy when the option is supplied; its omitted-option behavior remains compatible. Frozen and no-write modes still perform the declared fresh choice. Missing AI, abstention, or unavailable evidence stops before dispatch. Prove product price, currency, availability, and identity with deterministic extraction conditions afterward.
+`resolve = "ai"` requires `[config.ai] enabled = true`, uses fresh candidates and skips target-lock reads, writes, and learned target memory. `ai_pick` shares the same policy when the option is supplied; its omitted-option behavior remains compatible. Frozen and no-write modes still perform the declared fresh choice. Missing AI, abstention, or unavailable evidence stops before dispatch. Prove product price, currency, availability, and identity with deterministic extraction conditions afterward.
 
 ## Read-only inspection and diagnostics
 
@@ -141,8 +143,11 @@ flightplan run ./flows/pay-order.toml --input order_id=D123 \
 
 The native CLI atomically claims keys in `.flightplan-runs/.invocations`, independent of `-o`.
 A completed duplicate returns its original summary and run ID without reconnecting or dispatching.
-A changed recipe, dependency, or effective nonsecret input conflicts with the original claim.
+A changed recipe, dependency, effective nonsecret call-site input or directly templated environment
+value conflicts with the original claim. Execution uses the admitted source and input snapshots.
 Secret input identity uses its reference rather than a hash of the secret value.
+Keys stored before this binding fix may conflict after upgrading; reconcile the previous outcome
+before choosing a new key.
 
 An active or interrupted claim blocks repetition. The journal records pending state before driver
 mutators, including direct methods used by host dispatchers. A process crash cannot authorize a

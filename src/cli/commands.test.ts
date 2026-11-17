@@ -37,6 +37,19 @@ function makeIo(overrides?: Partial<CommandIO>): { io: CommandIO; out: string[];
 }
 
 describe("executeLint", () => {
+  test("--deny-warnings changes the gate without losing warning diagnostics", async () => {
+    const { io, out } = makeIo();
+    await io.fs.writeTextFile("/virtual/flow.toml", FLOW_SOURCE);
+    expect((await executeLint(["lint", "flow.toml", "--json"], io)).exitCode).toBe(0);
+    out.length = 0;
+    expect(
+      (await executeLint(["lint", "flow.toml", "--deny-warnings", "--json"], io)).exitCode,
+    ).toBe(1);
+    const report = JSON.parse(out[0]!);
+    expect(report.warningCount).toBeGreaterThan(0);
+    expect(report.errorCount).toBe(0);
+    expect(report.ok).toBe(false);
+  });
   test("lints a flow written into the memory fs and returns exit 0", async () => {
     const { io, out } = makeIo();
     await io.fs.writeTextFile("/virtual/flow.toml", FLOW_SOURCE);
