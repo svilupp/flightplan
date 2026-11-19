@@ -60,14 +60,16 @@ const VERDICT_EXIT: Record<RunVerdict, number> = {
   inconclusive: 3,
 };
 
-function exitReason(v: RunVerdict): string {
+function exitReason(v: RunVerdict, inconclusiveReason: string | null): string {
   switch (v) {
     case "passed":
       return "all assertions passed";
     case "failed":
       return "an assertion failed";
     case "inconclusive":
-      return "a run budget was exceeded (fail-fast, partial evidence)";
+      return (
+        inconclusiveReason ?? "the run did not establish a conclusive outcome (partial evidence)"
+      );
     case "error":
       return "the harness errored";
   }
@@ -232,6 +234,7 @@ interface Diagnosis {
   timestamp: string | null;
   runDir: string;
   runError: string | null;
+  inconclusiveReason: string | null;
   steps: StepView[];
   driftCount: number;
   healedSteps: string[];
@@ -411,6 +414,7 @@ function deriveDiagnosis(loaded: LoadedRun): Diagnosis {
     timestamp,
     runDir: loaded.runDir,
     runError,
+    inconclusiveReason: verdict === "inconclusive" ? (summary?.inconclusive_reason ?? null) : null,
     steps,
     driftCount,
     healedSteps,
@@ -495,7 +499,9 @@ export function formatExplainReport(loaded: LoadedRun): string {
   const out: string[] = [];
 
   out.push("=== Flightplan run diagnosis ===");
-  out.push(`Verdict:  ${d.verdict.toUpperCase()}  (exit ${d.exitCode} — ${exitReason(d.verdict)})`);
+  out.push(
+    `Verdict:  ${d.verdict.toUpperCase()}  (exit ${d.exitCode} — ${exitReason(d.verdict, d.inconclusiveReason)})`,
+  );
   out.push(`Flow:     ${d.flowId}`);
   out.push(`Run:      ${d.runId}${d.timestamp !== null ? `   (${d.timestamp})` : ""}`);
   out.push(`Run dir:  ${d.runDir}`);
@@ -577,6 +583,7 @@ export function buildExplainJson(loaded: LoadedRun): Record<string, unknown> {
     timestamp: d.timestamp,
     run_dir: d.runDir,
     error: d.runError,
+    inconclusive_reason: d.inconclusiveReason,
     steps: d.steps.map((s) => ({
       step: s.stepId,
       do: s.do,

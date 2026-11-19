@@ -52,6 +52,13 @@ export function memoryFileSystem(): FileSystemPort {
       ensureDir(dirnameOf(key));
       files.set(key, text);
     },
+    async createTextFileExclusive(path: string, text: string): Promise<boolean> {
+      const key = normalize(path);
+      if (files.has(key) || dirs.has(key)) return false;
+      ensureDir(dirnameOf(key));
+      files.set(key, text);
+      return true;
+    },
     async appendTextFile(path: string, text: string): Promise<void> {
       const key = normalize(path);
       ensureDir(dirnameOf(key));

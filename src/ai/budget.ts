@@ -98,12 +98,19 @@ export class BudgetTracker {
 
   constructor(readonly limits: BudgetLimits = {}) {}
 
-  /** Pre-check + increment the model-call counter. */
-  noteModelCall(): void {
+  /** Check before model work or its image preparation; no counter changes on denial. */
+  assertModelCallAllowed(): void {
     const max = this.limits.max_model_calls;
     if (max !== undefined && this.modelCalls + 1 > max) {
       throw new BudgetExceededError("max_model_calls", `Budget exceeded: max_model_calls (${max})`);
     }
+    if (this.limits.max_cost_usd === 0)
+      throw new BudgetExceededError("max_cost_usd", "Budget exceeded: max_cost_usd (0)");
+  }
+
+  /** Pre-check + increment the model-call counter. */
+  noteModelCall(): void {
+    this.assertModelCallAllowed();
     this.modelCalls += 1;
   }
 
@@ -123,6 +130,7 @@ export class BudgetTracker {
 
   /** Pre-check + increment the screenshot counter. */
   noteScreenshot(): void {
+    this.assertModelCallAllowed();
     const max = this.limits.max_screenshots;
     if (max !== undefined && this.screenshots + 1 > max) {
       throw new BudgetExceededError("max_screenshots", `Budget exceeded: max_screenshots (${max})`);

@@ -457,7 +457,7 @@ export async function resolveL1(
       escalate: true,
       handoff: buildHandoff({ intent: intentText, action, ranked }),
       ...dispatchMetadataFields(veto),
-      error: "L1: ambiguous candidates — dispatch vetoed before browser input",
+      error: `L1: ambiguous candidates (${ranked.length} ranked matches) — scope the target; dispatch vetoed before browser input`,
     };
   }
 

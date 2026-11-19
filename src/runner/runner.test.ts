@@ -16,7 +16,6 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { FakeClock } from "../assert/clock.ts";
 import type { ConnectConfig, ResolvedConfig } from "../config/index.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
@@ -31,6 +30,7 @@ import {
   makeSnapshot,
   makeSuccessBatch,
 } from "../driver/index.ts";
+import { NavigationFailure } from "../driver/navigation.ts";
 import { computeSourceHash } from "../flow/index.ts";
 import { emptyLock, loadLockFile, writeLockFile } from "../lock/index.ts";
 import {
@@ -200,7 +200,7 @@ text = "Welcome, Jane Doe! Plan: pro."
     // trace.jsonl: ladder steps (fill+click) emitted browser_action + resolution_attempt.
     const traceEvents = await readJsonl(join(result.runDir, "trace.jsonl"));
     const actions = traceEvents.filter((e) => e.type === "browser_action");
-    expect(actions.length).toBe(2); // fill + click
+    expect(actions.map((event) => event.action)).toEqual(["goto", "fill", "click"]);
     const attempts = traceEvents.filter((e) => e.type === "resolution_attempt");
     expect(attempts.length).toBeGreaterThanOrEqual(2);
     // L0 (miss) → L1 (resolved) tiers only — no escalation past L1.
@@ -508,6 +508,7 @@ description = "wait + goto"
 id = "nav"
 do = "goto"
 url = "http://localhost:3000/async"
+timeout_ms = 15000
 
 [[steps]]
 id = "pause"
@@ -525,6 +526,10 @@ ms = 900
     expect(driver.callsTo("goto")[0]?.args[0]).toBe("http://localhost:3000/async");
     // The wait advanced the fake clock by at least 900ms (no real sleep happened).
     expect(clock.now()).toBeGreaterThanOrEqual(900);
+    expect(driver.callsTo("goto")[0]?.args[1]).toEqual({ timeout: 15000 });
+    expect(result.summary.steps.find((step) => step.stepId === "pause")?.durationMs).toBe(900);
+    const trace = await readJsonl(join(result.runDir, "trace.jsonl"));
+    expect(trace.some((event) => event.action === "goto" && event.ok === true)).toBe(true);
   });
 
   test("ai_pick without an AI runtime degrades to the ladder and fails when L1 can't resolve", async () => {
@@ -1829,4 +1834,81 @@ url = "https://example.test/orders"
     const runEnd = runEvents[runEvents.length - 1];
     expect(String(runEnd?.error)).toContain("UNSET_ENV_VAR");
   });
+});
+
+test("a navigation timeout fails the step, preserves teardown, and never redispatches", async () => {
+  const { flowPath, outDir } = await writeFlow(`
+version=1
+kind="flow"
+id="navigation-timeout"
+description="Navigation timeout regression"
+[[steps]]
+id="open"
+do="goto"
+url="https://example.test"
+on_fail={goto="self",max=2}
+`);
+  const driver = new MockDriver();
+  let attempts = 0;
+  driver.goto = async () => {
+    attempts += 1;
+    throw new NavigationFailure(new Error("Page.navigate timed out after 2000ms"), 2000);
+  };
+  const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+  expect(result.summary.verdict).toBe("failed");
+  expect(result.summary.steps[0]?.error).toContain("2000ms");
+  expect(result.summary.steps[0]?.dispatchState).toBe("uncertain");
+  expect(attempts).toBe(1);
+  expect(driver.callsTo("teardown")).toHaveLength(1);
+  const trace = await readJsonl(join(result.runDir, "trace.jsonl"));
+  expect(trace.some((event) => event.action === "goto" && event.ok === false)).toBe(true);
+});
+
+test("postconditions rescuing a navigation timeout do not skip later steps", async () => {
+  const { flowPath, outDir } = await writeFlow(`
+version=1
+kind="flow"
+id="navigation-rescue"
+description="Continue after observed navigation"
+[[steps]]
+id="open"
+do="goto"
+url="https://example.test/ready"
+assert=[{type="url",url="https://example.test/ready",match="exact"}]
+[[steps]]
+id="required-check"
+do="assert"
+assert=[{type="url",url="https://example.test/missing",match="exact",timeout_ms=1}]
+`);
+  const driver = new MockDriver().setSnapshot(makeSnapshot({ url: "https://example.test/ready" }));
+  const goto = driver.goto.bind(driver);
+  driver.goto = async (url, options) => {
+    await goto(url, options);
+    throw new NavigationFailure(new Error("settle timeout"), 2000, "settle");
+  };
+  const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+  expect(result.summary.verdict).toBe("failed");
+  expect(result.summary.steps.map((step) => [step.stepId, step.ok])).toEqual([
+    ["open", true],
+    ["required-check", false],
+  ]);
+  expect(driver.callsTo("goto")).toHaveLength(1);
+});
+
+test("a navigation timeout cannot be rescued by content already on the previous page", async () => {
+  const { flowPath, outDir } = await writeFlow(
+    'version=1\nkind="flow"\nid="weak-navigation"\ndescription="weak navigation"\n[[steps]]\nid="open"\ndo="goto"\nurl="https://example.test/new"\nassert=[{type="visible",selector="role:heading:Ready"}]\n[[steps]]\nid="later"\ndo="wait"\nms=0',
+  );
+  const driver = new MockDriver().setSnapshot(
+    makeSnapshot({
+      url: "https://example.test/old",
+      accessibilityTree: [{ ref: "h1", role: "heading", name: "Ready" }],
+    }),
+  );
+  driver.goto = async () => {
+    throw new NavigationFailure(new Error("Page.navigate timed out"), 30);
+  };
+  const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+  expect(result.summary.verdict).toBe("failed");
+  expect(result.summary.steps.map((step) => step.stepId)).toEqual(["open"]);
 });

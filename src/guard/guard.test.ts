@@ -139,6 +139,31 @@ const proposal: ActionProposal = {
   payload: "redacted",
   evidence: { url: "https://example.com", frame: null, text: "Orders", observedAt: 0 },
 };
+for (const globalLimits of [{ max_model_calls: 0 }, { max_cost_usd: 0 }, { max_screenshots: 0 }]) {
+  test(`global zero budget blocks guard image preparation and transport: ${JSON.stringify(globalLimits)}`, async () => {
+    let images = 0;
+    let requests = 0;
+    const evaluate = createJevGuard({
+      apiKey: "fake",
+      policy: "Allow reads",
+      globalLimits,
+      imageEvidence: async () => {
+        images++;
+        throw new Error("must not capture");
+      },
+      fetchFn: (async () => {
+        requests++;
+        throw new Error("must not send");
+      }) as unknown as typeof fetch,
+    });
+    expect(await evaluate(proposal, new AbortController().signal)).toMatchObject({
+      decision: "unknown",
+      reason: "global_model_budget_denied",
+    });
+    expect(images).toBe(0);
+    expect(requests).toBe(0);
+  });
+}
 for (const [values, decision] of [
   [[1, 1, 1], "allow"],
   [[0, 1, 1], "deny"],

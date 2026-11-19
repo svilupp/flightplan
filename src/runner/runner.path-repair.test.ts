@@ -80,7 +80,10 @@ async function readAiCalls(runDir: string): Promise<Array<Record<string, unknown
 /** Config with `[plan]` policy overrides folded in. The planner is opt-in (default OFF), so these
  * planner tests enable it explicitly unless an override says otherwise. */
 function planConfig(plan: Partial<ResolvedConfig["plan"]> = {}): ResolvedConfig {
-  return resolveConfigWithDefaults([{ plan: { enabled: true, ...plan } }]);
+  return resolveConfigWithDefaults([
+    { ai: { enabled: true } },
+    { plan: { enabled: true, ...plan } },
+  ]);
 }
 
 interface FakeResponse {

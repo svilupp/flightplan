@@ -71,7 +71,7 @@ async function readAiCalls(runDir: string): Promise<Array<Record<string, unknown
 }
 
 function defaultConfig(overrides: Partial<ResolvedConfig["run"]> = {}): ResolvedConfig {
-  return resolveConfigWithDefaults([{ run: { ...overrides } }]);
+  return resolveConfigWithDefaults([{ ai: { enabled: true } }, { run: { ...overrides } }]);
 }
 
 interface FakeResponse {

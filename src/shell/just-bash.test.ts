@@ -221,15 +221,14 @@ describe("commandsForJustBash — cancellation, invoked without the Bash exec wr
   });
 
   test("a tiny timeoutMs maps to exit 124 (deadline)", async () => {
-    const fs = new InMemoryFs({ "/flows/a.toml": FLOW_SOURCE });
-    // Hang every read after the first so the run is still loading when the deadline fires,
-    // mirroring `src/cli/commands.test.ts`'s deadline test.
+    const fs = new InMemoryFs({
+      "/flows/a.toml": FLOW_SOURCE.replace("[[steps]]", 'imports=["./child.toml"]\n[[steps]]'),
+    });
+    // The entry is pinned; loading a child must still obey the command deadline.
     const hang = new Promise<string>(() => {});
     const originalRead = fs.readFile.bind(fs);
-    let reads = 0;
     fs.readFile = (async (path: string) => {
-      reads += 1;
-      if (reads > 1) return hang;
+      if (path === "/flows/child.toml") return hang;
       return originalRead(path);
     }) as typeof fs.readFile;
     const [command] = commandsForJustBash({

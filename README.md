@@ -42,7 +42,8 @@ bun run flightplan run examples/flows/wizard.toml --frozen --no-lock-write --jso
 The fixture server listens on `http://localhost:3000`. The example flows use the default CDP attach
 at `localhost:9222`, so start Chrome/Chromium with remote debugging enabled first, or add a
 `[config.connect]` block with `mode = "launch"`. Deterministic L0/L1 flows need no API key.
-AI resolver, vision, planner, and `ai_judge` paths need `OPENROUTER_API_KEY` by default. The L2
+AI is disabled by default. Resolver, vision, planner, and `ai_judge` paths require
+`[config.ai] enabled = true` and the relevant credentials (`OPENROUTER_API_KEY` by default). The L2
 element-choice step can instead (or additionally) use the TypeSafe JEV classifier via
 `TYPESAFE_API_KEY` (keys available at https://console.typesafe.ai/keys) — see "AI tiers and planner" below.
 
@@ -50,6 +51,9 @@ The simplest way to pick a model is `[config.ai.models.default]`: it seeds every
 advisor, vision, planner, planner_capable) at once, so you don't repeat the same block per role:
 
 ```toml
+[config.ai]
+enabled = true
+
 [config.ai.models.default]
 model = "gpt-5.6-luna:xhigh"
 fallbacks = []
@@ -76,6 +80,7 @@ reasoning, per-role:
 
 ```toml
 [config.ai]
+enabled = true
 provider = "google"          # uses GOOGLE_GENERATIVE_AI_API_KEY
 
 [config.ai.models.resolver]
@@ -86,7 +91,7 @@ model = "gemini-3-pro:high"  # native Google model id + reasoning effort suffix
 
 Install the public packages with npm or Bun. The direct `browser-pilot` dependency exposes the
 `bp` discovery and WebMCP diagnostics CLI; Flightplan also declares it as its runtime driver. The
-CLI and library run on Node.js 18+ or Bun:
+CLI and library run on Node.js 20.19.0+ or Bun:
 
 ```sh
 npm install @svilupp/flightplan browser-pilot
@@ -137,7 +142,8 @@ console.log(result.summary.verdict);
 ### Shell hosts
 
 `@svilupp/flightplan/shell` exposes `runFlightplan(args, context, ports)` for shell hosts.
-It shares the native CLI's `lint`/`run` implementation and returns `{ stdout, stderr, exitCode }`.
+It supports `lint`, `run`, `list`, `describe`, and `check` through the native CLI implementations
+and returns `{ stdout, stderr, exitCode }`.
 
 ```ts
 import { runFlightplan, type FileSystemPort } from "@svilupp/flightplan/shell";
@@ -155,9 +161,10 @@ supplied filesystem. The host registers its command and maps its storage to `Fil
 Just-bash is one tested consumer; it is a dev dependency only. Production code and public types
 have no dependency on it.
 
-`ports.env` defaults to `{}`. AI requires an injected `aiRuntimeFactory` or explicit provider
-credentials in that environment. `run` requires `driverFactory` and otherwise returns exit 2.
-Hosts can disable `lint` or `run` with `ports.capabilities` and cap each output stream with
+`ports.env` defaults to `{}`. AI requires `[config.ai] enabled = true` plus an injected
+`aiRuntimeFactory` or explicit provider credentials in that environment. `run` requires
+`driverFactory` or `namedSessionBorrower` and otherwise returns exit 2. Hosts can disable each
+supported command with `ports.capabilities` and cap each output stream with
 `ports.limits.maxOutputBytes` (default 1 MiB).
 
 Pass cancellation as `context.signal` and a run deadline as `ports.timeoutMs`. Flightplan returns
@@ -269,6 +276,11 @@ outside the interrupted filesystem, even if a previously dispatched summary writ
 Provider usage may be unknown after cancellation. Session release and durable recovery belong to
 the host.
 
+The native CLI forwards SIGINT and SIGTERM to cancellation, waits for bounded cleanup, and exits
+130 or 143 respectively. A cancelled sweep stops scheduling units. Ordinary flow or setup failure
+still attempts the teardown hook after root entry admission when the browser connection is usable.
+Rejected entry contracts and cancellation skip flow hooks. Driver cleanup runs in either case.
+
 ## Cloudflare and host-owned sessions
 
 `[config.connect] mode = "hosted"` supports `cloudflare`,
@@ -329,10 +341,10 @@ url = "${inputs.base_url}/shopify/draft_orders/D1236?cookie=hide"
 
 [[steps.assert]]
 type = "text"
-selector = "[data-testid='draft-id']"
+selector = "css:[data-testid='draft-id']"
 text = "D1236"
 match = "exact"
-purpose = "precondition"
+purpose = "postcondition"
 
 [[steps]]
 id = "pay_once"
@@ -343,7 +355,7 @@ target = ["[data-testid='mark-as-paid']", "the Mark as paid action for draft D12
 
 [[steps.assert]]
 type = "text"
-selector = "[data-testid='payment-badge']"
+selector = "css:[data-testid='payment-badge']"
 text = "Paid"
 match = "exact"
 purpose = "postcondition"
@@ -363,6 +375,8 @@ injection, see [docs/BROWSER_PILOT_INTEGRATION.md](docs/BROWSER_PILOT_INTEGRATIO
 is always `at_most_once` - the linter rejects any other value. Do not add `on_fail = { goto = "self" }`
 to a step that may have dispatched. Use `retry = { policy = "never" }` for dangerous steps and let an
 exact postcondition rescue an uncertain result.
+
+Backward failure jumps cannot cross an `at_most_once` step that completed or may have dispatched.
 
 ### WebMCP calls
 
@@ -442,25 +456,51 @@ Author-facing selector prefixes are `ref:`, `role:`, `text:`, `css:`, and leadin
 Keep the natural-language entry concise. Internal `fingerprint:` lock tokens are not author-facing
 selectors.
 
+CSS inference is heuristic. A tag name and a literal accessible name can be identical; use `css:`
+or `text:` to make the intended selector explicit.
+
 ### 3. Treat readiness as a semantic condition
 
-A changed URL or committed navigation is not application readiness. Add a wait or a semantic
-precondition for delayed hydration, empty first snapshots, loading overlays, and same-document navigation.
+A changed URL or committed navigation is not application readiness. Attach a postcondition to the
+navigation step to wait for destination content. Preconditions run before the action and inspect
+the previous page, including on `goto`.
 
 ```toml
 [[steps.assert]]
-type = "visible"
-selector = "[data-testid='page-title']"
+type = "text"
+selector = "css:[data-testid='page-title']"
 text = "Orders"
-purpose = "precondition"
+match = "exact"
+purpose = "postcondition"
 timeout_ms = 6000
 ```
+
+`[config.timeouts] goto_ms` defaults to 30000 ms for document navigation; `nav_ms` defaults to
+2000 ms for optional settling. A `goto` step's `timeout_ms` overrides document navigation only.
+For compatibility, an explicitly configured `nav_ms` also supplies the document limit when no
+`goto_ms` is configured. Assertion `timeout_ms` controls its own polling.
+`flightplan config <flow> --json` shows effective deadlines and their sources. Strict
+`OwnerActionDriver` hosts enforce their own deadlines; named-session compatibility borrowers
+use the driver deadlines. See [execution policy and migration](docs/EXECUTION_POLICY.md).
+A timed-out navigation needs an after assertion with `exact` or `origin_path` URL matching to
+recover; destination content alone is insufficient.
 
 ### 4. Make assertions exact and scoped
 
 Available URL matches: `exact`, `origin_path`, `glob`, `contains`.
 
 Available text matches: `exact`, `contains`, `regex`.
+
+Use `css:h1` or `css:nav[aria-label='Main navigation']` for CSS assertion selectors. Bare attribute,
+ID and class selectors remain supported in assertions. Unprefixed CSS-looking names are rejected;
+use `text:` for literal text that resembles CSS. `hidden`, `state = "hidden"`, and `count = 0`
+require an explicit selector such as `css:app-banner` or `text:Shipping notice`. A valid selector
+with no matches proves absence. CSS absence requires a driver that can query the live DOM.
+Empty strings are valid for `fill` and `value` assertions.
+Explicit `role:` and `text:` assertion selectors match the full accessible name, so `text:Paid`
+does not select `Unpaid`. Text assertion `match` controls the comparison after selection.
+Use CSS for DOM element counts; semantic selectors count matching accessibility nodes. A heading
+and a link with the same name count as two nodes.
 
 Use `state` for `enabled`, `disabled`, `checked`, `unchecked`, `selected`, `dialog`, `menu`, and
 `new_page`. Use `transition` for `url_changed`, `text_changed`, `value_changed`, and `state_changed`.
@@ -471,8 +511,9 @@ different tenant. Use a selector or landmark for every business-state assertion.
 
 ### 5. Arm popups on the trigger action
 
-Declare the popup on the step that opens it. Flightplan arms observation before dispatch and preserves
-the opener page:
+Declare the popup on the `click`, `fill`, `select`, or `ai_pick` step that opens it. Flightplan arms
+observation before dispatch and preserves the opener page. Other verbs, including `press`, reject
+popup declarations during loading:
 
 ```toml
 [[steps]]
@@ -559,7 +600,9 @@ Proof requires all of the following:
 - Swap review leaves the ledger at `0`.
 - Swap approval, settings save, and settings restore each equal `1`.
 - Popup artifacts identify the matched target and opener.
-- Every run contains valid `summary.json`, `run.jsonl`, and `trace.jsonl`.
+- `run.jsonl` contains step and assertion events; `summary.json` includes each completed step's duration.
+- `trace.jsonl` records navigation, browser actions and resolution attempts. An assertion-only run
+  can have an empty trace. Use `run.jsonl` to inspect assertion failures and timing.
 - Reversible settings flows end at the original persisted value.
 - An uncertain transport result is observed, never replayed.
 
@@ -571,7 +614,8 @@ a seeded disposable resource, a mutation budget, and cleanup or restoration.
 ```sh
 flightplan explain /tmp/flightplan-proof/<run-id>
 flightplan report /tmp/flightplan-proof
-flightplan sweep examples/flows --trials 3 --compare-baseline -o /tmp/flightplan-campaign
+flightplan lint examples/flows/wizard.toml --deny-warnings
+flightplan sweep examples/flows/wizard.toml --trials 3 --input base_url=http://localhost:3000 -o /tmp/flightplan-campaign
 ```
 
 Read the result as a state machine:
@@ -586,7 +630,23 @@ Read the result as a state machine:
 
 Artifacts are the source of truth. Exit code alone cannot prove that an action committed once.
 
+Sweep accepts `--input`, `--input-env`, and `--inputs-file`, using the same binding rules as `run`.
+It prepares every flow, import and hook before starting trials. `--compare-baseline` requires AI
+permission for its L3 arm; denied units fail without being downgraded. `sweep.json` retains those
+failures, while `report` aggregates the runs that executed.
+
 ## Troubleshooting
+
+**Escape or another key fails in attach mode.** Raw attach verifies that its selected tab is visible
+and focused before sending a key. Set `[config.connect] foreground = true` to opt in to activation;
+it activates only that selected tab, after guard approval, and still verifies focus. Otherwise focus
+the designated tab yourself. A failed check sends no key. Keep keyboard actions in separate steps;
+mixed raw-attach batches containing a keypress are rejected before any action. Assert the keyboard
+effect: clicking Close does not prove Escape works.
+
+Named browser-pilot sessions provide the coordinated ownership path. Serialize raw-attach runs
+sharing a browser profile, and never overlap raw attach with an owner session. Tab cleanup does not
+isolate shared cookies or application state.
 
 **"You are using an unsupported command-line flag: --no-sandbox. Stability and security will
 suffer."** Flightplan launches Chrome with `--no-sandbox` by default so it also works in
@@ -615,7 +675,13 @@ behavior.
 ## AI tiers and planner
 
 L0 lock replay and L1 deterministic DOM resolution are the default path. L2 resolver, L3 vision, L4
-advisor, AI assertions, and the L5 path-repair planner need an AI runtime when invoked.
+advisor, AI assertions, and the L5 path-repair planner require `[config.ai] enabled = true`.
+Ambient keys never grant permission. Explicit AI requirements in composed steps or setup/teardown
+hooks fail preflight before browser acquisition when AI is disabled. Cached extraction maps still
+replay without AI; an uncached selectorless extraction fails with an authoring diagnostic.
+
+Planner enablement is rejected when any prepared step, child flow, or setup/teardown hook contains
+an `at_most_once` effect.
 
 ### Bounded JEV profiles
 
@@ -628,10 +694,11 @@ See [JEV configuration and assertions](docs/JEV.md) for a working configuration 
 
 L2 ("which candidate element matches this intent") is answered by an ordered chain of
 **choosers**, selected by `[config.ai] classifier`. The behavior below applies when
-`[config.ai.jev]` is absent:
+`[config.ai.jev]` is absent and AI is explicitly enabled:
 
 ```toml
 [config.ai]
+enabled = true
 # "auto" (default): JEV -> LLM -> heuristic, by key availability.
 # Explicit "jev" | "llm" | "heuristic": that chooser ONLY; a missing key fails the run at start.
 classifier = "auto"
@@ -660,8 +727,8 @@ NAME, never the key value.
   naming the missing env var (never a silent no-op, never a value in the error). `"heuristic"`
   needs no key at all.
 - A **legacy JEV-only setup** (`TYPESAFE_API_KEY` set, no generative provider key, no
-  `[config.ai.jev]` profile) covers L2 element choice only — L3 vision, L4 advisor, the L5 planner, and `ai_judge` are all unavailable. An
-  `ai_judge` assertion under a JEV-only (or fully AI-less) runtime **fails that assertion** with a
+  `[config.ai.jev]` profile) covers L2 element choice only — L3 vision, L4 advisor, the L5 planner, and `ai_judge` are all unavailable. With AI enabled, an
+  `ai_judge` assertion under a legacy JEV-only runtime **fails that assertion** with a
   clearly-marked "not available" message (`pass: false`) — it is a real, counted assertion
   failure, never a silent skip. It is still distinct from a judge FAILING CLOSED on a model-call
   error: no model call is ever attempted or charged, and the message is always the same
@@ -673,12 +740,31 @@ element. A page with several visually/semantically identical candidates (e.g. th
 "Save" buttons distinguished only by surrounding context) re-resolves at L2 on EVERY run — there
 is no selector that is durable AND unique for that target, so warm replay never engages.
 
-Keep the planner off for deterministic safety proofs:
+For deterministic execution, leave AI disabled (the default). Explicit zero budgets also stop
+remote calls before dispatch, including image preparation:
 
 ```toml
+[config.ai]
+enabled = false
+
 [config.plan]
 enabled = false
+
+[run]
+max_model_calls = 0
+max_screenshots = 0
+max_cost_usd = 0
+
+[config.browser]
+record = false
 ```
+
+A configured remote `[config.guard]` requires AI permission, including shadow mode. Without it,
+preflight fails instead of silently dropping the guard. Guards retain separate positive budgets
+but honor global zero limits; an enforcing guard blocks when evaluation is unavailable. Trusted
+host-injected `actionGuard` callbacks remain active and are outside the built-in AI policy.
+Recording is independent of AI permission and model screenshot budgets. `--frozen --no-lock-write`
+controls lock persistence. See [execution policy](docs/EXECUTION_POLICY.md) for limits and migration.
 
 For an AI experiment, enable it only with a bounded `max_replans`, a clear flow `goal`, and a separate
 run directory. `tier_hint = "vision"` is for icon-only or unlabeled controls after deterministic
@@ -686,9 +772,9 @@ resolution has failed. Consecutive vision targets can batch into one request.
 
 ## Cloudflare Access auth (`[config.auth]`)
 
-Flows behind Cloudflare Access can authenticate via `[config.auth]`, layered like every other
-`[config.*]` block (built-in defaults → global `flightplan.toml` → entry flow → CLI), so an org can
-set the `cf_access` block once in a global `flightplan.toml` and have every flow inherit it.
+Flows behind Cloudflare Access can authenticate via `[config.auth.cf_access]` in the entry flow.
+The CLI does not automatically load a global `flightplan.toml`; imported flows contribute steps,
+not auth configuration. Library callers can supply their own configuration layers.
 Secrets are always expressed as env var **names**, never values — the same convention as
 `[config.ai] api_key_env` / `[config.telemetry.logfire] token_env`:
 
@@ -736,6 +822,22 @@ cookie_file = "./secrets/app.cookies.json"   # path, relative to this flow file'
 # cookie_file_env = "APP_COOKIE_FILE"        # env var NAME holding the path (relative → resolved against CWD)
 cookie_save = false                          # optional, default false
 ```
+
+For an app that requires an interactive OAuth login:
+
+1. From the flow directory, open a browser-pilot session and complete the normal sign-in:
+   ```sh
+   bp connect --name app-login --new-tab --foreground --page-url https://app.example.com
+   # Complete sign-in in the browser before saving.
+   bp env auth save ./secrets/app.cookies.json -s app-login
+   ```
+2. Set `cookie_file` as above and use `[config.connect] mode = "launch"` with `headless = true`.
+3. Navigate to the app and assert authenticated destination content before continuing.
+
+Exported cookies retain their original expiry and server-side restrictions. Saving them again does
+not renew a server session. Unattended schedules need an authentication lifecycle allowed by the
+app's policy. When login is required, stop and renew through the normal sign-in flow. An attached
+profile or an existing named session is an alternative for attended runs.
 
 The snapshot is loaded and restored into the browser right after `connect()` and before the first
 navigation — before Cloudflare Access minting and literal `[[config.auth.cookies]]` (those still

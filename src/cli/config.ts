@@ -1,8 +1,15 @@
 import { resolveBudgetLimits } from "../ai/budget.ts";
 import { compileJevProfile } from "../ai/jev-profile.ts";
-import { resolveConfigWithDefaults, resolveJevApiKeyEnv } from "../config/resolve.ts";
+import { executionPolicyIssues, resolveExecutionPolicy } from "../config/execution-policy.ts";
+import {
+  DEFAULT_RUN_LIMITS,
+  resolveConfigWithDefaults,
+  resolveJevApiKeyEnv,
+} from "../config/resolve.ts";
 import type { Config } from "../config/types.ts";
+import { resolveImports } from "../flow/imports.ts";
 import { loadFlowFile } from "../flow/index.ts";
+import { collectExecutedFlows } from "../flow/run.ts";
 import { resolve } from "../paths.ts";
 import { type CommandIO, EXIT } from "./commands.ts";
 
@@ -13,6 +20,9 @@ export async function executeConfig(path: string, io: CommandIO): Promise<number
     const layers: Config[] = [loaded.flow.config ?? {}];
     if (loaded.flow.run) layers.push({ run: loaded.flow.run });
     const config = resolveConfigWithDefaults(layers);
+    const executionPolicy = resolveExecutionPolicy(config);
+    const graph = await resolveImports(loaded, { fs: io.fs, bindInputs: false });
+    const flows = collectExecutedFlows(loaded, graph).map((file) => file.flow);
     const policy = compileJevProfile(config);
     const limits = resolveBudgetLimits(config);
     const key = resolveJevApiKeyEnv(config.ai?.jev_api_key_env, io.env);
@@ -21,6 +31,29 @@ export async function executeConfig(path: string, io: CommandIO): Promise<number
         {
           version: 1,
           classifier: config.ai?.classifier,
+          execution_policy: executionPolicy,
+          policy_issues: executionPolicyIssues(
+            executionPolicy,
+            config,
+            flows.flatMap((flow) => flow.steps),
+            {
+              assertions: flows.flatMap((flow) => [...(flow.before ?? []), ...(flow.after ?? [])]),
+            },
+          ),
+          timeouts: config.timeouts,
+          timeout_sources: {
+            goto_ms:
+              loaded.flow.config?.timeouts?.goto_ms !== undefined
+                ? "flow.config.timeouts.goto_ms"
+                : loaded.flow.config?.timeouts?.nav_ms !== undefined
+                  ? "flow.config.timeouts.nav_ms (legacy)"
+                  : "default",
+            nav_ms:
+              loaded.flow.config?.timeouts?.nav_ms !== undefined
+                ? "flow.config.timeouts.nav_ms"
+                : "default",
+          },
+          run: { ...DEFAULT_RUN_LIMITS, ...config.run },
           jev: policy
             ? {
                 ...policy,

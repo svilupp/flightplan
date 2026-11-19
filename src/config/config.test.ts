@@ -203,6 +203,23 @@ describe("resolution-order precedence", () => {
 });
 
 describe("[timeouts] — action/nav ceilings (fixes 30s hangs)", () => {
+  test("separates document navigation from settle, preserving explicit legacy nav_ms", () => {
+    expect(resolveConfigWithDefaults([]).timeouts).toMatchObject({ goto_ms: 30000, nav_ms: 2000 });
+    expect(resolveConfigWithDefaults([{ timeouts: { nav_ms: 8000 } }]).timeouts).toMatchObject({
+      goto_ms: 8000,
+      nav_ms: 8000,
+    });
+    expect(resolveConfigWithDefaults([{ timeouts: { goto_ms: 15000 } }]).timeouts).toMatchObject({
+      goto_ms: 15000,
+      nav_ms: 2000,
+    });
+    expect(
+      resolveConfigWithDefaults([
+        { timeouts: { goto_ms: 15000, nav_ms: 1000 } },
+        { timeouts: { nav_ms: 3000 } },
+      ]).timeouts,
+    ).toMatchObject({ goto_ms: 15000, nav_ms: 3000 });
+  });
   test("built-in defaults supply action_ms=5000 and nav_ms=2000", () => {
     const resolved = resolveConfigWithDefaults([]);
     expect(resolved.timeouts.action_ms).toBe(5000);

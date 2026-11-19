@@ -1,6 +1,6 @@
 version = 2
 source = "examples/flows/vision.toml"
-source_hash = "sha256:2d682bbca00036f4a00d2d0a8ba9f00ddf82552a488821852225194dfed48c11"
+source_hash = "sha256:a60af574688e5b1837905205a88c4683274ed522be4a29af8a3f0b6b99c34c2c"
 description = "Vision-resolve and click the unlabeled trash icon on the vision fixture"
 
 [[targets]]

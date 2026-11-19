@@ -38,9 +38,9 @@
 // the accessibility-tree snapshot (browser-pilot 0.1.0) whose `selector` is synthetic):
 //   - `ref:eN`            → element.ref === "eN"
 //   - `[data-...="v"]`     → element.selector === target (synthetic backend-node selector echo)
-//   - `role:button:Name`   → element.role === role AND element.name contains/equals Name
+//   - `role:button:Name`   → element.role === role AND element.name === Name
 //   - `role:button`        → element.role === role
-//   - `text:Foo`           → element.name contains "Foo" (interactive-role-scoped per FINDINGS §8)
+//   - `text:Foo`           → element.name === "Foo"
 //   - plain string         → element.name contains the string (case-insensitive) OR
 //                            element.selector === string OR element.ref === string
 // When an assertion has NO `selector`, the target is the page as a whole:
@@ -50,12 +50,14 @@
 // match is: a `*`-glob if the pattern contains `*`, else a case-sensitive SUBSTRING match
 // (so `/checkout` matches `https://x/checkout?ok=1`). VALUE match is EXACT string equality.
 
+import { InvalidSelectorError } from "../driver/normalize-selector.ts";
 import type {
   InteractiveElement,
   PageSnapshot,
   PageStateObservation,
   SnapshotNode,
 } from "../driver/types.ts";
+import { looksLikeUnprefixedAssertionSelector } from "../flow/normalize-target.ts";
 import type { Assertion } from "../flow/types.ts";
 import type { AssertType } from "../types.ts";
 import type { AssertionResult, ConditionOpts } from "./types.ts";
@@ -108,20 +110,54 @@ async function poll(
   const { driver, timeoutMs, pollIntervalMs, clock } = opts;
   const start = clock.now();
   const deadline = start + timeoutMs;
+  let probeExpired = false;
+
+  const check = async (): Promise<Probe> => {
+    // A zero timeout is a single observation, used by inspection without polling.
+    if (timeoutMs === 0) return probe(makeSnapshotSource(driver));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired: Probe = {
+      pass: false,
+      message: `assertion probe exceeded ${timeoutMs}ms deadline`,
+    };
+    try {
+      const result = await Promise.race([
+        Promise.resolve().then(() => probe(makeSnapshotSource(driver))),
+        new Promise<Probe>((resolve) => {
+          timer = setTimeout(
+            () => {
+              probeExpired = true;
+              resolve(expired);
+            },
+            Math.max(1, deadline - clock.now()),
+          );
+        }),
+      ]);
+      if (timeoutMs > 0 && clock.now() > deadline) {
+        probeExpired = true;
+        return expired;
+      }
+      return result;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
 
   let last: Probe = { pass: false, message: "not evaluated" };
 
   // First, immediate attempt (so timeoutMs=0 still checks once). The probe fetches the snapshot
   // LAZILY through the source — a pure synthetic/CSS target (resolved via `driver.elementState`)
   // never triggers a snapshot round-trip; see `makeSnapshotSource` + `resolveTargetState`.
-  last = await probe(makeSnapshotSource(driver));
+  last = await check();
   if (last.pass) return done(true);
+  if (probeExpired) return done(false);
 
   while (clock.now() < deadline) {
     const remaining = deadline - clock.now();
     await clock.sleep(Math.min(pollIntervalMs, remaining));
-    last = await probe(makeSnapshotSource(driver));
+    last = await check();
     if (last.pass) return done(true);
+    if (probeExpired) break;
   }
 
   return done(false);
@@ -168,23 +204,49 @@ interface ParsedTarget {
   raw: string;
 }
 function parseTarget(target: string): ParsedTarget {
+  target = target.trim();
+  if (/^within\(/.test(target) || />>\s*(?:role:|text:)/.test(target))
+    return { kind: "synthetic", raw: target };
   if (target.startsWith("ref:")) return { kind: "ref", raw: target.slice("ref:".length) };
   if (target.startsWith("role:")) {
-    const rest = target.slice("role:".length);
-    const sep = rest.indexOf(":");
-    if (sep === -1) return { kind: "role", role: rest, raw: target };
-    return { kind: "role", role: rest.slice(0, sep), name: rest.slice(sep + 1), raw: target };
+    const rest = target.slice("role:".length).trim();
+    if (/\[\d+\]$/.test(rest)) return { kind: "synthetic", raw: target };
+    const bracket = /^(.*?)\[\s*name\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]]*?))\s*\]$/.exec(rest);
+    const body = bracket?.[1] ?? rest;
+    const sep = body.indexOf(":");
+    const role = (sep === -1 ? body : body.slice(0, sep)).trim().toLowerCase();
+    if (!role || /[[\]]/.test(role)) throw new InvalidSelectorError("Malformed role selector.");
+    const name = (
+      bracket
+        ? (bracket[2] ?? bracket[3] ?? bracket[4])
+        : sep === -1
+          ? undefined
+          : body.slice(sep + 1)
+    )
+      ?.trim()
+      .replace(/^(['"])([\s\S]*)\1$/, "$2");
+    return { kind: "role", role, ...(name !== undefined ? { name } : {}), raw: target };
   }
   if (target.startsWith("text:"))
     return { kind: "text", name: target.slice("text:".length), raw: target };
   // Explicit `css:` escape hatch for bare CSS (e.g. `css:tr`, `css:div.card`) — mirror
   // `flow/normalize-target.ts`: STRIP the prefix and treat it as synthetic so it resolves via
   // `driver.elementState` (real DOM) rather than being name-matched against the AX snapshot.
-  if (target.startsWith("css:")) {
-    return { kind: "synthetic", raw: target.slice("css:".length).trim() };
+  if (/^css:/i.test(target)) {
+    const raw = target.slice("css:".length).trim();
+    if (/^(?:css:|role:|text:|ref:)/.test(raw))
+      throw new InvalidSelectorError(
+        "css: requires a raw CSS selector, without another selector prefix.",
+      );
+    return { kind: "synthetic", raw };
   }
   if (target.startsWith("[") || target.startsWith(".") || target.startsWith("#")) {
     return { kind: "synthetic", raw: target };
+  }
+  if (looksLikeUnprefixedAssertionSelector(target)) {
+    throw new InvalidSelectorError(
+      `Selector ${JSON.stringify(target)} looks like CSS; prefix it with css: for CSS or text: for an accessible name.`,
+    );
   }
   return { kind: "plain", raw: target };
 }
@@ -196,9 +258,9 @@ function elementMatches(el: InteractiveElement, parsed: ParsedTarget): boolean {
       return el.ref === parsed.raw || el.ref === `e${parsed.raw}`;
     case "role":
       if (el.role !== parsed.role) return false;
-      return parsed.name === undefined || containsCI(el.name, parsed.name);
+      return parsed.name === undefined || el.name === parsed.name;
     case "text":
-      return parsed.name !== undefined && containsCI(el.name, parsed.name);
+      return parsed.name !== undefined && el.name === parsed.name;
     case "synthetic":
       return el.selector === parsed.raw;
     case "plain":
@@ -226,13 +288,11 @@ function targetVisible(snapshot: PageSnapshot, target: string): boolean {
   return flattenTree(snapshot.accessibilityTree).some((node) => {
     if (parsed.kind === "role") {
       if (node.role !== parsed.role) return false;
-      return (
-        parsed.name === undefined || (node.name !== undefined && containsCI(node.name, parsed.name))
-      );
+      return parsed.name === undefined || node.name === parsed.name;
     }
     // text/plain → match by accessible name
-    return node.name !== undefined && parsed.name !== undefined
-      ? containsCI(node.name, parsed.name)
+    return parsed.kind === "text"
+      ? node.name === parsed.name
       : node.name !== undefined && containsCI(node.name, parsed.raw);
   });
 }
@@ -262,17 +322,28 @@ interface TargetState {
  *    verify presence/visibility/text/count of arbitrary, incl. non-interactive, DOM elements. The
  *    DOM work lives in browser-pilot; flightplan just reads the returned `ElementState`.
  *  - SEMANTIC targets (`role:`/`text:`/`plain`) and `ref:` — or ANY target when `elementState` is
- *    unavailable (feature-detected) — keep the EXACT snapshot-based behaviour: presence/visibility
- *    from {@link targetVisible}, count from {@link matchingElements}, text derived from matched
- *    element names/values (with the same AX-tree fallback `text()` uses). This guarantees no
- *    regression for the AX-resolvable targets every existing test exercises.
+ *    unavailable (feature-detected) — use the snapshot: presence/visibility from
+ *    {@link targetVisible}, count from matching AX nodes and interactive refs, and text from
+ *    matched names/values (with the same AX-tree fallback `text()` uses).
+ *  - Absence checks require an explicit selector. A DOM selector requires live DOM observation.
  */
 async function resolveTargetState(
   target: string,
   source: SnapshotSource,
   opts: ConditionOpts,
+  evidence?: "absence",
 ): Promise<TargetState> {
   const parsed = parseTarget(target);
+  if (evidence === "absence") {
+    if (parsed.kind === "plain")
+      throw new InvalidSelectorError(
+        "Absence requires an explicit selector. Use css: for CSS or text: or role: for an accessible name.",
+      );
+    if (parsed.kind === "synthetic" && !opts.driver.elementState)
+      throw new InvalidSelectorError(
+        "This selector requires driver.elementState; absence cannot be verified from a snapshot.",
+      );
+  }
   if (parsed.kind === "synthetic" && opts.driver.elementState) {
     // Pure synthetic/CSS target with the live-DOM primitive: answered WITHOUT a snapshot fetch.
     const s = await opts.driver.elementState(parsed.raw);
@@ -287,9 +358,24 @@ async function resolveTargetState(
       ...(s.selected !== undefined ? { selected: s.selected } : {}),
     };
   }
-  // Snapshot path (semantic targets, or `elementState` unavailable → no behaviour change).
+  // Snapshot path for semantic targets, or when `elementState` is unavailable.
   const snapshot = await source();
   const els = matchingElements(snapshot, target);
+  const nodes: SnapshotNode[] = [];
+  const visit = (node: SnapshotNode, matchedAncestor: boolean): void => {
+    const matches = matchesNodeTarget(node, target);
+    const textChild = /^(statictext|inlinetextbox)$/i.test(node.role);
+    // Text leaves repeat their containing control/heading's name in Chrome's AX tree.
+    // Keep standalone text nodes, but count a matched ancestor and its text only once.
+    const duplicateText =
+      (parsed.kind === "text" || parsed.kind === "plain") && textChild && matchedAncestor;
+    if (matches && !duplicateText) nodes.push(node);
+    for (const child of node.children ?? []) visit(child, matchedAncestor || matches);
+  };
+  for (const node of snapshot.accessibilityTree) visit(node, false);
+  // AX nodes and interactive elements describe the same elements. Deduplicate by snapshot ref.
+  const refs = new Set(nodes.map((node) => node.ref));
+  const count = nodes.length + els.filter((element) => !refs.has(element.ref)).length;
   const present = targetVisible(snapshot, target);
   let text: string;
   if (els.length > 0) {
@@ -308,7 +394,7 @@ async function resolveTargetState(
   return {
     present,
     visible: present,
-    count: els.length,
+    count,
     text,
     value: first?.value ?? null,
     ...(first?.checked !== undefined ? { checked: first.checked } : {}),
@@ -394,7 +480,7 @@ export function hidden(
   expectedText?: string,
 ): Promise<AssertionResult> {
   return poll("hidden", target, opts, async (source) => {
-    const state = await resolveTargetState(target, source, opts);
+    const state = await resolveTargetState(target, source, opts, "absence");
     const textOk = expectedText === undefined || containsCI(state.text, expectedText);
     const consideredVisible = state.visible && textOk;
     return {
@@ -503,7 +589,14 @@ export function state(
   expectedValue?: string,
 ): Promise<AssertionResult> {
   return poll("state", target ?? expected, opts, async (source) => {
-    const current = target ? await resolveTargetState(target, source, opts) : undefined;
+    const current = target
+      ? await resolveTargetState(
+          target,
+          source,
+          opts,
+          expected === "hidden" ? "absence" : undefined,
+        )
+      : undefined;
     let ok = false;
     if (!current) ok = false;
     else if (expected === "visible") ok = current.visible;
@@ -687,11 +780,11 @@ export function value(
 /**
  * `count` — the number of elements matching the target EQUALS `n`. For synthetic/CSS targets the
  * count comes from `driver.elementState` (so non-interactive rows the AX snapshot omits are
- * counted correctly); semantic targets keep counting matching interactive snapshot elements.
+ * counted correctly); semantic targets count matching AX nodes and interactive refs.
  */
 export function count(target: string, n: number, opts: ConditionOpts): Promise<AssertionResult> {
   return poll("count", target, opts, async (source) => {
-    const state = await resolveTargetState(target, source, opts);
+    const state = await resolveTargetState(target, source, opts, n === 0 ? "absence" : undefined);
     const observed = state.count;
     const ok = observed === n;
     return {
@@ -711,13 +804,9 @@ function matchesNodeTarget(node: SnapshotNode, target: string): boolean {
       return node.ref === parsed.raw || node.ref === `e${parsed.raw}`;
     case "role":
       if (node.role !== parsed.role) return false;
-      return (
-        parsed.name === undefined || (node.name !== undefined && containsCI(node.name, parsed.name))
-      );
+      return parsed.name === undefined || node.name === parsed.name;
     case "text":
-      return (
-        node.name !== undefined && parsed.name !== undefined && containsCI(node.name, parsed.name)
-      );
+      return parsed.name !== undefined && node.name === parsed.name;
     case "synthetic":
       return false;
     case "plain":

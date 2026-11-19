@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { memoryFileSystem } from "../adapters/memory.ts";
 import { AuthStateUnavailableError } from "../driver/connect-resolution.ts";
 import { MockDriver } from "../driver/index.ts";
-import { type CommandIO, executeLint, executeRun } from "./commands.ts";
+import { type CommandIO, executeCheck, executeLint, executeRun } from "./commands.ts";
 
 const FLOW_SOURCE = `
 version = 1
@@ -37,6 +37,19 @@ function makeIo(overrides?: Partial<CommandIO>): { io: CommandIO; out: string[];
 }
 
 describe("executeLint", () => {
+  test("--deny-warnings changes the gate without losing warning diagnostics", async () => {
+    const { io, out } = makeIo();
+    await io.fs.writeTextFile("/virtual/flow.toml", FLOW_SOURCE);
+    expect((await executeLint(["lint", "flow.toml", "--json"], io)).exitCode).toBe(0);
+    out.length = 0;
+    expect(
+      (await executeLint(["lint", "flow.toml", "--deny-warnings", "--json"], io)).exitCode,
+    ).toBe(1);
+    const report = JSON.parse(out[0]!);
+    expect(report.warningCount).toBeGreaterThan(0);
+    expect(report.errorCount).toBe(0);
+    expect(report.ok).toBe(false);
+  });
   test("lints a flow written into the memory fs and returns exit 0", async () => {
     const { io, out } = makeIo();
     await io.fs.writeTextFile("/virtual/flow.toml", FLOW_SOURCE);
@@ -142,19 +155,17 @@ describe("executeRun", () => {
   });
 
   test("a tiny timeoutMs rejects the run and maps to exit 124 (deadline)", async () => {
-    // Deterministic deadline: `executeRun` reads the flow once (unguarded) to resolve config,
-    // then `runFlow` re-reads it under `RunControl`'s deadline. Let the FIRST read through and
-    // hang forever on every subsequent read, so the run is always still blocked on loading when
-    // the (short) timer fires — mirrors `runner.cancellation.test.ts`'s "deadline covers loading
-    // before any browser exists".
+    // The entry source is pinned after configuration. A hanging import must still be
+    // covered by the run deadline before any browser is acquired.
     const fs = memoryFileSystem();
-    await fs.writeTextFile("/virtual/flow.toml", FLOW_SOURCE);
+    await fs.writeTextFile(
+      "/virtual/flow.toml",
+      FLOW_SOURCE.replace("[[steps]]", 'imports=["./child.toml"]\n[[steps]]'),
+    );
     const hang = new Promise<string>(() => {});
     const originalRead = fs.readTextFile.bind(fs);
-    let reads = 0;
     fs.readTextFile = async (path: string) => {
-      reads += 1;
-      if (reads > 1) return hang;
+      if (path === "/virtual/child.toml") return hang;
       return originalRead(path);
     };
     const { io, err } = makeIo({ fs, driverFactory: () => new MockDriver() });
@@ -164,6 +175,33 @@ describe("executeRun", () => {
     });
     expect(exitCode).toBe(124);
     expect(err.join("\n")).toContain("deadline");
+  });
+
+  test("run executes the same entry source used to resolve configuration", async () => {
+    const fs = memoryFileSystem();
+    const original = FLOW_SOURCE.replace("https://example.test/", "https://example.test/original");
+    const replacement = FLOW_SOURCE.replace(
+      "https://example.test/",
+      "https://example.test/replacement",
+    );
+    await fs.writeTextFile("/virtual/flow.toml", original);
+    const read = fs.readTextFile.bind(fs);
+    let reads = 0;
+    fs.readTextFile = async (path) => {
+      const text = await read(path);
+      if (path === "/virtual/flow.toml") {
+        reads++;
+        await fs.writeTextFile(path, replacement);
+      }
+      return text;
+    };
+    const driver = new MockDriver();
+    const { io } = makeIo({ fs, driverFactory: () => driver });
+    expect((await executeRun(["run", "/virtual/flow.toml", "--no-lock-write"], io)).exitCode).toBe(
+      0,
+    );
+    expect(reads).toBe(1);
+    expect(driver.callsTo("goto")[0]?.args[0]).toBe("https://example.test/original");
   });
 
   test("no positional path is a usage error (exit 2)", async () => {
@@ -207,4 +245,127 @@ cookie_save = false
     expect(summary.error).toBeDefined();
     expect(summary.error).toContain("expired");
   });
+});
+
+test.each(["--input", "--input-env"])(
+  "unsupported input binding uses the authored %s flag name",
+  async (flag) => {
+    const { io, err } = makeIo();
+    expect((await executeLint(["lint", "flow.toml", flag, "value=SOURCE"], io)).exitCode).toBe(2);
+    expect(err).toEqual([`lint: flag ${flag} is not supported`]);
+  },
+);
+
+test.each(["completed", "failed", "pending"] as const)(
+  "cancellation reports cleanup as %s without a run verdict",
+  async (cleanup) => {
+    const controller = new AbortController();
+    class CancelledDriver extends MockDriver {
+      override async goto(url: string): Promise<void> {
+        await super.goto(url);
+        controller.abort();
+      }
+      override async teardown(): Promise<void> {
+        await super.teardown();
+        if (cleanup === "failed") throw new Error("cleanup unavailable");
+        if (cleanup === "pending") await new Promise<void>(() => {});
+      }
+    }
+    const driver = new CancelledDriver();
+    const { io, out } = makeIo({ driverFactory: () => driver, signal: controller.signal });
+    await io.fs.writeTextFile("/virtual/flow.toml", FLOW_SOURCE);
+    expect((await executeRun(["run", "flow.toml", "--json", "--no-lock-write"], io)).exitCode).toBe(
+      130,
+    );
+    const result = JSON.parse(out.join("\n"));
+    expect(result).toMatchObject({
+      ok: false,
+      diagnostics: [
+        { code: "RUN_CANCELLED", message: expect.stringContaining(`cleanup: ${cleanup}`) },
+      ],
+    });
+    expect(result.verdict).toBeUndefined();
+    expect(driver.callsTo("teardown")).toHaveLength(1);
+  },
+);
+
+test("pre-aborted check returns cancellation before borrowing a session", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let borrows = 0;
+  const { io, out } = makeIo({
+    signal: controller.signal,
+    namedSessionBorrower: async () => {
+      borrows++;
+      throw new Error("unexpected borrow");
+    },
+  });
+  await io.fs.writeTextFile("/virtual/flow.toml", FLOW_SOURCE);
+  expect(
+    (await executeCheck(["check", "flow.toml", "--session", "work", "--json"], io)).exitCode,
+  ).toBe(130);
+  expect(borrows).toBe(0);
+  expect(JSON.parse(out.join("\n"))).toMatchObject({
+    ok: false,
+    diagnostics: [
+      { code: "RUN_CANCELLED", message: expect.stringContaining("cleanup: completed") },
+    ],
+  });
+});
+
+test("check cancellation during inspection cleans up its acquired session once", async () => {
+  const controller = new AbortController();
+  let acquired = false;
+  let detaches = 0;
+  let handbacks = 0;
+  const { io, out } = makeIo({
+    signal: controller.signal,
+    namedSessionBorrower: async (request) => {
+      expect(request.signal?.aborted).toBe(false);
+      acquired = true;
+      return {
+        protocolVersion: 1,
+        ownerEpoch: "owner",
+        fencingToken: "grant",
+        exclusive: true,
+        capabilities: { ownerProtocolVersion: 2, rawCompatibility: true, nativeAtomic: false },
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- SAFETY: this lease fixture supplies every Page operation used by connect and owner handback.
+        page: { targetId: "page", onDialog: async () => {} } as never,
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- SAFETY: only target enumeration is used before the filesystem triggers cancellation.
+        browser: { listTargets: async () => [{ targetId: "page", type: "page" }] } as never,
+        handback: async () => {
+          handbacks++;
+          return {
+            confirmed: true,
+            ownerEpoch: "owner",
+            targetId: "page",
+            refsInvalidated: true,
+            pendingActions: "drained",
+            bindingRevision: 1,
+            observationEpoch: "observation",
+          };
+        },
+        detach: async () => {
+          detaches++;
+        },
+      };
+    },
+  });
+  await io.fs.writeTextFile("/virtual/flow.toml", FLOW_SOURCE);
+  const read = io.fs.readTextFile.bind(io.fs);
+  io.fs.readTextFile = async (path) => {
+    if (acquired) controller.abort();
+    return read(path);
+  };
+  expect(
+    (await executeCheck(["check", "flow.toml", "--session", "work", "--json"], io)).exitCode,
+  ).toBe(130);
+  expect(JSON.parse(out.join("\n"))).toMatchObject({
+    ok: false,
+    diagnostics: [
+      { code: "RUN_CANCELLED", message: expect.stringContaining("cleanup: completed") },
+    ],
+  });
+  expect(detaches).toBe(1);
+  expect(handbacks).toBe(1);
 });

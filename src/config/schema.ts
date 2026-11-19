@@ -83,6 +83,8 @@ export const JevConfigSchema = z
 
 export const AiConfigSchema = z
   .object({
+    /** Explicit permission for built-in AI execution; credentials alone never enable it. */
+    enabled: z.boolean().optional(),
     provider: z.enum(AI_PROVIDERS).optional(),
     jev: JevConfigSchema.optional(),
     api_key_env: z.string().min(1).optional(),
@@ -174,6 +176,8 @@ export const ConnectAttachSchema = z
       .optional(),
     /** Reuse a matching tab instead of opening a fresh one. */
     targetUrl: z.string().min(1).optional(),
+    /** Opt in to activating the selected target immediately before keyboard input. */
+    foreground: z.boolean().optional(),
     sessionName: z.string().min(1).optional(),
   })
   .strict();
@@ -379,7 +383,8 @@ export const PlanConfigSchema = z
 /**
  * The `[timeouts]` block — top-level, per-scenario wall-clock ceilings for browser ACTIONS. All
  * fields optional + defaulted (`DEFAULT_TIMEOUTS` in `./resolve.ts` → `action_ms:5000`,
- * `nav_ms:2000`) and mergeable key-by-key, so it is fully backward compatible.
+ * `goto_ms:30000`, `nav_ms:2000`) and mergeable key-by-key. Explicit legacy `nav_ms` is
+ * preserved as a document deadline when no `goto_ms` is authored.
  *
  *  - `action_ms` — the default actionability/click ceiling (ms) the driver hands browser-pilot for
  *    EVERY batch (L0 replay / L1 race) + single action when the step/caller sets none. It BOUNDS
@@ -389,9 +394,10 @@ export const PlanConfigSchema = z
  *    (`2000`–`3000`) for a snappy app, UP for a genuinely slow one. A per-step `timeout_ms`
  *    (flow `stepCommon`) STILL overrides this per action — browser-pilot honors a step's own
  *    `Step.timeout` over the batch-level default.
- *  - `nav_ms` — the client-side navigation-SETTLE ceiling (ms) applied to the driver's post-`goto`/
- *    `press` `waitForNavigation({ optional:true })` wait. Bounds the SPA "navigation that never
- *    happens" settle. Default `2000`.
+ *  - `goto_ms` — document-navigation ceiling, default `30000`. An explicit legacy `nav_ms`
+ *    supplies this limit only when `goto_ms` is absent. A goto step's `timeout_ms` overrides it.
+ *  - `nav_ms` — optional post-navigation/modified-keypress settle, default `2000`.
+ *    Step navigation overrides do not change this wait; assertion timeouts are independent.
  *  - `settle_ms` — the flat post-action AX-tree settle (ms) the runner sleeps after EVERY successful
  *    ladder action, before the next step's single L1 snapshot, so Chrome's asynchronously-updated
  *    accessibility tree catches up (the documented stale-AX-tree guarantee). Default `150`; `0`
@@ -407,6 +413,8 @@ export const PlanConfigSchema = z
  */
 export const TimeoutsConfigSchema = z
   .object({
+    /** Document navigation; defaults to 30000, or an explicitly configured legacy nav_ms. */
+    goto_ms: z.number().int().positive().optional(),
     action_ms: z.number().int().positive().optional(),
     nav_ms: z.number().int().positive().optional(),
     settle_ms: z.number().int().nonnegative().optional(),

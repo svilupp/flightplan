@@ -13,6 +13,7 @@ import {
   makeSnapshot,
   makeSuccessBatch,
 } from "../driver/index.ts";
+import { KeyboardPreflightError } from "../driver/keyboard.ts";
 import type { ClickStep, Step } from "../flow/types.ts";
 import { resolveL1 } from "./l1.ts";
 import { attemptRepair, mapFailureReason } from "./repair.ts";
@@ -84,6 +85,32 @@ describe("repair — mapFailureReason", () => {
 });
 
 describe("repair — covered", () => {
+  test("unavailable keyboard focus does not turn covered-click recovery into a harness error", async () => {
+    const driver = new MockDriver()
+      .setSnapshot(snapshotWith("Create order"))
+      .setResolveAll([CREATE_ORDER_CANDIDATE]);
+    driver.press = async () => {
+      throw new KeyboardPreflightError("background tab");
+    };
+    driver.setBatchResult(makeSuccessBatch("role:button:Create order"));
+    const result = await attemptRepair(
+      clickStep(),
+      {
+        ok: false,
+        tier: "L1",
+        failureReason: "covered",
+        escalate: true,
+        candidates: [],
+        coveringElement: { tag: "div", id: "overlay" },
+      },
+      { driver, now: () => 0 },
+      {},
+      {},
+    );
+    expect(result.repaired).toBe(true);
+    expect(result.execution.ok).toBe(true);
+    expect(driver.callsTo("click")[0]?.args[0]).toBe("#overlay");
+  });
   test("dismisses the overlay (Escape + click #id) and retry resolves at L1", async () => {
     const d = new MockDriver();
     d.setSnapshot(snapshotWith("Create order"));

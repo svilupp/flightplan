@@ -21,6 +21,7 @@ text profile configuration below.
 
 ```toml
 [config.ai]
+enabled = true
 classifier = "jev"
 
 [config.ai.jev]

@@ -27,6 +27,9 @@ assert_timeout_ms = 5000
 [config.plan]
 enabled = false
 
+[config.ai]
+enabled = true
+
 [[steps]]
 id = "open_vision"
 do = "goto"

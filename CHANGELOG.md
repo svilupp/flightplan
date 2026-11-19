@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0] - 2026-11-06
+
+- Require explicit AI permission with `[config.ai] enabled = true`. See [migration details](docs/EXECUTION_POLICY.md).
+- Require Node.js 20.19.0+ to match the installed hashing dependency; CI exercises the packed consumer at this minimum and on current Node.
+- Reject ambiguous CSS-like assertion selectors unless prefixed with `css:` or `text:`. Explicit semantic assertion selectors match full accessible names; `Paid` no longer selects `Unpaid`.
+- Require an explicit selector for `hidden`, `state = "hidden"`, and `count = 0`. CSS absence requires live DOM observation.
+- Count matching accessibility nodes for semantic selectors, including distinct heading and link nodes with the same name. Use CSS for DOM element counts.
+- Add separate document-navigation and optional-settle deadlines. Timed-out navigation requires an exact or origin/path destination URL assertion for recovery.
+- Check focus before raw-attach keyboard input, with opt-in selected-tab activation. Reject mixed batches containing keyboard input before dispatch; failed Escape preflight can continue repair without claiming input was delivered.
+- Add strict lint and sweep preflight. Keep frozen live fallback without a lock and wholesale `[run]` replacement.
+- Prevent backward jumps across dispatched `at_most_once` steps and reject planner enablement for prepared flows or hooks containing them.
+- Reject popup declarations on verbs that cannot arm observation before dispatch, including `press`.
+- Run teardown hooks after admitted setup or flow failures when connected; rejected root entry contracts skip authored teardown. Bound cancellation cleanup and stop sweeps on interruption. SIGINT and SIGTERM exit with 130 and 143.
+- Fix invocation replay, composed secret handling, assertions and browser cleanup. Secret-marked raw URL changes conflict conservatively; declared secret inputs retain reference-based rotation.
+- Existing invocation keys can return `INVOCATION_CONFLICT` after upgrading; reconcile the previous outcome before choosing a new key.
+
 ## [0.5.0] - 2026-10-18
 
 - Build reusable recipes with typed inputs, page data extraction, and JSON outputs. Discover recipes with `list` and `describe`; inspect their starting state with `check`.

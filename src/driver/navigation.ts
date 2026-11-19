@@ -73,3 +73,19 @@ export function submitOptions(opts?: SubmitOpts): {
   if (opts?.optional !== undefined) out.optional = opts.optional;
   return out;
 }
+
+/** A browser navigation failed within its configured limit; callers must not redispatch it blindly. */
+export class NavigationFailure extends Error {
+  readonly code = "NAVIGATION_FAILED";
+  constructor(
+    cause: unknown,
+    readonly timeoutMs: number,
+    readonly phase: "document" | "settle" = "document",
+  ) {
+    super(
+      `Navigation ${phase} failed (limit ${timeoutMs}ms): ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = "NavigationFailure";
+  }
+}

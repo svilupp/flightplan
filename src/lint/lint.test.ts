@@ -19,6 +19,210 @@ import {
 } from "./index.ts";
 import type { MultiLintResult } from "./types.ts";
 
+test.each(["run", "id-run", "setup", "teardown"])(
+  "lint checks the entry AI policy for %s",
+  async (relation) => {
+    const fs = memoryFileSystem();
+    const header = 'version=1\nkind="flow"\nid="root"\ndescription="policy"\n';
+    const reference =
+      relation === "run" || relation === "id-run"
+        ? `${relation === "id-run" ? 'imports=["./child.toml"]\n' : ""}[[steps]]\nid="call"\ndo="run"\nflow="${relation === "id-run" ? "child" : "./child.toml"}"`
+        : `${relation}="./child.toml"\n[[steps]]\nid="wait"\ndo="wait"\nms=0`;
+    await fs.writeTextFile("/flow.toml", header + reference);
+    await fs.writeTextFile(
+      "/child.toml",
+      header.replace('id="root"', 'id="child"') +
+        '[config.ai]\nenabled=true\n[[steps]]\nid="judge"\ndo="assert"\nassert=[{type="ai_judge",prompt="Ready?"}]',
+    );
+    const result = await lintFile("/flow.toml", { fs });
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ ruleId: "ai/explicit-permission", severity: "error" }),
+    );
+    await fs.writeTextFile(
+      "/flow.toml",
+      header + 'imports=["./child.toml"]\n[[steps]]\nid="wait"\ndo="wait"\nms=0',
+    );
+    expect(
+      (await lintFile("/flow.toml", { fs })).diagnostics.some(
+        (d) => d.ruleId === "ai/explicit-permission",
+      ),
+    ).toBe(false);
+  },
+);
+
+describe("directory lint uses composition entry policies", () => {
+  const header = 'version=1\nkind="flow"\nid="root"\ndescription="policy"\n';
+  const judge = '[[steps]]\nid="judge"\ndo="assert"\nassert=[{type="ai_judge",prompt="Ready?"}]';
+
+  test.each(["run", "id-run", "setup", "teardown"])(
+    "%s modules inherit their entry's AI permission; explicit modules remain entries",
+    async (relation) => {
+      const fs = memoryFileSystem();
+      const reference =
+        relation === "run" || relation === "id-run"
+          ? `${relation === "id-run" ? 'imports=["./child.toml"]\n' : ""}[config.ai]\nenabled=true\n[[steps]]\nid="call"\ndo="run"\nflow="${relation === "id-run" ? "child" : "./child.toml"}"`
+          : `${relation}="./child.toml"\n[config.ai]\nenabled=true\n[[steps]]\nid="wait"\ndo="wait"\nms=0`;
+      await fs.writeTextFile("/flows/root.toml", header + reference);
+      await fs.writeTextFile(
+        "/flows/child.toml",
+        header.replace('id="root"', 'id="child"') + judge,
+      );
+      const directory = await lintPaths(["/flows"], { fs });
+      expect(directory.errorCount).toBe(0);
+      expect(directory.results).toHaveLength(2);
+      const standalone = await lintPaths(["/flows/child.toml"], { fs });
+      expect(standalone.results[0]?.diagnostics).toContainEqual(
+        expect.objectContaining({ ruleId: "ai/explicit-permission" }),
+      );
+      const explicitAndDirectory = await lintPaths(["/flows", "/flows/child.toml"], { fs });
+      expect(
+        explicitAndDirectory.results.find((result) => result.file.endsWith("child.toml"))
+          ?.diagnostics,
+      ).toContainEqual(expect.objectContaining({ ruleId: "ai/explicit-permission" }));
+    },
+  );
+
+  test("a disabled entry cannot borrow permission from a shared child or another entry", async () => {
+    const fs = memoryFileSystem();
+    const call = '[[steps]]\nid="call"\ndo="run"\nflow="./child.toml"';
+    await fs.writeTextFile("/flows/enabled.toml", `${header}[config.ai]\nenabled=true\n${call}`);
+    await fs.writeTextFile("/flows/disabled.toml", header + call);
+    await fs.writeTextFile("/flows/child.toml", `${header}[config.ai]\nenabled=true\n${judge}`);
+    const result = await lintPaths(["/flows/*.toml"], { fs });
+    const failures = result.results.filter((file) =>
+      file.diagnostics.some((item) => item.ruleId === "ai/explicit-permission"),
+    );
+    expect(failures.map((file) => file.file)).toEqual(["/flows/disabled.toml"]);
+  });
+
+  test("transitive graph membership crosses directories and retains module syntax diagnostics", async () => {
+    const fs = memoryFileSystem();
+    await fs.writeTextFile(
+      "/flows/root.toml",
+      header +
+        '[config.ai]\nenabled=true\n[[steps]]\nid="call"\ndo="run"\nflow="../shared/middle.toml"',
+    );
+    await fs.writeTextFile(
+      "/shared/middle.toml",
+      `${header}[[steps]]\nid="nested"\ndo="run"\nflow="../flows/child.toml"`,
+    );
+    await fs.writeTextFile(
+      "/flows/child.toml",
+      header +
+        judge.replace('prompt="Ready?"}]', 'prompt="Ready?"},{type="hidden",selector="h1"}]'),
+    );
+    const result = await lintPaths(["/flows"], { fs });
+    const child = result.results.find((file) => file.file.endsWith("child.toml"));
+    expect(child?.diagnostics.map((item) => item.ruleId)).toContain("assert/unprefixed-selector");
+    expect(
+      result.results.flatMap((file) => file.diagnostics.map((item) => item.ruleId)),
+    ).not.toContain("ai/explicit-permission");
+  });
+});
+
+describe("accepted settings with no runtime effect", () => {
+  const header = 'version=1\nkind="flow"\nid="settings"\ndescription="settings"\n';
+  test.each(["never", "safe_only"])("retry policy %s itself is warning-free", async (policy) => {
+    const result = await lintText(
+      `${header}[[steps]]\nid="wait"\ndo="wait"\nms=0\nretry={policy="${policy}"}`,
+      "/flow.toml",
+      { fs: memoryFileSystem() },
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+  test.each([0, 3])(
+    "authored retry.max=%s warns with the supported routing control",
+    async (max) => {
+      const result = await lintText(
+        `${header}[[steps]]\nid="wait"\ndo="wait"\nms=0\nretry={policy="safe_only",max=${max}}`,
+        "/flow.toml",
+        { fs: memoryFileSystem() },
+      );
+      expect(result.diagnostics).toEqual([
+        expect.objectContaining({
+          ruleId: "retry/unused-max",
+          severity: "warning",
+          stepId: "wait",
+          location: "steps[0].retry.max",
+          message: expect.stringContaining("on_fail.max"),
+        }),
+      ]);
+    },
+  );
+  test.each(["flow", "config"])("authored %s artifact path settings each warn", async (kind) => {
+    const prefix = kind === "flow" ? "config.artifacts" : "artifacts";
+    const source =
+      header.replace('kind="flow"', `kind="${kind}"`) +
+      `[${prefix}]\nout_dir="/runs"\nlock_path="/flow.lock.toml"\ncollocate=false\n` +
+      (kind === "flow" ? '[[steps]]\nid="wait"\ndo="wait"\nms=0' : "");
+    const result = await lintText(source, "/flow.toml", { fs: memoryFileSystem() });
+    expect(result.errorCount).toBe(0);
+    expect(
+      result.diagnostics
+        .filter((item) => item.ruleId === "config/unused-artifacts")
+        .map((item) => item.location)
+        .sort((left, right) => (left ?? "").localeCompare(right ?? "")),
+    ).toEqual([`${prefix}.collocate`, `${prefix}.lock_path`, `${prefix}.out_dir`]);
+    expect(
+      result.diagnostics.find((item) => item.location === `${prefix}.out_dir`)?.message,
+    ).toContain("-o/--out");
+    expect(
+      result.diagnostics.find((item) => item.location === `${prefix}.lock_path`)?.message,
+    ).toContain("--lock");
+  });
+});
+
+test.each(["run", "setup", "teardown"])(
+  "planner admission includes protected actions in %s modules",
+  async (relation) => {
+    const fs = memoryFileSystem();
+    const header = 'version=1\nkind="flow"\nid="root"\ndescription="planner"\n';
+    const call =
+      relation === "run"
+        ? '[[steps]]\nid="call"\ndo="run"\nflow="./child.toml"'
+        : '[[steps]]\nid="wait"\ndo="wait"\nms=0';
+    await fs.writeTextFile(
+      "/flows/root.toml",
+      `${header}${relation === "run" ? "" : `${relation}="./child.toml"\n`}[config.ai]\nenabled=true\n[config.plan]\nenabled=true\n${call}`,
+    );
+    await fs.writeTextFile(
+      "/flows/child.toml",
+      `${header}[[steps]]\nid="charge"\ndo="click"\ntarget=["css:#pay","the Pay button"]\neffect="at_most_once"\nassert=[{type="url",url="https://shop.test/paid",match="exact",purpose="postcondition"}]`,
+    );
+    const result = await lintPaths(["/flows"], { fs });
+    const issues = result.results
+      .flatMap((file) => file.diagnostics)
+      .filter((issue) => issue.code === "PLAN_UNSAFE_EFFECT");
+    expect(issues).toEqual([
+      expect.objectContaining({
+        ruleId: "effect/path-repair-at-most-once",
+        file: "/flows/root.toml",
+        stepId: "charge",
+      }),
+    ]);
+    expect(
+      result.results
+        .flatMap((file) => file.diagnostics)
+        .some((issue) => issue.ruleId === "ai/explicit-permission"),
+    ).toBe(false);
+  },
+);
+
+test.each(["before", "after"])("selector lint includes %s recipe boundaries", async (phase) => {
+  const result = await lintText(
+    `version=1\nkind="flow"\nid="boundary"\ndescription="boundary"\n[[${phase}]]\ntype="hidden"\nselector="h1"\n[[steps]]\nid="wait"\ndo="wait"\nms=0`,
+    "/flow.toml",
+    { fs: memoryFileSystem() },
+  );
+  expect(result.diagnostics).toContainEqual(
+    expect.objectContaining({
+      ruleId: "assert/unprefixed-selector",
+      severity: "error",
+      location: `${phase}[0].selector`,
+    }),
+  );
+});
+
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "__fixtures__");
 const repoRoot = resolve(here, "..", "..");
@@ -106,8 +310,8 @@ describe("ai-judge-threshold also rejects via the strict schema", () => {
   });
 });
 
-describe("env refs are reported as a warning", () => {
-  test("a ${env.X} reference surfaces templating/env-refs", async () => {
+describe("supported environment references", () => {
+  test("a ${env.X} reference lints without warnings", async () => {
     const source = `
 version = 1
 kind = "flow"
@@ -117,13 +321,11 @@ description = "uses an env var"
 id = "open"
 do = "goto"
 url = "\${env.BASE_URL}/wizard"
+assert = [{ type = "url", url = "*/wizard" }]
 `;
     const result = await lintFlowFile("env-ref.toml", { sourceText: source });
-    const d = result.diagnostics.find((x) => x.ruleId === "templating/env-refs");
-    expect(d).toBeDefined();
-    expect(d?.severity).toBe("warning");
-    expect(d?.message).toContain("BASE_URL");
-    // env refs are warnings → file is still ok.
+    expect(result.diagnostics).toEqual([]);
+    expect(result.warningCount).toBe(0);
     expect(result.ok).toBe(true);
   });
 });
@@ -311,6 +513,8 @@ prompt = "The order was created."
 kind = "flow"
 id = "x"
 description = "screenshot judge, registry without vision"
+[config.ai]
+enabled = true
 
 [config.ai.models.resolver]
 model = "openai/gpt-x"
@@ -676,7 +880,8 @@ describe("rule registry", () => {
       "assert/ai-judge-shape",
       "assert/step-needs-assertion",
       "templating/undeclared-input",
-      "templating/env-refs",
+      "retry/unused-max",
+      "config/unused-artifacts",
       "paths/lock-writable",
       "paths/out-writable",
       "steps/toml-key-order",
@@ -1112,6 +1317,22 @@ async function runCli(
 }
 
 describe("CLI lint", () => {
+  test("--deny-warnings accepts supported environment references", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fp-lint-env-"));
+    try {
+      const path = join(dir, "env.toml");
+      writeFileSync(
+        path,
+        'version=1\nkind="flow"\nid="env"\ndescription="Environment"\n[[steps]]\nid="open"\ndo="goto"\nurl="${env.BASE_URL}/wizard"\nassert=[{type="url",url="*/wizard"}]',
+      );
+      const { code, stdout } = await runCli([path, "--deny-warnings"]);
+      expect(code).toBe(0);
+      expect(stdout).toContain("0 warnings");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("exits 0 on a clean flow", async () => {
     const { code, stdout } = await runCli([join(flowsDir, "wizard.toml")]);
     expect(code).toBe(0);
@@ -1239,4 +1460,144 @@ describe("lintText over an injected FileSystemPort", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+});
+
+describe("dashboard authoring regressions", () => {
+  const header = 'version=1\nkind="flow"\nid="regression"\ndescription="Regression fixture"\n';
+  test("allows empty fill/select values and an exact empty value assertion", async () => {
+    for (const action of ["fill", "select"]) {
+      const result = await lintText(
+        header +
+          `
+[[steps]]
+id="clear"
+do="${action}"
+target=["css:#field", "the draft field"]
+effect="idempotent"
+value=""
+[[steps.assert]]
+type="value"
+selector="css:#field"
+value=""
+`,
+        "/regression/empty.toml",
+        { fs: memoryFileSystem(), cwd: "/regression" },
+      );
+      expect(result.diagnostics).toEqual([]);
+    }
+  });
+  test("rejects CSS-looking assertion selectors and supplies a correction", async () => {
+    for (const selector of [
+      "h1",
+      "nav[aria-label='Main navigation']",
+      "div.card",
+      "input:checked",
+      "span::after",
+      "center",
+    ]) {
+      const result = await lintText(
+        header +
+          `
+[[steps]]
+id="absent"
+do="assert"
+[[steps.assert]]
+type="hidden"
+selector="${selector}"
+`,
+        "/regression/selector.toml",
+        { fs: memoryFileSystem(), cwd: "/regression" },
+      );
+      expect(result.ok).toBe(false);
+      expect(
+        result.diagnostics.some(
+          (d) => d.ruleId === "assert/unprefixed-selector" && d.message.includes("css:"),
+        ),
+      ).toBe(true);
+    }
+  });
+  test.each(["Search results", "Summary", "Main navigation", "Sign-in", "I agree to the terms"])(
+    "accepts the accessible name %s as an assertion selector",
+    async (selector) => {
+      const result = await lintText(
+        header +
+          `[[steps]]\nid="visible"\ndo="assert"\nassert=[{type="visible",selector="${selector}"}]`,
+        "/regression/name.toml",
+        { fs: memoryFileSystem() },
+      );
+      expect(result.diagnostics).toEqual([]);
+    },
+  );
+  test("absence checks require an explicit selector but permit an explicit template binding", async () => {
+    const source = `${header}
+[inputs.banner]
+type="string"
+default="css:app-banner"
+[[steps]]
+id="absence"
+do="assert"
+assert=[
+  {type="hidden",selector="app-banner"},
+  {type="count",selector="H1",count=0},
+  {type="state",state="hidden",selector="Missing warning"},
+  {type="count",selector="css:app-banner",count=0},
+  {type="hidden",selector="\${inputs.banner}"},
+  {type="hidden",selector="text:Missing warning"},
+  {type="visible",selector="Missing warning"},
+]
+`;
+    const result = await lintText(source, "/regression/absence.toml", { fs: memoryFileSystem() });
+    expect(result.diagnostics.map((item) => item.ruleId)).toEqual([
+      "assert/unprefixed-selector",
+      "assert/unprefixed-selector",
+      "assert/unprefixed-selector",
+    ]);
+    expect(result.ok).toBe(false);
+  });
+  test("shows the on_fail table shape for a string value", async () => {
+    const result = await lintText(
+      `${header}[[steps]]\nid="pause"\ndo="wait"\nms=1\non_fail="self"`,
+      "/regression/on-fail.toml",
+      { fs: memoryFileSystem(), cwd: "/regression" },
+    );
+    expect(result.ok).toBe(false);
+    expect(
+      result.diagnostics.some((d) =>
+        d.message.includes('on_fail = { goto = "recovery_step", max = 1 }'),
+      ),
+    ).toBe(true);
+  });
+  test("keeps the effect warning when an explicit repeatable action has no outcome check", async () => {
+    const result = await lintText(
+      header +
+        '[[steps]]\nid="close"\ndo="click"\ntarget=["css:#close", "the Close button"]\neffect="idempotent"',
+      "/regression/effect.toml",
+      { fs: memoryFileSystem(), cwd: "/regression" },
+    );
+    expect(result.diagnostics.some((d) => d.ruleId === "effect/dangerous-verb")).toBe(true);
+  });
+});
+
+test("plain target names and colon-separated assertion names are not mistaken for CSS", async () => {
+  const result = await lintFlowFile("names.toml", {
+    sourceText: `version=1
+kind="flow"
+id="names"
+description="Names"
+[[steps]]
+id="act"
+do="click"
+effect="idempotent"
+target="header"
+[[steps.assert]]
+type="visible"
+selector="label: Email"
+`,
+  });
+  expect(result.diagnostics.map((diagnostic) => diagnostic.ruleId)).not.toContain(
+    "steps/target-unprefixed-selector",
+  );
+  expect(result.diagnostics.map((diagnostic) => diagnostic.ruleId)).not.toContain(
+    "assert/unprefixed-selector",
+  );
 });

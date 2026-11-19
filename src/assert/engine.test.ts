@@ -170,3 +170,279 @@ describe("eager short-circuit is fast (no real sleeping; deadlines are virtual)"
     expect(realElapsed).toBeLessThan(2000);
   });
 });
+
+describe("assertion selector regressions", () => {
+  for (const selector of [
+    "h1",
+    "nav[aria-label='Main navigation']",
+    "div.card",
+    "input:checked",
+    "span::after",
+    "form input",
+    "input + button",
+    "img.hero",
+    "button, input",
+    "button:first-of-type",
+    "iframe",
+    "*",
+    "center",
+    "svg path",
+    ":checked",
+    "input:checked:enabled",
+    ":disabled",
+    "button:disabled:first-of-type",
+    "input:checked + label",
+    "button:disabled.primary",
+  ]) {
+    for (const assertion of [
+      { type: "hidden", selector },
+      { type: "count", selector, count: 0 },
+    ] as const) {
+      test(`rejects ambiguous CSS syntax in ${assertion.type}: ${selector}`, async () => {
+        const result = await runAssertion(assertion, ctx(new MockDriver()));
+        expect(result.pass).toBe(false);
+        expect(result.message).toContain("prefix it with css:");
+      });
+    }
+  }
+
+  test("counts non-interactive AX nodes without double-counting interactive refs", async () => {
+    const driver = new MockDriver().setSnapshot(
+      makeSnapshot({
+        accessibilityTree: [
+          { ref: "e1", role: "heading", name: "Tasks" },
+          {
+            ref: "e2",
+            role: "button",
+            name: "Tasks",
+            children: [
+              {
+                ref: "e3",
+                role: "StaticText",
+                name: "Tasks",
+                children: [{ ref: "e4", role: "InlineTextBox", name: "Tasks" }],
+              },
+            ],
+          },
+        ],
+        interactiveElements: [{ ref: "e2", selector: "#tasks", role: "button", name: "Tasks" }],
+      }),
+    );
+    expect(
+      (
+        await runAssertion(
+          { type: "count", selector: "role:heading:Tasks", count: 0, timeout_ms: 1 },
+          ctx(driver),
+        )
+      ).pass,
+    ).toBe(false);
+    expect(
+      (await runAssertion({ type: "count", selector: "role:heading:Tasks", count: 1 }, ctx(driver)))
+        .pass,
+    ).toBe(true);
+    expect(
+      (await runAssertion({ type: "count", selector: "text:Tasks", count: 2 }, ctx(driver))).pass,
+    ).toBe(true);
+  });
+
+  test("colon-separated accessible names remain usable", async () => {
+    const driver = new MockDriver().setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({ ref: "e1", role: "textbox", name: "label: Email" }),
+        ],
+      }),
+    );
+    expect(
+      (await runAssertion({ type: "visible", selector: "label: Email" }, ctx(driver))).pass,
+    ).toBe(true);
+  });
+});
+
+describe("semantic selector identity", () => {
+  test("an explicit empty role name does not match a named control", async () => {
+    const driver = new MockDriver().setSnapshot(
+      makeSnapshot({
+        interactiveElements: [
+          makeInteractiveElement({ ref: "empty", role: "button", name: "" }),
+          makeInteractiveElement({ ref: "named", role: "button", name: "Continue" }),
+        ],
+      }),
+    );
+    expect(
+      (
+        await runAssertion(
+          { type: "count", selector: 'role:button[name=""]', count: 1 },
+          ctx(driver),
+        )
+      ).pass,
+    ).toBe(true);
+    expect(
+      (await runAssertion({ type: "count", selector: "role:button", count: 2 }, ctx(driver))).pass,
+    ).toBe(true);
+  });
+
+  test.each([
+    "within(role:dialog:Summary) >> role:button:Paid",
+    "role:dialog:Summary >> text:Paid",
+    "text:Summary >> role:button:Paid",
+  ])("preserves browser-pilot scope %s for live resolution", async (selector) => {
+    const driver = new MockDriver().setElementState({
+      exists: true,
+      visible: true,
+      count: 1,
+      text: "Paid",
+      value: null,
+      boundingBox: null,
+    });
+    expect((await runAssertion({ type: "visible", selector }, ctx(driver))).pass).toBe(true);
+    expect(driver.callsTo("elementState").map((call) => call.args)).toEqual([[selector]]);
+    expect(driver.callsTo("snapshot")).toHaveLength(0);
+  });
+
+  for (const source of ["interactive", "accessibility"] as const) {
+    test(`explicit role/text names match exactly in ${source} snapshots`, async () => {
+      const driver = new MockDriver().setSnapshot(
+        makeSnapshot({
+          text: "Unpaid",
+          ...(source === "interactive"
+            ? {
+                interactiveElements: [
+                  makeInteractiveElement({ ref: "e1", role: "status", name: "Unpaid" }),
+                ],
+              }
+            : { accessibilityTree: [{ ref: "e1", role: "status", name: "Unpaid" }] }),
+        }),
+      );
+      for (const selector of [
+        "role:status:Paid",
+        'role:status[name="Paid"]',
+        "text:Paid",
+        "text:unpaid",
+      ]) {
+        expect((await runAssertion({ type: "visible", selector }, ctx(driver))).pass).toBe(false);
+        expect((await runAssertion({ type: "count", selector, count: 0 }, ctx(driver))).pass).toBe(
+          true,
+        );
+        expect((await runAssertion({ type: "hidden", selector }, ctx(driver))).pass).toBe(true);
+      }
+      for (const selector of ["role:status:Unpaid", "text:Unpaid"]) {
+        expect((await runAssertion({ type: "visible", selector }, ctx(driver))).pass).toBe(true);
+        expect((await runAssertion({ type: "count", selector, count: 1 }, ctx(driver))).pass).toBe(
+          true,
+        );
+      }
+      expect(
+        (
+          await runAssertion(
+            { type: "text", selector: "role:status", text: "Paid", match: "contains" },
+            ctx(driver),
+          )
+        ).pass,
+      ).toBe(true);
+      expect(
+        (
+          await runAssertion(
+            { type: "text", selector: "role:status", text: "Paid", match: "exact" },
+            ctx(driver),
+          )
+        ).pass,
+      ).toBe(false);
+    });
+  }
+
+  test.each([
+    "Search results",
+    "Summary",
+    "Main navigation",
+    "Sign-in",
+    "I agree to the terms",
+    "my-widget",
+    "H1",
+  ])("plain accessible name %s is accepted by assertions", async (selector) => {
+    const driver = new MockDriver().setSnapshot(
+      makeSnapshot({
+        accessibilityTree: [{ ref: "e1", role: "heading", name: selector }],
+      }),
+    );
+    expect((await runAssertion({ type: "visible", selector }, ctx(driver))).pass).toBe(true);
+    expect((await runAssertion({ type: "count", selector, count: 1 }, ctx(driver))).pass).toBe(
+      true,
+    );
+  });
+});
+
+test("negative CSS assertions fail clearly without a live DOM capability", async () => {
+  const driver = new MockDriver().setSnapshot(SNAP);
+  Object.assign(driver, { elementState: undefined });
+  for (const assertion of [
+    { type: "hidden", selector: "css:h1" },
+    { type: "state", state: "hidden", selector: "css:h1" },
+    { type: "count", selector: "css:h1", count: 0 },
+  ] as const) {
+    const result = await runAssertion(assertion, ctx(driver));
+    expect(result.pass).toBe(false);
+    expect(result.message).toContain("absence cannot be verified from a snapshot");
+  }
+  for (const selector of ["css:text:Nope", "css:css:h1"]) {
+    const result = await runAssertion({ type: "count", selector, count: 0 }, ctx(driver));
+    expect(result.pass).toBe(false);
+    expect(result.message).toContain("css: requires a raw CSS selector");
+  }
+});
+
+test("bare names cannot prove absence even when they look like natural language", async () => {
+  const driver = new MockDriver().setSnapshot(SNAP);
+  for (const assertion of [
+    { type: "hidden", selector: "app-banner" },
+    { type: "state", state: "hidden", selector: "Continue later" },
+    { type: "count", selector: "H1", count: 0 },
+  ] as const) {
+    const result = await runAssertion(assertion, ctx(driver));
+    expect(result.pass).toBe(false);
+    expect(result.message).toContain("Absence requires an explicit selector");
+  }
+  expect(driver.callsTo("snapshot")).toHaveLength(0);
+  const explicitName = await runAssertion(
+    { type: "state", state: "hidden", selector: "text:Continue later" },
+    ctx(driver),
+  );
+  expect(explicitName.pass).toBe(true);
+});
+
+test("an assertion probe cannot return a late pass after its deadline", async () => {
+  const driver = new MockDriver();
+  driver.elementState = async () => new Promise<never>(() => {});
+  const start = performance.now();
+  const result = await runAssertion(
+    { type: "visible", selector: "css:h1", timeout_ms: 10 },
+    {
+      driver,
+      defaultTimeoutMs: 1000,
+      mode: "eager",
+      failOnAssertion: true,
+    },
+  );
+  expect(result.pass).toBe(false);
+  expect(result.message).toContain("deadline");
+  expect(performance.now() - start).toBeLessThan(250);
+});
+
+test("role name spellings preserve all matching elements for count assertions", async () => {
+  const driver = new MockDriver().setSnapshot(
+    makeSnapshot({
+      interactiveElements: [
+        makeInteractiveElement({ ref: "e1", role: "button", name: "Save" }),
+        makeInteractiveElement({ ref: "e2", role: "button", name: "Save" }),
+      ],
+    }),
+  );
+  for (const selector of ["role:button:Save", 'role:button[name="Save"]', 'role:button:"Save"']) {
+    expect((await runAssertion({ type: "count", selector, count: 2 }, ctx(driver))).pass).toBe(
+      true,
+    );
+    expect((await runAssertion({ type: "count", selector, count: 1 }, ctx(driver))).pass).toBe(
+      false,
+    );
+  }
+});

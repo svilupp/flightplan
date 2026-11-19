@@ -58,6 +58,19 @@ export interface FlattenOptions {
   fs?: FileSystemPort;
 }
 
+/** One executed flow scope, retaining the effective inputs of this particular call site. */
+export interface BoundFlowScope {
+  readonly loaded: LoadedFlow;
+  readonly inputs: InputValues;
+}
+
+/** Flattened steps paired with their original dependency graph and input scopes. */
+export interface FlowComposition {
+  readonly loaded: LoadedFlow;
+  readonly graph: ImportGraph;
+  readonly scopes: readonly BoundFlowScope[];
+}
+
 /**
  * The transitive IMPORT closure of one file: every module registered (by flow id) in that
  * file's scope via `imports` — directly or through imported modules' own imports. Setup/
@@ -143,6 +156,13 @@ function namespaceStep(callSiteId: string, step: Step): Step {
  * construction (the graph is a DAG, and id-form references can only reach imported modules).
  */
 export async function flattenRunSteps(loaded: LoadedFlow, opts?: FlattenOptions): Promise<Step[]> {
+  return (await composeRunSteps(loaded, opts)).loaded.flow.steps;
+}
+
+async function composeRunSteps(
+  loaded: LoadedFlow,
+  opts?: FlattenOptions,
+): Promise<FlowComposition> {
   const env = opts?.env ?? ambientEnv();
   // Combined import + run DAG: loads every referenced module and throws on a cycle (v002-6).
   const graph = await resolveImports(loaded, {
@@ -151,7 +171,9 @@ export async function flattenRunSteps(loaded: LoadedFlow, opts?: FlattenOptions)
     ...(opts?.inputs ? { inputs: opts.inputs } : {}),
   });
   const rootInputs = graph.nodes.get(loaded.path)?.inputs ?? {};
-  return flattenFile(loaded, rootInputs, graph, env, /* preTemplateInputs */ false);
+  const scopes: BoundFlowScope[] = [];
+  const steps = flattenFile(loaded, rootInputs, graph, env, false, scopes);
+  return { loaded: { ...loaded, flow: { ...loaded.flow, steps } }, graph, scopes };
 }
 
 /**
@@ -168,14 +190,42 @@ export async function loadFlowFileFlattened(
   path: string,
   opts?: FlattenOptions & { flowSource?: string },
 ): Promise<LoadedFlow> {
+  return (await loadFlowComposition(path, opts)).loaded;
+}
+
+/** Load once and preserve the source graph and call-site bindings used for flattening. */
+export async function loadFlowComposition(
+  path: string,
+  opts?: FlattenOptions & { flowSource?: string },
+): Promise<FlowComposition> {
   const loaded =
     opts?.flowSource !== undefined
       ? parseFlowFile(opts.flowSource, path)
       : opts?.fs
         ? await loadFlowFile(path, opts.fs)
         : await loadFlowFile(path);
-  const steps = await flattenRunSteps(loaded, opts);
-  return { ...loaded, flow: { ...loaded.flow, steps } };
+  return composeRunSteps(loaded, opts);
+}
+
+/** Collect actual callable flows and entry hooks without binding inputs or running actions. */
+export function collectExecutedFlows(root: LoadedFlow, graph: ImportGraph): LoadedFlow[] {
+  const flows: LoadedFlow[] = [];
+  const seen = new Set<string>();
+  const visit = (file: LoadedFlow): void => {
+    if (seen.has(file.path)) return;
+    seen.add(file.path);
+    flows.push(file);
+    for (const step of file.flow.steps)
+      if (step.do === "run") visit(resolveRunChild(step, file, graph));
+  };
+  visit(root);
+  // Embedded flows and hooks do not execute their own setup/teardown declarations.
+  for (const path of [root.flow.setup, root.flow.teardown]) {
+    if (!path) continue;
+    const hook = graph.nodes.get(resolveModulePath(path, root.path));
+    if (hook) visit(hook.loaded);
+  }
+  return flows;
 }
 
 /** Resolve one `run` step's `flow` reference to the child module (path- or id-form). */
@@ -228,7 +278,9 @@ function flattenFile(
   graph: ImportGraph,
   env: Record<string, string | undefined>,
   preTemplateInputs: boolean,
+  scopes: BoundFlowScope[],
 ): Step[] {
+  scopes.push({ loaded: file, inputs: effInputs });
   const localTargets = new Set(
     file.flow.steps.filter((step) => step.do !== "run").map((step) => step.id),
   );
@@ -274,7 +326,7 @@ function flattenFile(
     // Recurse first (children may contain their own `run` steps), pre-templating the child's
     // `${inputs.*}` against its effective inputs. The child's [run] budgets block, [config],
     // imports, and setup/teardown are intentionally NOT carried over (parent-governed, v002-8).
-    const childSteps = flattenFile(child, childInputs, graph, env, true).map((s) =>
+    const childSteps = flattenFile(child, childInputs, graph, env, true, scopes).map((s) =>
       namespaceStep(step.id, s),
     );
     // Call-site assertions ride on the last embedded step ("after the child completed").

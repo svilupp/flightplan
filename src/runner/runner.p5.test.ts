@@ -103,12 +103,12 @@ async function readAllRunFiles(runDir: string): Promise<string> {
 }
 
 function defaultConfig(overrides: Partial<ResolvedConfig["run"]> = {}): ResolvedConfig {
-  return resolveConfigWithDefaults([{ run: { ...overrides } }]);
+  return resolveConfigWithDefaults([{ ai: { enabled: true } }, { run: { ...overrides } }]);
 }
 
 /** A resolved config from a single arbitrary layer (telemetry / browser / redaction overrides). */
 function configWith(layer: Config): ResolvedConfig {
-  return resolveConfigWithDefaults([layer]);
+  return resolveConfigWithDefaults([{ ai: { enabled: true } }, layer]);
 }
 
 function optsFor(

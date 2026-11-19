@@ -44,6 +44,16 @@ export const nodeFileSystem: FileSystemPort = {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, text, "utf8");
   },
+  async createTextFileExclusive(path: string, text: string): Promise<boolean> {
+    await mkdir(dirname(path), { recursive: true });
+    try {
+      await writeFile(path, text, { encoding: "utf8", flag: "wx", mode: 0o600 });
+      return true;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") return false;
+      throw error;
+    }
+  },
   async appendTextFile(path: string, text: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true });
     await appendFile(path, text, "utf8");

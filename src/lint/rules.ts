@@ -12,8 +12,15 @@
 //
 // Canonical reference: PLAN.md §5 (Phase 1 ruleset) + §8 (starter ruleset).
 
+import { executionPolicyIssues, resolveExecutionPolicy } from "../config/execution-policy.ts";
 import { collectRefs, isRunFlowPath } from "../flow/index.ts";
-import { classifyLocator, normalizeTarget } from "../flow/normalize-target.ts";
+import {
+  classifyLocator,
+  hasExplicitAssertionSelector,
+  looksLikeUnprefixedAssertionSelector,
+  looksLikeUnprefixedSelector,
+  normalizeTarget,
+} from "../flow/normalize-target.ts";
 import { dirname, isAbsolute, resolve } from "../paths.ts";
 import { AI_JUDGE_INPUTS, ASSERT_TYPES, ASSERT_WHENS, FILE_KINDS, STEP_DOS } from "../types.ts";
 import { diag, type LintContext, type RawDoc, type Rule } from "./context.ts";
@@ -294,7 +301,14 @@ const stepsRequiredFields: Rule = {
       const id = stepId(step, i);
       const requireField = (field: string, kind = "non-empty value"): void => {
         const v = step[field];
-        const ok = v !== undefined && v !== null && !(typeof v === "string" && v.length === 0);
+        const ok =
+          v !== undefined &&
+          v !== null &&
+          !(
+            typeof v === "string" &&
+            v.length === 0 &&
+            !(["fill", "select"].includes(verb) && field === "value")
+          );
         if (!ok) {
           out.push(
             diag(
@@ -405,7 +419,19 @@ const stepsOnFailGotoExists: Rule = {
     const out: Diagnostic[] = [];
     steps.forEach((step, i) => {
       const onFail = step.on_fail;
-      if (!isRecord(onFail)) return;
+      if (!isRecord(onFail)) {
+        if (onFail !== undefined)
+          out.push(
+            diag(
+              ctx,
+              "steps/on-fail-goto-exists",
+              "error",
+              'on_fail must be a table, for example on_fail = { goto = "recovery_step", max = 1 }.',
+              { stepId: stepId(step, i), location: `steps[${i}].on_fail` },
+            ),
+          );
+        return;
+      }
       const goto = onFail.goto;
       if (typeof goto !== "string" || goto.length === 0) {
         out.push(
@@ -664,7 +690,7 @@ const templatingWithInputsDeclared: Rule = {
 // Assertion rules
 // ---------------------------------------------------------------------------
 
-/** Iterate every assertion across all steps with its step id + location. */
+/** Iterate step and recipe-boundary assertions with their step id and location. */
 function eachAssertion(
   doc: RawDoc | null,
   fn: (a: Record<string, unknown>, sid: string, loc: string) => void,
@@ -675,6 +701,13 @@ function eachAssertion(
       fn(a, sid, `steps[${i}].assert[${j}]`);
     });
   });
+  for (const phase of ["before", "after"]) {
+    const assertions = doc?.[phase];
+    if (!Array.isArray(assertions)) continue;
+    assertions.forEach((assertion, index) => {
+      if (isRecord(assertion)) fn(assertion, `@flightplan:${phase}`, `${phase}[${index}]`);
+    });
+  }
 }
 
 const assertSupportedType: Rule = {
@@ -745,7 +778,7 @@ const assertRequiredFields: Rule = {
       }
       const requireStr = (field: string): void => {
         const v = a[field];
-        if (typeof v !== "string" || v.length === 0) {
+        if (typeof v !== "string" || (v.length === 0 && !(t === "value" && field === "value"))) {
           out.push(
             diag(
               ctx,
@@ -1044,36 +1077,61 @@ const templatingUndeclaredInput: Rule = {
   },
 };
 
-const templatingEnvRefs: Rule = {
-  id: "templating/env-refs",
+const retryUnusedMax: Rule = {
+  id: "retry/unused-max",
   severity: "warning",
-  description: "Reports every ${env.X} reference so required environment variables are visible.",
+  description: "Authored retry.max is accepted but does not control retries.",
   run(ctx) {
-    const out: Diagnostic[] = [];
-    // Scan the entire doc (steps + inputs defaults), collect unique env var names.
-    const names = new Set<string>();
-    const leaves: Array<{ path: string; value: string }> = [];
-    if (ctx.doc) collectStrings(ctx.doc, "", leaves);
-    for (const leaf of leaves) {
-      for (const ref of collectRefs(leaf.value)) {
-        if (ref.source === "env") names.add(ref.name);
-      }
-    }
-    if (names.size > 0) {
-      out.push(
+    return rawSteps(ctx.doc).flatMap((step, i) => {
+      if (!isRecord(step.retry) || typeof step.retry.max !== "number") return [];
+      return [
         diag(
           ctx,
-          "templating/env-refs",
+          "retry/unused-max",
           "warning",
-          `This file requires the following environment variable(s) at run time: ` +
-            `${[...names]
-              .sort()
-              .map((n) => `\${env.${n}}`)
-              .join(", ")}.`,
+          `Step \`${stepId(step, i)}\` sets \`retry.max\`, but this setting is not used. ` +
+            "Remove it; on_fail.max bounds explicitly declared on_fail routing.",
+          { stepId: stepId(step, i), location: `steps[${i}].retry.max` },
         ),
+      ];
+    });
+  },
+};
+
+const configUnusedArtifacts: Rule = {
+  id: "config/unused-artifacts",
+  severity: "warning",
+  description: "Authored artifact path settings are accepted but not used by the runner.",
+  run(ctx) {
+    if (!ctx.doc) return [];
+    const tables = [
+      { value: ctx.doc.artifacts, location: "artifacts" },
+      {
+        value: isRecord(ctx.doc.config) ? ctx.doc.config.artifacts : undefined,
+        location: "config.artifacts",
+      },
+    ];
+    const alternatives = {
+      out_dir: "Use CLI -o/--out to choose the run-output directory.",
+      lock_path: "Use CLI --lock to choose the lock path.",
+      collocate: "Use CLI -o/--out and --lock to choose explicit paths.",
+    };
+    return tables.flatMap(({ value, location }) => {
+      if (!isRecord(value)) return [];
+      return Object.entries(alternatives).flatMap(([field, alternative]) =>
+        value[field] === undefined
+          ? []
+          : [
+              diag(
+                ctx,
+                "config/unused-artifacts",
+                "warning",
+                `\`${location}.${field}\` is accepted but not used. ${alternative}`,
+                { location: `${location}.${field}` },
+              ),
+            ],
       );
-    }
-    return out;
+    });
   },
 };
 
@@ -1248,27 +1306,41 @@ const stepsTargetNeedsNl: Rule = {
   },
 };
 
-/**
- * Heuristic: does an NL-classified `target` entry actually look like an unprefixed selector
- * (CSS id/class, attribute selector, xpath, a CSS combinator)? If so the author probably meant
- * a selector and should use the `css:` prefix — misclassification is otherwise impossible by
- * construction (v002-2), but this catches the likely-a-typo case.
- */
-function looksLikeUnprefixedSelector(value: string): boolean {
-  const v = value.trim();
-  if (v.length === 0) return false;
-  // xpath
-  if (v.startsWith("//") || v.startsWith("(/")) return true;
-  // explicit engine prefixes some tools use (not part of flightplan's whitelist)
-  if (/^(css=|xpath=)/.test(v)) return true;
-  // id / class selectors at the start
-  if (/^[#.][A-Za-z_]/.test(v)) return true;
-  // attribute selector [data-testid='x'] / [name="y"] mid-string or at the start
-  if (/\[[A-Za-z][\w-]*([~|^$*]?=|\])/.test(v)) return true;
-  // CSS child combinator: a `>` between selector-ish tokens (NL prose never uses ` > ` this way).
-  if (/[\w#.\]]\s*>\s*[\w#.[]/.test(v)) return true;
-  return false;
-}
+const assertUnprefixedSelector: Rule = {
+  id: "assert/unprefixed-selector",
+  severity: "error",
+  description: "CSS-looking selectors and absence checks must identify a search method.",
+  run(ctx) {
+    const out: Diagnostic[] = [];
+    eachAssertion(ctx.doc, (assertion, sid, location) => {
+      const checksAbsence =
+        assertion.type === "hidden" ||
+        (assertion.type === "state" && assertion.state === "hidden") ||
+        (assertion.type === "count" && assertion.count === 0);
+      for (const field of ["selector", "landmark"]) {
+        const value = assertion[field];
+        if (typeof value !== "string") continue;
+        // Templated selectors can supply their prefix at run time.
+        const needsExplicitSelector =
+          checksAbsence && field === "selector" && collectRefs(value).length === 0
+            ? !hasExplicitAssertionSelector(value)
+            : looksLikeUnprefixedAssertionSelector(value);
+        if (!needsExplicitSelector) continue;
+        out.push(
+          diag(
+            ctx,
+            "assert/unprefixed-selector",
+            "error",
+            `Assertion in step \`${sid}\` requires an explicit selector for ${JSON.stringify(value)}. ` +
+              `Use ${JSON.stringify(`css:${value}`)} for CSS or ${JSON.stringify(`text:${value}`)} for an accessible name.`,
+            { stepId: sid, location: `${location}.${field}` },
+          ),
+        );
+      }
+    });
+    return out;
+  },
+};
 
 const stepsTargetUnprefixedSelector: Rule = {
   id: "steps/target-unprefixed-selector",
@@ -1742,6 +1814,23 @@ const effectPathRepairAtMostOnce: Rule = {
   severity: "error",
   description: "An enabled path-repair planner may not redispatch at-most-once actions.",
   run(ctx) {
+    if (ctx.flow) {
+      const config = ctx.flow.config ?? {};
+      const flows = ctx.imports?.executedFlows ?? [ctx.flow];
+      return executionPolicyIssues(
+        resolveExecutionPolicy(config),
+        config,
+        flows.flatMap((flow) => flow.steps),
+      )
+        .filter((issue) => issue.code === "PLAN_UNSAFE_EFFECT")
+        .map((issue) => ({
+          ...diag(ctx, "effect/path-repair-at-most-once", "error", issue.message, {
+            ...(issue.stepId ? { stepId: issue.stepId } : {}),
+            location: issue.feature,
+          }),
+          code: issue.code,
+        }));
+    }
     const config =
       isRecord(ctx.doc?.config) && isRecord(ctx.doc.config.plan) ? ctx.doc.config.plan : undefined;
     if (config?.enabled !== true) return [];
@@ -1816,19 +1905,20 @@ const effectUnspecified: Rule = {
 const effectDangerousVerb: Rule = {
   id: "effect/dangerous-verb",
   severity: "warning",
-  description: "Mutation-like verbs should be explicitly marked at_most_once.",
+  description: "Explicit repeatable effects need a deterministic postcondition.",
   run(ctx) {
     return rawSteps(ctx.doc).flatMap((step, i) =>
       ["click", "fill", "select", "press", "ai_pick"].includes(String(step.do)) &&
       step.effect !== undefined &&
-      step.effect !== "at_most_once"
+      step.effect !== "at_most_once" &&
+      !hasDeterministicPostcondition(step)
         ? [
             diag(
               ctx,
               "effect/dangerous-verb",
               "warning",
-              `Step \`${stepId(step, i)}\` uses a mutation-capable verb without ` +
-                'effect = "at_most_once". Review the effect annotation before running it.',
+              `Step \`${stepId(step, i)}\` declares a repeatable effect without a deterministic ` +
+                "postcondition. Add an outcome check and review whether the effect is safe to repeat.",
               { stepId: stepId(step, i), location: "effect" },
             ),
           ]
@@ -1983,10 +2073,36 @@ const assertionCriticalBroadMatch: Rule = {
 // The registry — ordered; append to extend.
 // ---------------------------------------------------------------------------
 
+const explicitAiPermission: Rule = {
+  id: "ai/explicit-permission",
+  severity: "error",
+  description: "AI-dependent configuration and assertions require explicit AI permission.",
+  run(ctx) {
+    const config = ctx.flow?.config ?? ctx.config ?? {};
+    const flows = ctx.imports?.executedFlows ?? (ctx.flow ? [ctx.flow] : []);
+    return executionPolicyIssues(
+      resolveExecutionPolicy(config),
+      config,
+      flows.flatMap((flow) => flow.steps),
+      {
+        assertions: flows.flatMap((flow) => [...(flow.before ?? []), ...(flow.after ?? [])]),
+      },
+    )
+      .filter((issue) => issue.code === "AI_DISABLED")
+      .map((issue) =>
+        diag(ctx, "ai/explicit-permission", "error", issue.message, {
+          ...(issue.stepId ? { stepId: issue.stepId } : {}),
+          location: issue.feature,
+        }),
+      );
+  },
+};
+
 /** All flow + config rules, in reporting order. */
 export const RULES: readonly Rule[] = [
   headerRequiredFields,
   headerValidKind,
+  explicitAiPermission,
   importsResolve,
   importsNoCycle,
   importsNoWith,
@@ -2006,12 +2122,14 @@ export const RULES: readonly Rule[] = [
   stepsTextHintUnscoped,
   assertSupportedType,
   assertRequiredFields,
+  assertUnprefixedSelector,
   resultAssertionScope,
   resultCaptureScope,
   assertAiJudgeShape,
   assertStepNeedsAssertion,
   templatingUndeclaredInput,
-  templatingEnvRefs,
+  retryUnusedMax,
+  configUnusedArtifacts,
   pathsLockWritable,
   pathsOutWritable,
   assertCriticalNotAiOnly,

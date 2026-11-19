@@ -1,10 +1,10 @@
+import { ExecutionPolicyError } from "../config/execution-policy.ts";
 import type { Driver } from "../driver/types.ts";
-import { resolveImports } from "../flow/imports.ts";
-import { inputMetadata } from "../flow/input.ts";
-import { loadFlowFileFlattened } from "../flow/run.ts";
-import { applyTemplatingDeep } from "../flow/template.ts";
+import { type InputValues, inputMetadata } from "../flow/input.ts";
+import type { BoundFlowScope } from "../flow/run.ts";
+import { applyTemplatingDeep, restoreInputLiterals } from "../flow/template.ts";
 import { defaultFileSystem } from "../fs-default.ts";
-import { gatherSecretValues } from "../redaction/index.ts";
+import { prepareRun } from "../runner/prepare.ts";
 import type { DriverFactory, RunOptions, RunResult } from "../runner/types.ts";
 import { ambientEnv, sha256Text } from "../runtime.ts";
 import { InvocationError } from "./index.ts";
@@ -19,15 +19,6 @@ function canonical(value: unknown): unknown {
     );
   return value;
 }
-function containsSecret(value: unknown, secrets: Set<string>): boolean {
-  if (typeof value === "string") return [...secrets].some((secret) => value.includes(secret));
-  if (Array.isArray(value)) return value.some((child) => containsSecret(child, secrets));
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    Object.values(value).some((child) => containsSecret(child, secrets))
-  );
-}
 function secretReference(value: unknown): unknown {
   if (
     value !== null &&
@@ -39,6 +30,43 @@ function secretReference(value: unknown): unknown {
   if (typeof value === "string" && /^\$\{\s*env\.[A-Za-z_][A-Za-z_0-9]*\s*\}$/.test(value))
     return value;
   return "<secret-input>";
+}
+
+// Keep input provenance until identity is built: replacing secret substrings after flattening
+// can erase unrelated public destinations. Each executed scope still owns its authored steps.
+function boundActions(
+  scopes: readonly BoundFlowScope[],
+  env: Record<string, string | undefined>,
+): unknown[] {
+  return scopes.map(({ loaded, inputs }) => {
+    const bindingInputs: InputValues = Object.fromEntries(
+      Object.entries(inputs).map(([name, value]) => {
+        const declaration = loaded.flow.inputs?.[name];
+        return [
+          name,
+          declaration !== undefined && inputMetadata(declaration).secret
+            ? `<secret-input:${name}>`
+            : value,
+        ];
+      }),
+    );
+    // Child effective inputs are bound separately in their own scope. Rebinding `with`
+    // here would hash raw credentials even when the child explicitly declares them secret.
+    const steps = loaded.flow.steps.map((step) =>
+      step.do === "run"
+        ? Object.fromEntries(Object.entries(step).filter(([key]) => key !== "with"))
+        : step,
+    );
+    return {
+      source: loaded.path,
+      actions: restoreInputLiterals(
+        applyTemplatingDeep(
+          { steps, before: loaded.flow.before, after: loaded.flow.after },
+          { inputs: bindingInputs, env, deferCaptures: true },
+        ),
+      ),
+    };
+  });
 }
 export const INVOCATION_MUTATORS = new Set([
   "click",
@@ -68,42 +96,33 @@ export async function runWithInvocation(
   execute: (options: RunOptions) => Promise<RunResult>,
   factory: DriverFactory,
 ): Promise<RunResult> {
+  // Admission and execution share one input/environment snapshot across the async claim.
+  opts = {
+    ...opts,
+    env: { ...(opts.env ?? ambientEnv()) },
+    ...(opts.inputs === undefined ? {} : { inputs: structuredClone(opts.inputs) }),
+  };
   const store = opts.invocationStore;
   const key = opts.idempotencyKey;
   if (!store || !key?.trim()) throw new InvocationError("INVOCATION_STORE_REQUIRED");
   const fs = opts.fs ?? (await defaultFileSystem());
   const env = opts.env ?? ambientEnv();
-  const loaded = await loadFlowFileFlattened(opts.flowPath, {
-    fs,
-    env,
-    inputs: opts.inputs,
-    ...(opts.flowSource !== undefined ? { flowSource: opts.flowSource } : {}),
-  });
-  const graph = await resolveImports(loaded, { fs, env, inputs: opts.inputs });
-  const effectiveInputs = [...graph.nodes.values()]
-    .map((node): [string, Record<string, unknown>] => {
-      const secrets = gatherSecretValues(
-        applyTemplatingDeep(node.loaded.flow.steps, {
-          inputs: node.inputs,
-          env,
-          deferCaptures: true,
-        }),
-        node.inputs,
-      );
+  const { loaded, scopes, sourceTexts, policyIssues } = await prepareRun(opts, fs, env);
+  if (policyIssues.length) throw new ExecutionPolicyError(policyIssues);
+  const effectiveInputs = scopes
+    .map((scope): [string, Record<string, unknown>] => {
       return [
-        node.loaded.flow.id,
+        scope.loaded.path,
         Object.fromEntries(
-          Object.entries(node.inputs).map(([name, value]) => {
-            const declaration = node.loaded.flow.inputs?.[name];
-            const secret =
-              (declaration !== undefined && inputMetadata(declaration).secret) ||
-              containsSecret(value, secrets);
+          Object.entries(scope.inputs).map(([name, value]) => {
+            const declaration = scope.loaded.flow.inputs?.[name];
+            const secret = declaration !== undefined && inputMetadata(declaration).secret;
             return [
               name,
               secret
                 ? {
                     secret_reference: secretReference(
-                      node.path === loaded.path
+                      scope.loaded.path === loaded.path
                         ? (opts.inputs?.[name] ??
                             (typeof declaration === "string" ? declaration : declaration?.default))
                         : typeof declaration === "string"
@@ -122,12 +141,13 @@ export async function runWithInvocation(
     JSON.stringify(
       canonical({
         recipe: loaded.flow.id,
-        sources: [...graph.nodes.values()]
-          .map((node) => [node.loaded.flow.id, node.loaded.sourceHash] as const)
+        sources: [...sourceTexts]
+          .map(([path, source]) => [path, sha256Text(source)] as const)
           .sort(
             ([idA, hashA], [idB, hashB]) => idA.localeCompare(idB) || hashA.localeCompare(hashB),
           ),
         inputs: effectiveInputs,
+        actions: boundActions(scopes, env),
         slice: [opts.fromStep, opts.toStep],
         connect:
           opts.config.connect?.mode === "attach"
@@ -147,19 +167,9 @@ export async function runWithInvocation(
     throw new InvocationError(`INVOCATION_${claim.status.toUpperCase()}`);
   try {
     // Execute the exact source graph admitted by this claim even if files change afterwards.
-    const sources = new Map(
-      [...graph.nodes.values()].map((node) => [node.path, node.loaded.sourceText]),
-    );
     const options = {
       ...opts,
-      fs: new Proxy(fs, {
-        get(target, property) {
-          if (property === "readTextFile")
-            return async (path: string) => sources.get(path) ?? target.readTextFile(path);
-          const value: unknown = Reflect.get(target, property);
-          return typeof value === "function" ? value.bind(target) : value;
-        },
-      }),
+      flowSources: sourceTexts,
     };
     delete options.idempotencyKey;
     delete options.invocationStore;

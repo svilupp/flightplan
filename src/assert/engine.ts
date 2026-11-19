@@ -37,6 +37,7 @@
 //   so a future fail-fast-across-phases policy can read it — current behaviour keys eager
 //   short-circuit on `mode` alone, which is the documented + tested contract.
 
+import { InvalidSelectorError } from "../driver/normalize-selector.ts";
 import type { Assertion } from "../flow/types.ts";
 import { DEFAULT_POLL_INTERVAL_MS, systemClock } from "./clock.ts";
 import { evaluateDeterministic } from "./conditions.ts";
@@ -121,7 +122,21 @@ export async function runAssertion(
   const opts = resolveConditionOpts(assertion, ctx);
   if (assertion.type === "result" && assertion.step)
     opts.actionResult = ctx.actionResults?.[assertion.step];
-  const result = await evaluateDeterministic(assertion, opts);
+  const clock = opts.clock ?? systemClock;
+  const start = clock.now();
+  let result: AssertionResult;
+  try {
+    result = await evaluateDeterministic(assertion, opts);
+  } catch (error) {
+    if (!(error instanceof InvalidSelectorError)) throw error;
+    result = {
+      type: assertion.type,
+      pass: false,
+      message: error.message,
+      durationMs: clock.now() - start,
+      when: assertionPhase(assertion),
+    };
+  }
   result.outcome = result.pass ? "pass" : "fail";
   // Stamp the resolved phase (the evaluator defaults it to 'after').
   result.when = assertionPhase(assertion);

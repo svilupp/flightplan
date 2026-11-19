@@ -89,6 +89,8 @@ result and the lock diff. Promote the flow and its matching lock together only a
 assertions prove that each action reached the intended state. Use `--frozen` in CI or shared replay
 to make the promoted lock read-only. A required heal is reported as drift and fails the frozen run
 without writing the lock; rerun unlocked locally, review the new lock, then promote the pair.
+Frozen mode permits live fallback when no lock exists. CI that requires a promoted baseline must
+check that `<your-flow>.lock.toml` exists before running.
 
 ## Selector translation
 
@@ -110,6 +112,10 @@ Flightplan strips its authoring-only `css:` prefix before sending the selector t
 `fingerprint:`, `fp:`, and `structure:` are internal lock identity tokens, not author-facing target
 prefixes. Keep a stable natural-language intent even when a selector is available; the intent is
 used when the recorded selector drifts.
+
+CSS inference is heuristic; use `css:` or `text:` when a tag name could also be literal text.
+Explicit `role:` and `text:` assertion selectors match the full accessible name. Use a text
+assertion's `match = "contains"` for substring checks after selecting the intended element.
 
 ## Fill verification (`verify`) passthrough
 
@@ -260,8 +266,14 @@ Save failures (`saveAuthState` rejecting) are always a non-fatal warning, never 
 ## API-key conditions
 
 No key is needed when a run resolves at L0/L1 and performs no AI-backed assertion or step. A warm
-lock replay is also keyless when it stays at L0. Set `OPENROUTER_API_KEY` before a run that can
-invoke L2 resolver, L3 vision, L4 advisor, L5 planner, `ai_pick`, or `ai_judge`:
+lock replay is also keyless when it stays at L0. To permit L2 resolver, L3 vision, L4 advisor,
+L5 planner, `ai_pick` escalation, or `ai_judge`, enable AI in the entry flow and set
+`OPENROUTER_API_KEY`:
+
+```toml
+[config.ai]
+enabled = true
+```
 
 ```sh
 export OPENROUTER_API_KEY=...
@@ -308,6 +320,9 @@ A compatibility borrower has raw authority and does not enforce owner policy.
 ## Action guards
 
 ```toml
+[config.ai]
+enabled = true
+
 [config.guard]
 mode = "shadow"
 policy = "Allow reading orders. Deny refunds, payments, and deletions."
@@ -318,7 +333,11 @@ timeout_ms = 3000
 max_evaluations = 100
 ```
 
-`shadow` evaluates actions with a separate budget but cannot veto them, including on timeout or
+Remote guards require explicit AI permission, including shadow mode. Global zero call/cost limits
+block evaluation before transport, and zero screenshot limits block model image capture. See
+[execution policy](EXECUTION_POLICY.md) for migration and trusted host callback behavior.
+
+`shadow` evaluates actions with a separate positive budget but cannot veto them, including on timeout or
 observer failure. `enforce` blocks deny and unknown verdicts before input. It requires a trusted
 dispatcher and negotiated assurance; missing support fails with `atomic_dispatch_unavailable`
 or `dispatch_assurance_unavailable`. Start in shadow to evaluate a policy against your own fixtures.
@@ -384,7 +403,7 @@ Neither helper restores a crashed runner's program counter or provides CLI resta
 
 ## Package compatibility
 
-Flightplan 0.5 requires BP `^0.8.0`, including its named borrowing and typed owner APIs.
+Flightplan 0.6 requires BP `^0.8.0`, including its named borrowing and typed owner APIs.
 Test a prerelease build with `bun run test:package /absolute/path/browser-pilot-0.8.0.tgz`.
 
 Release BP first, update the consumer lock from the registry, rerun packed API/runtime and

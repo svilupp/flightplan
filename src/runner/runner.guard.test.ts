@@ -113,6 +113,7 @@ test("configured global guard is active without an injected API hook", async () 
     driverFactory: () => driver,
     config: resolveConfigWithDefaults([
       {
+        ai: { enabled: true },
         guard: {
           mode: "enforce",
           policy: "No actions",
@@ -236,6 +237,7 @@ test("native shadow images never capture post-dispatch browser pixels", async ()
     driverFactory: () => driver,
     config: resolveConfigWithDefaults([
       {
+        ai: { enabled: true },
         guard: {
           mode: "shadow",
           policy: "read",

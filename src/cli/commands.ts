@@ -11,6 +11,7 @@
 // out of scope for the worker entry.
 
 import { DEFAULT_BASE_DIR, type RunSummary } from "../artifacts/index.ts";
+import { ExecutionPolicyError } from "../config/execution-policy.ts";
 import type { Config, ResolvedConfig } from "../config/index.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
 import {
@@ -31,6 +32,7 @@ import { checkFlow } from "../inspection/check.ts";
 import { InvocationError } from "../invocation/index.ts";
 import { formatHuman, formatJson, lintPaths } from "../lint/index.ts";
 import { resolve } from "../paths.ts";
+import { RunControl } from "../runner/control.ts";
 import {
   type DriverFactory,
   RunInterruptedError,
@@ -79,6 +81,8 @@ export interface ParsedArgs {
   positionals: string[];
   /** Emit machine-readable JSON output (run-summary contract — PLAN.md §4). */
   json: boolean;
+  /** lint: treat warnings as a failed gate. */
+  denyWarnings: boolean;
   /** CI mode: heal at runtime but report drift instead of persisting it. */
   frozen: boolean;
   /** Suppress all lock writes. */
@@ -126,7 +130,7 @@ export function validateCommandArgs(args: ParsedArgs): void {
   if (args.command === null) return;
 
   const allowed = {
-    lint: new Set(["json"]),
+    lint: new Set(["json", "denyWarnings"]),
     config: new Set(["json"]),
     list: new Set(["json"]),
     describe: new Set(["json"]),
@@ -149,13 +153,24 @@ export function validateCommandArgs(args: ParsedArgs): void {
     ]),
     explain: new Set(["json"]),
     report: new Set(["json"]),
-    sweep: new Set(["frozen", "noLockWrite", "lock", "out", "trials", "compareBaseline"]),
+    sweep: new Set([
+      "frozen",
+      "noLockWrite",
+      "lock",
+      "out",
+      "trials",
+      "compareBaseline",
+      "inputs",
+      "inputEnvs",
+      "inputsFile",
+    ]),
     "migrate-effects": new Set(["json"]),
   }[args.command];
   const values: Array<[string, boolean]> = [
     ["--json", args.json],
-    ["--inputs", args.inputs.length > 0],
-    ["--input-envs", args.inputEnvs.length > 0],
+    ["--deny-warnings", args.denyWarnings],
+    ["--input", args.inputs.length > 0],
+    ["--input-env", args.inputEnvs.length > 0],
     ["--inputs-file", args.inputsFile !== null],
     ["--idempotency-key", args.idempotencyKey !== null],
     ["--session", args.session !== null],
@@ -191,6 +206,10 @@ export function validateCommandArgs(args: ParsedArgs): void {
 
 function flagField(name: string): string {
   switch (name) {
+    case "--input":
+      return "inputs";
+    case "--input-env":
+      return "inputEnvs";
     case "--no-lock-write":
       return "noLockWrite";
     case "--start-tier":
@@ -220,6 +239,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     command: null,
     positionals: [],
     json: false,
+    denyWarnings: false,
     frozen: false,
     noLockWrite: false,
     lock: null,
@@ -238,6 +258,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (arg === undefined) continue;
 
     // Flags
+    if (arg === "--deny-warnings") {
+      parsed.denyWarnings = true;
+      continue;
+    }
     if (arg === "-h" || arg === "--help") {
       parsed.help = true;
       continue;
@@ -388,13 +412,14 @@ Quick start:
 From this repository, prefix commands with \`bun run flightplan\`.
 
 Flags:
+  --deny-warnings       lint: exit 1 when any warning is reported
   --json                Emit machine-readable JSON
   --session <name>       run: borrow a fenced BP-owned named session
   --target-id <id>       run: select one exact existing target in --session
   --idempotency-key <id> run: atomically claim one invocation; duplicates never redispatch
-  --input <name=value>  run: override a declared scalar input
-  --inputs-file <path> run: JSON object of typed input values
-  --input-env <n=ENV>  run: bind a declared secret through an env reference
+  --input <name=value>  run/sweep: override a declared scalar input
+  --inputs-file <path> run/sweep: JSON object of typed input values
+  --input-env <n=ENV>  run/sweep: bind a declared secret through an env reference
   --frozen              run/sweep: heal at runtime, report drift, do not persist
   --no-lock-write       run/sweep: suppress all lock writes
   --lock <path>         run/sweep: override the lock file path
@@ -492,8 +517,8 @@ export interface CommandIO {
   version?: string;
 }
 
-async function readCliInputs(
-  args: ParsedArgs,
+export async function readCliInputs(
+  args: Pick<ParsedArgs, "inputs" | "inputEnvs" | "inputsFile">,
   flow: FlowFile,
   io: CommandIO,
 ): Promise<InputValues | undefined> {
@@ -651,13 +676,16 @@ export async function executeLint(argv: string[], io: CommandIO): Promise<{ exit
     return { exitCode: EXIT.usage };
   }
 
+  const gated = { ...multi, ok: multi.ok && !(args.denyWarnings && multi.warningCount > 0) };
   if (args.json) {
-    io.stdout(formatJson(multi));
+    io.stdout(formatJson(gated));
   } else {
     io.stdout(formatHuman(multi));
+    if (args.denyWarnings && multi.warningCount > 0)
+      io.stderr("flightplan lint: --deny-warnings rejected the reported warnings.");
   }
 
-  return { exitCode: multi.ok ? EXIT.ok : EXIT.failed };
+  return { exitCode: gated.ok ? EXIT.ok : EXIT.failed };
 }
 
 /**
@@ -700,9 +728,11 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
   // so the entry flow's [connect] (or the attach-localhost:9222 default) is authoritative and
   // imported flows' [connect] blocks are intentionally ignored.
   let config: ResolvedConfig;
+  let flowSource: string;
   let inputs: InputValues | undefined;
   try {
     const loaded = await loadFlowFile(flowPath, io.fs);
+    flowSource = loaded.sourceText;
     inputs = await readCliInputs(args, loaded.flow, io);
     const layers: Config[] = [];
     if (loaded.flow.config) layers.push(loaded.flow.config);
@@ -724,17 +754,22 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     commandError(
       argv,
       io,
-      err instanceof InvocationError ? err.code : "RUN_UNAVAILABLE",
+      err instanceof InvocationError || err instanceof ExecutionPolicyError
+        ? err.code
+        : "RUN_UNAVAILABLE",
       argv.includes("--json")
-        ? err instanceof InvocationError
-          ? err.code
-          : "Recipe could not be loaded or executed."
+        ? err instanceof ExecutionPolicyError
+          ? err.message
+          : err instanceof InvocationError
+            ? err.code
+            : "Recipe could not be loaded or executed."
         : `flightplan run: ${detail}`,
     );
     return { exitCode: EXIT.usage };
   }
 
   const runOpts: RunOptions = {
+    flowSource,
     flowPath,
     cwd: io.cwd,
     config,
@@ -758,6 +793,7 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     args.session !== null
       ? namedSessionDriverFactory(io.namedSessionBorrower ?? nativeNamedSessionBorrower, {
           actionTimeoutMs: config.timeouts.action_ms,
+          gotoTimeoutMs: config.timeouts.goto_ms,
           navTimeoutMs: config.timeouts.nav_ms,
           providerEnv: io.env,
         })
@@ -776,7 +812,7 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     result = await runFlow(runOpts);
   } catch (err) {
     if (err instanceof RunInterruptedError) {
-      commandError(argv, io, err.code, `flightplan run: ${err.message}`);
+      commandError(argv, io, err.code, `flightplan run: ${err.message} (cleanup: ${err.cleanup}).`);
       return { exitCode: err.code === "RUN_TIMEOUT" ? EXIT.deadline : EXIT.cancelled };
     }
     if (err && typeof err === "object" && "runResult" in err) {
@@ -791,11 +827,15 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     commandError(
       argv,
       io,
-      err instanceof InvocationError ? err.code : "RUN_UNAVAILABLE",
+      err instanceof InvocationError || err instanceof ExecutionPolicyError
+        ? err.code
+        : "RUN_UNAVAILABLE",
       argv.includes("--json")
-        ? err instanceof InvocationError
-          ? err.code
-          : "Recipe could not be loaded or executed."
+        ? err instanceof ExecutionPolicyError
+          ? err.message
+          : err instanceof InvocationError
+            ? err.code
+            : "Recipe could not be loaded or executed."
         : `flightplan run: ${detail}`,
     );
     return { exitCode: EXIT.usage };
@@ -837,14 +877,16 @@ export async function executeDiscovery(
 /** Current-page inspection. Explicit named borrowing is required for browser observations. */
 export async function executeCheck(argv: string[], io: CommandIO): Promise<{ exitCode: number }> {
   let driver: import("../driver/types.ts").Driver | undefined;
+  const control = new RunControl({ signal: io.signal, timeoutMs: io.timeoutMs });
+  const fs = control.guard(io.fs, "fs");
   try {
     const args = parseArgs(argv);
     validateCommandArgs(args);
     const flowPath = resolve(io.cwd, args.positionals[0]!);
-    const loaded = await loadFlowFile(flowPath, io.fs);
-    const inputs = await readCliInputs(args, loaded.flow, io);
+    const loaded = await control.wait(() => loadFlowFile(flowPath, fs));
+    const inputs = await control.wait(() => readCliInputs(args, loaded.flow, { ...io, fs }));
     // Binding and dependency validation precede connection acquisition.
-    const initial = await checkFlow({ flowPath, inputs, env: io.env, fs: io.fs });
+    const initial = await control.wait(() => checkFlow({ flowPath, inputs, env: io.env, fs }));
     if (
       initial.diagnostics.some((diagnostic) => diagnostic.severity === "error") ||
       initial.items.some((item) => item.status === "failed")
@@ -863,20 +905,40 @@ export async function executeCheck(argv: string[], io: CommandIO): Promise<{ exi
         io.namedSessionBorrower ?? nativeNamedSessionBorrower,
         { providerEnv: io.env },
       );
-      driver = adapter.factory(connection, { signal: io.signal ?? new AbortController().signal });
+      driver = control.attach(
+        adapter.factory(connection, { signal: control.signal, deadline: control.deadline }),
+      );
       await driver.connect(connection);
     }
     const report = driver
-      ? await checkFlow({ flowPath, inputs, env: io.env, fs: io.fs, driver })
+      ? await control.wait(() => checkFlow({ flowPath, inputs, env: io.env, fs, driver }))
       : initial;
     if (driver?.teardown) {
       const acquired = driver;
       driver = undefined;
-      await acquired.teardown();
+      await control.wait(() => acquired.teardown());
     }
+    control.check();
     io.stdout(JSON.stringify(report, null, 2));
     return { exitCode: report.ok ? EXIT.ok : EXIT.failed };
   } catch (error) {
+    const interruption = control.interruptedError;
+    if (interruption) {
+      // RunControl owns bounded cleanup, including a connect that settles after cancellation.
+      driver = undefined;
+      try {
+        await control.interrupted(error);
+      } catch {
+        // The same interruption now carries the cleanup outcome.
+      }
+      commandError(
+        argv,
+        io,
+        interruption.code,
+        `flightplan check: ${interruption.message} (cleanup: ${interruption.cleanup}).`,
+      );
+      return { exitCode: interruption.code === "RUN_TIMEOUT" ? EXIT.deadline : EXIT.cancelled };
+    }
     if (error instanceof InputBindingError && argv.includes("--json")) {
       io.stdout(
         JSON.stringify(
@@ -903,5 +965,6 @@ export async function executeCheck(argv: string[], io: CommandIO): Promise<{ exi
       await driver
         .teardown()
         .catch(() => io.stderr("flightplan check: session cleanup was not confirmed"));
+    control.dispose();
   }
 }

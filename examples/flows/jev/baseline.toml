@@ -8,6 +8,7 @@ description = "JEV text selection with exact result and single-dispatch assertio
 base_url = "http://localhost:3000"
 
 [config.ai]
+enabled = true
 classifier = "jev"
 
 [config.ai.jev]

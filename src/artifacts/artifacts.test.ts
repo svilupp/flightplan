@@ -7,7 +7,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { nodeFileSystem } from "../adapters/node/index.ts";
 import {
@@ -89,6 +89,42 @@ describe("resolveRunDir (pure, no IO)", () => {
 });
 
 describe("createRun (directory structure)", () => {
+  test("default run IDs create separate artifact directories without global Web Crypto", async () => {
+    // Match Node 18's ESM globals without mutating the test process's shared capabilities.
+    const source = `
+      import { createRun } from ${JSON.stringify(resolve(import.meta.dir, "run-dir.ts"))};
+      import { memoryFileSystem } from ${JSON.stringify(resolve(import.meta.dir, "../adapters/memory.ts"))};
+      Reflect.deleteProperty(globalThis, "crypto");
+      if (globalThis.crypto !== undefined) throw new Error("Web Crypto is still available");
+      const fs = memoryFileSystem();
+      const options = { baseDir: "/virtual/runs", now: () => ${FIXED_MS} };
+      const runs = await Promise.all([createRun(options, fs), createRun(options, fs)]);
+      console.log(JSON.stringify(await Promise.all(runs.map(async (run) => ({
+        runId: run.runId,
+        directoriesCreated: await fs.fileExists(run.dir) &&
+          await fs.fileExists(run.screenshotsDir) && await fs.fileExists(run.proposedPatchesDir),
+      })))));
+    `;
+    const child = Bun.spawn([process.execPath, "--eval", source], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    const runs: unknown = JSON.parse(stdout);
+    const expectedRun = {
+      runId: expect.stringMatching(/^20260629T134507123-[a-z0-9]{8}$/),
+      directoriesCreated: true,
+    };
+    expect(runs).toEqual([expectedRun, expectedRun]);
+    if (!Array.isArray(runs)) throw new Error("Expected run directory records");
+    expect(runs[0]).not.toEqual(runs[1]);
+  });
+
   test("creates <base>/<runId>/ with screenshots/ and proposed-patches/ subdirs", async () => {
     const rd = await createRun({
       baseDir: join(tmp, "create"),

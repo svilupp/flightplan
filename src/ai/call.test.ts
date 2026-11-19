@@ -60,6 +60,15 @@ const textCtx: AiCallContext<typeof schema> = {
   prompt: `The password is ${SECRET}; also email a@b.com`,
 };
 
+test("a zero cost ceiling blocks before generation", async () => {
+  const { fn, calls } = fakeGenerate({ answer: "ok" });
+  const sink = new RecordingSink();
+  const rt = { ...makeRt(fn, sink), budget: new BudgetTracker({ max_cost_usd: 0 }) };
+  await expect(aiCall(rt, textCtx)).rejects.toMatchObject({ limit: "max_cost_usd" });
+  expect(calls).toHaveLength(0);
+  expect(sink.events).toHaveLength(0);
+});
+
 describe("aiCall — redaction threading", () => {
   test("with an active redactor, redactedPrompt/Response mask the secret and never leak it", async () => {
     const sink = new RecordingSink();

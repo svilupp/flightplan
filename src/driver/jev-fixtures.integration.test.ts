@@ -24,7 +24,7 @@ beforeAll(async () => {
 }, 30_000);
 afterAll(async () => {
   await driver?.teardown();
-  await server?.stop();
+  await server?.stop(true);
 });
 
 for (const route of JEV_ROUTES) {
@@ -89,7 +89,7 @@ browserTest(
             mode: "attach",
             browserURL: process.env.FLIGHTPLAN_BROWSER_URL ?? "localhost:9222",
           },
-          ai: { classifier: "jev", jev: { profile: "text" } },
+          ai: { enabled: true, classifier: "jev", jev: { profile: "text" } },
           run: { max_model_calls: 4, max_screenshots: 0, max_cost_usd: 0.01 },
         },
       ]);
@@ -207,7 +207,7 @@ for (const scenario of [
               mode: "attach",
               browserURL: process.env.FLIGHTPLAN_BROWSER_URL ?? "localhost:9222",
             },
-            ai: { classifier: "jev", jev: { profile: "visual", images: "allow" } },
+            ai: { enabled: true, classifier: "jev", jev: { profile: "visual", images: "allow" } },
             run: { max_model_calls: 2, max_screenshots: 1, max_cost_usd: 0.01 },
           },
         ]);

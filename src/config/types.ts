@@ -95,5 +95,10 @@ export interface ResolvedConfig extends Config {
    * actionability default never applies — a disabled/wrong leading selector fails fast (≈5s) and
    * escalates instead of dead-hanging. A per-step `timeout_ms` still overrides `action_ms`.
    */
-  timeouts: TimeoutsConfig & { action_ms: number; nav_ms: number; settle_ms: number };
+  timeouts: TimeoutsConfig & {
+    action_ms: number;
+    goto_ms: number;
+    nav_ms: number;
+    settle_ms: number;
+  };
 }

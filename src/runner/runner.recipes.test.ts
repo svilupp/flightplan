@@ -20,6 +20,7 @@ async function run(source: string, driver = new MockDriver()) {
     flowPath: join(dir, "flow.toml"),
     out: join(dir, "runs"),
     config: resolveConfigWithDefaults([
+      { ai: { enabled: true } },
       { run: { assertions: "deferred", fail_on_assertion: false, assert_timeout_ms: 1 } },
     ]),
     driverFactory: () => driver,
@@ -81,6 +82,7 @@ test("nested child entry is checked before any child action on every invocation"
       flowPath: join(dir, "flow.toml"),
       out: join(dir, "runs"),
       config: resolveConfigWithDefaults([
+        { ai: { enabled: true } },
         { run: { fail_on_assertion: false, assertions: "deferred", assert_timeout_ms: 1 } },
       ]),
       driverFactory: () => driver,
@@ -126,7 +128,7 @@ test("learned extraction map replays fresh rows without another mapper call", as
   const options = {
     flowPath,
     out: join(dir, "runs"),
-    config: resolveConfigWithDefaults([]),
+    config: resolveConfigWithDefaults([{ ai: { enabled: true } }]),
     driverFactory: () => driver,
     clock: new FakeClock(),
     env: {},
@@ -142,7 +144,12 @@ test("learned extraction map replays fresh rows without another mapper call", as
   expect(lock).toContain("extractions");
   expect(lock).not.toContain("price = 101");
   driver.setExtractResult([{ price: 205 }, { price: 307 }]);
-  const warm = await runFlow({ ...options, frozen: true, noLockWrite: true });
+  const warm = await runFlow({
+    ...options,
+    config: resolveConfigWithDefaults([]),
+    frozen: true,
+    noLockWrite: true,
+  });
   expect(warm.summary.outputs).toEqual({ products: [{ price: 205 }, { price: 307 }] });
   expect(mappings).toBe(1);
   expect(await Bun.file(lockPath).text()).toBe(lock);
@@ -173,7 +180,7 @@ test("mapper document replacement is rejected before projection or lock promotio
   const result = await runFlow({
     flowPath,
     out: join(dir, "runs"),
-    config: resolveConfigWithDefaults([]),
+    config: resolveConfigWithDefaults([{ ai: { enabled: true } }]),
     driverFactory: () => driver,
     clock: new FakeClock(),
     env: {},
@@ -206,7 +213,7 @@ test("novel secret extraction fields fail before candidate acquisition or mappin
   const result = await runFlow({
     flowPath,
     out: join(dir, "runs"),
-    config: resolveConfigWithDefaults([]),
+    config: resolveConfigWithDefaults([{ ai: { enabled: true } }]),
     driverFactory: () => driver,
     clock: new FakeClock(),
     env: {},
@@ -241,7 +248,7 @@ test("same-document candidate meaning changes invalidate mapper evidence", async
   const result = await runFlow({
     flowPath,
     out: join(dir, "runs"),
-    config: resolveConfigWithDefaults([]),
+    config: resolveConfigWithDefaults([{ ai: { enabled: true } }]),
     driverFactory: () => driver,
     clock: new FakeClock(),
     env: {},
@@ -287,7 +294,7 @@ test("embedding cannot bypass nested entry contracts through flattened redirect 
   const failure = await runFlow({
     flowPath,
     out: join(dir, "runs"),
-    config: resolveConfigWithDefaults([]),
+    config: resolveConfigWithDefaults([{ ai: { enabled: true } }]),
     driverFactory: () => {
       factories++;
       return driver;
@@ -325,7 +332,7 @@ test("setup results and secret captures cannot satisfy root output sources", asy
   const result = await runFlow({
     flowPath,
     out: join(dir, "runs"),
-    config: resolveConfigWithDefaults([]),
+    config: resolveConfigWithDefaults([{ ai: { enabled: true } }]),
     driverFactory: () => driver,
     clock: new FakeClock(),
     env: {},
@@ -348,7 +355,7 @@ test("authored internal boundary IDs are rejected before acquisition", async () 
   const failure = await runFlow({
     flowPath,
     out: join(dir, "runs"),
-    config: resolveConfigWithDefaults([]),
+    config: resolveConfigWithDefaults([{ ai: { enabled: true } }]),
     driverFactory: () => {
       factories++;
       return new MockDriver();

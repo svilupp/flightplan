@@ -38,9 +38,12 @@ resolve -> veto ambiguity/policy -> validate preconditions -> dispatch once
 3. Lint before connecting to Chrome:
 
    ```sh
-   flightplan lint path/to/flow.toml
+   flightplan lint path/to/flow.toml --deny-warnings
    flightplan migrate-effects path/to/flow.toml
    ```
+
+   `--deny-warnings` makes warnings fail the gate while preserving their severity and counts.
+   Add `--json` for machine-readable diagnostics.
 
 4. Run deterministic flows with lock writes disabled while proving behavior:
 
@@ -110,8 +113,10 @@ Scope status and actions to the relevant row, panel, badge, or landmark. Do not 
 
 ### Model readiness
 
-A URL change is a navigation milestone, not application readiness. Add a wait or a semantic
-precondition for delayed hydration, empty first snapshots, loading overlays, and same-document updates:
+A URL change is a navigation milestone, not application readiness. Attach a postcondition to
+`goto` for delayed hydration, empty first snapshots, loading overlays, and same-document updates.
+A precondition runs before the action and therefore inspects the previous page on `goto`.
+This postcondition checks the destination:
 
 ```toml
 [[steps]]
@@ -120,24 +125,37 @@ do = "goto"
 url = "${inputs.base_url}/orders"
 
 [[steps.assert]]
-type = "visible"
-selector = "[data-testid='page-title']"
+type = "text"
+selector = "css:[data-testid='page-title']"
 text = "Orders"
-purpose = "precondition"
+match = "exact"
+purpose = "postcondition"
 timeout_ms = 6000
 ```
 
+`[config.timeouts] goto_ms` bounds document navigation (default 30000 ms); `nav_ms` bounds
+optional settling (default 2000 ms). An explicit `nav_ms` supplies the legacy document limit only
+when `goto_ms` is absent. A `goto` step's `timeout_ms` overrides document load only. Assertion
+timeouts are independent. Strict owner-action hosts enforce their own deadlines; named-session
+compatibility borrowers use driver deadlines.
+
 ### Write exact postconditions
 
-Use `match = "exact"` and scope the selector for business state. Available URL modes are
-`exact`, `origin_path`, `glob`, and `contains`; text modes are `exact`, `contains`, and `regex`.
+Prefix CSS assertion selectors with `css:`, including tag names such as `css:h1`. For `hidden`,
+`state = "hidden"`, and `count = 0`, give an explicit selector such as `css:app-banner` or
+`text:Shipping notice`. A valid query with no matches proves absence. Use `value = ""` to clear a
+field or assert an empty value. Explicit `role:` and `text:` assertion selectors match full accessible names;
+use the assertion's `match` for substring checks. Semantic counts measure accessibility nodes;
+use CSS for DOM element counts. Use `match = "exact"` and scope the selector for business state.
+Available URL modes are `exact`, `origin_path`, `glob`, and `contains`; text modes are `exact`,
+`contains`, and `regex`.
 Use state assertions for `enabled`, `checked`, `selected`, and `new_page`; use transition assertions
 for `url_changed`, `text_changed`, `value_changed`, and `state_changed`.
 
 ```toml
 [[steps.assert]]
 type = "text"
-selector = "[data-testid='payment-badge']"
+selector = "css:[data-testid='payment-badge']"
 text = "Paid"
 match = "exact"
 purpose = "postcondition"
@@ -181,6 +199,9 @@ AI tiers default to OpenRouter (`OPENROUTER_API_KEY`). The simplest way to pin a
 planner_capable), so a flow that does not need per-role tiering never repeats the block:
 
 ```toml
+[config.ai]
+enabled = true
+
 [config.ai.models.default]
 model = "gpt-5.6-luna:xhigh"
 fallbacks = []
@@ -200,17 +221,17 @@ reasoning effort:
 
 ```toml
 [config.ai]
+enabled = true
 provider = "google"
 
 [config.ai.models.resolver]
 model = "gemini-3-pro:high"   # google has no native xhigh; it maps to high
 ```
 
-### Authenticate through Cloudflare Access (`[config.auth]`)
+### Authenticate through Cloudflare Access (`[config.auth.cf_access]`)
 
-Use `[config.auth]` only when the target origin sits behind Cloudflare Access. It is a
-`[config.*]` block, so it layers like every other one (defaults → global `flightplan.toml` →
-entry flow → CLI) — set `cf_access` once in a global `flightplan.toml` and every flow inherits it.
+Use `[config.auth.cf_access]` when the target origin sits behind Cloudflare Access. Put it in the
+entry flow's configuration; imported flows supply steps, not connection or auth configuration.
 Secrets are always env var **names**, never literal values:
 
 ```toml
@@ -229,6 +250,17 @@ standalone without `cf_access`. Auth is applied once, right after `connect()` an
 first `goto`; never put a literal secret in a flow — only the env var **name**. See
 `README.md`'s "Cloudflare Access auth" section and `src/config/schema.ts` for the full field
 reference.
+
+For Google/OAuth login without a test bypass, use the README's "Saved auth state" recipe or an
+attended named browser session. `[config.auth].cookie_file_env` names an environment variable that
+holds a snapshot path. Cookie restoration does not renew server-side expiry; assert the signed-in
+page after navigation and stop when authentication is required.
+
+Raw attach checks visibility and focus before a keypress. Set `[config.connect] foreground = true`
+only when activation is intended; it targets the selected tab after guard approval and verifies focus.
+Failure sends no key. Keep keypresses in separate steps: mixed raw-attach batches are rejected before
+any action. Assert the actual key's effect. Prefer named sessions for coordinated ownership;
+serialize raw attach externally and never overlap it with a named owner on the same profile.
 
 ## Running and proving mutations
 
@@ -276,8 +308,19 @@ Classify the failure:
 - assertion timeout with a committed ledger entry: fix the assertion scope or timing, not the action.
 - stale-lock rejection: refresh or intentionally quarantine the lock after reviewing the flow diff.
 
-Keep `[config.plan].enabled = false` for deterministic safety proofs. Enable the planner only in a
-separate AI-backed experiment with a bounded `max_replans` and a clear goal.
+AI is off by default. Set `[config.ai] enabled = true` only for authorized AI runs; keys alone do
+not enable it. Explicit classifiers, profiles, AI assertions, vision hints and planners require
+permission before browser acquisition. Cached extraction maps can replay with AI off. A configured
+remote guard with AI off is a preflight error, including shadow mode; do not silently remove guards.
+Zero call/cost budgets stop remote work before it starts, including guard work; zero screenshots
+stop model image capture. Recording remains independent: use `[config.browser] record = false`.
+Trusted injected guard callbacks remain active. `--frozen --no-lock-write` controls lock persistence.
+Frozen mode permits live fallback without a lock; check lock existence separately when a promoted
+baseline is required. Planner enablement is rejected if a prepared step, child flow, or hook has
+an `at_most_once` effect. Backward failure jumps cannot cross protected steps that may have dispatched.
+Use `lint --deny-warnings` for a strict gate. Sweep shares run's `--input`, `--input-env`, and
+`--inputs-file` flags and validates all bindings before dispatch. Inspect `sweep.json` for denied
+baseline units; `report` only aggregates executed runs.
 
 ## References
 
@@ -317,6 +360,12 @@ Keep business loops in the host. Prefer explicit extraction selectors; secret fi
 `resolve = "ai"` requests fresh selection without target-lock reuse. Use `list`/`describe` for
 discovery and `check` for current entry inspection only. Secret inputs use `--input-env`;
 retries reuse one `--idempotency-key`. A new key does not prove a mutation is safe to repeat.
+Child and hook secret inputs share run-wide redaction; secret extraction in either disables
+recording for the whole run. Changed dependencies or bound destinations conflict with an existing
+invocation key, including secret-marked raw URLs. Declared secret inputs retain reference-based
+rotation. Identity remains scoped to the store and namespace; CLI defaults use the working
+directory, and shared claims can conflict after relocation. Reconcile the earlier outcome before
+issuing a new key after an upgrade.
 
 Read `docs/BROWSER_PILOT_INTEGRATION.md` for named sessions, guards and host yield. Require verified
 handback and fresh observations before resuming BP actions. Local guards cannot override owner

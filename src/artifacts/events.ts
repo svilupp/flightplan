@@ -385,6 +385,8 @@ export interface RunSummary {
    */
   summary_version: 1;
   verdict: RunVerdict;
+  /** Why the run could not establish an outcome, including budget and dispatch uncertainty. */
+  inconclusive_reason?: string;
   flow_id: string;
   run_id: string;
   run_dir: string;

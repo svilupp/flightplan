@@ -44,6 +44,7 @@ export type {
 } from "./artifacts/index.ts";
 // ---- Run-summary artifact types (the `--json` / `run.jsonl` contract) ----
 export { makeRunId, resolveRunDir } from "./artifacts/index.ts";
+export { ExecutionPolicyError } from "./config/execution-policy.ts";
 export type { Config, ConfigFile, ConnectConfig, ResolvedConfig } from "./config/index.ts";
 // ---- Config resolution ----
 export {
@@ -62,12 +63,15 @@ export {
   type DriverAcquisition,
   MockDriver,
 } from "./driver/index.ts";
+export { KeyboardPreflightError } from "./driver/keyboard.ts";
 export type {
   NamedSessionBorrow,
   NamedSessionBorrower,
   SessionHandback,
 } from "./driver/named-session.ts";
 export { namedSessionDriverFactory } from "./driver/named-session.ts";
+export { NavigationFailure } from "./driver/navigation.ts";
+export { InvalidSelectorError } from "./driver/normalize-selector.ts";
 // ---- Flow loading / parsing ----
 export type {
   AiJudgeAssertion,

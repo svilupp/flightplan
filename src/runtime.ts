@@ -25,6 +25,8 @@ export interface FileSystemPort {
   readTextFile(path: string): Promise<string>;
   /** Write a UTF-8 text file, creating parent directories as needed. Overwrites. */
   writeTextFile(path: string, text: string): Promise<void>;
+  /** Atomically create a UTF-8 file; false if it exists. Required for concurrent-safe sweeps. */
+  createTextFileExclusive?(path: string, text: string): Promise<boolean>;
   /** Append a UTF-8 chunk to a file, creating it (and parent directories) if missing. */
   appendTextFile(path: string, text: string): Promise<void>;
   /** Optional binary artifact support. Required for recording with RunOptions.fs. */
