@@ -23,14 +23,22 @@ const candidate = process.argv[2] ? resolve(process.argv[2]) : undefined;
 const temp = mkdtempSync(join(tmpdir(), "flightplan-package-smoke-"));
 let passed = false;
 try {
-  const packed = JSON.parse(
+  const packResult = JSON.parse(
     execFileSync("npm", ["pack", "--json", "--pack-destination", temp], {
       cwd: root,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "inherit"],
     }),
   );
-  const packagedPaths = new Set(packed[0].files.map((file) => file.path));
+  // npm 11 returns an array; npm 12 keys package metadata by package name.
+  const packages = Array.isArray(packResult) ? packResult : Object.values(packResult);
+  assert.equal(packages.length, 1, "Expected exactly one packed Flightplan package");
+  const [packed] = packages;
+  assert.ok(
+    typeof packed?.filename === "string" && Array.isArray(packed.files),
+    "Unexpected npm pack metadata: expected filename and files",
+  );
+  const packagedPaths = new Set(packed.files.map((file) => file.path));
   for (const path of [
     "dist/index.js",
     "dist/index.d.ts",
@@ -60,7 +68,7 @@ try {
   mkdirSync(flightplan, { recursive: true });
   execFileSync("tar", [
     "-xzf",
-    join(temp, packed[0].filename),
+    join(temp, packed.filename),
     "--strip-components=1",
     "-C",
     flightplan,
