@@ -114,6 +114,8 @@ Use ordered targets with stable selectors first and one concise natural-language
 every action with `effect`. Attach a readiness postcondition to navigation steps. Preconditions run
 before the step acts.
 Use explicit `css:` selectors in assertions and `value = ""` for empty fields.
+Explicit `role:` and `text:` assertion selectors match full accessible names. Semantic counts
+measure accessibility nodes; use CSS for DOM element counts.
 
 ### 4. Harden each effect
 
@@ -209,6 +211,8 @@ with explicit budgets; ambient keys do not enable AI. A configured remote guard 
 permission, including shadow mode, and fails preflight otherwise. Zero call/cost limits also gate
 remote guards; an unavailable enforcing guard blocks dispatch. Trusted injected guards stay active.
 Recording is independent; set `[config.browser] record = false` when page images must not be recorded.
+Planner enablement is rejected if the prepared flow, a child flow, or a hook contains
+`at_most_once`. Backward failure jumps cannot cross protected steps that may have dispatched.
 
 Use `lint --deny-warnings` before strict replay. Sweep accepts the same `--input`, `--input-env`, and
 `--inputs-file` bindings as run and prepares the complete campaign before starting any trial.
@@ -217,6 +221,9 @@ For raw attach, serialize externally and do not overlap a named owner session. K
 requires verified focus; opt in to selected-tab activation with `[config.connect] foreground = true`.
 Keep keys in separate steps and assert their effect. Use `goto_ms` for document deadlines and
 `nav_ms` for optional settling; a step's navigation timeout overrides document loading only.
+A timed-out navigation needs an after URL assertion with `exact` or `origin_path` matching to
+recover. Frozen mode permits live fallback without a lock; check lock existence separately when
+a promoted baseline is required.
 
 ## Completion checklist
 
@@ -264,8 +271,11 @@ Keep business loops in the host. Prefer explicit extraction selectors; secret fi
 discovery and `check` for current entry inspection only. Secret inputs use `--input-env`;
 retries reuse one `--idempotency-key`. A new key does not prove a mutation is safe to repeat.
 Child and hook secret inputs share run-wide redaction; secret extraction in either disables
-recording for the whole run. Changed dependencies or nonsecret environment bindings conflict with
-an existing invocation key. Reconcile the earlier outcome before issuing a new key after an upgrade.
+recording for the whole run. Changed dependencies or bound destinations conflict with an existing
+invocation key, including secret-marked raw URLs. Declared secret inputs retain reference-based
+rotation. Identity remains scoped to the store and namespace; CLI defaults use the working
+directory, and shared claims can conflict after relocation. Reconcile the earlier outcome before
+issuing a new key after an upgrade.
 
 Read `docs/BROWSER_PILOT_INTEGRATION.md` for named sessions, guards and host yield. Require verified
 handback and fresh observations before resuming BP actions. Local guards cannot override owner

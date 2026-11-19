@@ -31,6 +31,15 @@ try {
     }),
   );
   const packagedPaths = new Set(packed[0].files.map((file) => file.path));
+  for (const path of [
+    "dist/index.js",
+    "dist/index.d.ts",
+    "dist/cli/index.js",
+    "examples/flows/wizard.toml",
+  ]) {
+    assert.ok(packagedPaths.has(path), `Missing release file: ${path}`);
+  }
+  assert.ok(![...packagedPaths].some((path) => path.startsWith("flows/")));
   assert.ok(!packagedPaths.has("FINAL_REVIEW.md"));
   assert.ok(!packagedPaths.has("docs/CALLABLE_RECIPES_IMPLEMENTATION_PLAN.md"));
   assert.ok(!packagedPaths.has("docs/CALLABLE_RECIPES_VALIDATION.md"));
@@ -134,7 +143,7 @@ void options;
     stdio: "inherit",
   });
   console.log(
-    `Package smoke: Flightplan ${manifest.version} + browser-pilot ${bpManifest.version}: OK`,
+    `Package smoke: Flightplan ${manifest.version} + browser-pilot ${bpManifest.version} on Node ${process.version}: OK`,
   );
   passed = true;
 } finally {

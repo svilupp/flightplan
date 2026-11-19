@@ -89,6 +89,8 @@ result and the lock diff. Promote the flow and its matching lock together only a
 assertions prove that each action reached the intended state. Use `--frozen` in CI or shared replay
 to make the promoted lock read-only. A required heal is reported as drift and fails the frozen run
 without writing the lock; rerun unlocked locally, review the new lock, then promote the pair.
+Frozen mode permits live fallback when no lock exists. CI that requires a promoted baseline must
+check that `<your-flow>.lock.toml` exists before running.
 
 ## Selector translation
 
@@ -110,6 +112,10 @@ Flightplan strips its authoring-only `css:` prefix before sending the selector t
 `fingerprint:`, `fp:`, and `structure:` are internal lock identity tokens, not author-facing target
 prefixes. Keep a stable natural-language intent even when a selector is available; the intent is
 used when the recorded selector drifts.
+
+CSS inference is heuristic; use `css:` or `text:` when a tag name could also be literal text.
+Explicit `role:` and `text:` assertion selectors match the full accessible name. Use a text
+assertion's `match = "contains"` for substring checks after selecting the intended element.
 
 ## Fill verification (`verify`) passthrough
 
@@ -397,7 +403,7 @@ Neither helper restores a crashed runner's program counter or provides CLI resta
 
 ## Package compatibility
 
-Flightplan 0.5 requires BP `^0.8.0`, including its named borrowing and typed owner APIs.
+Flightplan 0.6 requires BP `^0.8.0`, including its named borrowing and typed owner APIs.
 Test a prerelease build with `bun run test:package /absolute/path/browser-pilot-0.8.0.tgz`.
 
 Release BP first, update the consumer lock from the registry, rerun packed API/runtime and

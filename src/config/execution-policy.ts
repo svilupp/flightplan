@@ -19,7 +19,7 @@ export function resolveExecutionPolicy(config: Config): ExecutionPolicy {
 
 /** An authored AI requirement that conflicts with the entry flow's permission. */
 export interface ExecutionPolicyIssue {
-  readonly code: "AI_DISABLED";
+  readonly code: "AI_DISABLED" | "PLAN_UNSAFE_EFFECT";
   readonly feature: string;
   readonly stepId?: string;
   readonly message: string;
@@ -32,7 +32,23 @@ export function executionPolicyIssues(
   steps: readonly Step[],
   options: { assertions?: readonly Assertion[]; startTier?: "L0" | "L3" } = {},
 ): ExecutionPolicyIssue[] {
-  if (policy.ai === "enabled") return [];
+  if (policy.ai === "enabled") {
+    const protectedStep = config.plan?.enabled
+      ? steps.find((step) => step.effect === "at_most_once")
+      : undefined;
+    return protectedStep
+      ? [
+          {
+            code: "PLAN_UNSAFE_EFFECT",
+            feature: "config.plan.enabled",
+            stepId: protectedStep.id,
+            message:
+              "Planner auto-repair cannot run flows or hooks containing at_most_once steps. " +
+              "Disable [config.plan] enabled for this flow.",
+          },
+        ]
+      : [];
+  }
   const issues: ExecutionPolicyIssue[] = [];
   const requireAi = (feature: string, stepId?: string): void => {
     issues.push({
@@ -62,9 +78,10 @@ export function executionPolicyIssues(
 
 /** Translation to the runner/CLI's existing configuration-error boundary. */
 export class ExecutionPolicyError extends Error {
-  readonly code = "AI_DISABLED";
+  readonly code: ExecutionPolicyIssue["code"];
   constructor(readonly issues: readonly ExecutionPolicyIssue[]) {
     super(issues.map((issue) => issue.message).join(" "));
     this.name = "ExecutionPolicyError";
+    this.code = issues[0]?.code ?? "AI_DISABLED";
   }
 }

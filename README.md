@@ -91,7 +91,7 @@ model = "gemini-3-pro:high"  # native Google model id + reasoning effort suffix
 
 Install the public packages with npm or Bun. The direct `browser-pilot` dependency exposes the
 `bp` discovery and WebMCP diagnostics CLI; Flightplan also declares it as its runtime driver. The
-CLI and library run on Node.js 18+ or Bun:
+CLI and library run on Node.js 20.19.0+ or Bun:
 
 ```sh
 npm install @svilupp/flightplan browser-pilot
@@ -142,7 +142,8 @@ console.log(result.summary.verdict);
 ### Shell hosts
 
 `@svilupp/flightplan/shell` exposes `runFlightplan(args, context, ports)` for shell hosts.
-It shares the native CLI's `lint`/`run` implementation and returns `{ stdout, stderr, exitCode }`.
+It supports `lint`, `run`, `list`, `describe`, and `check` through the native CLI implementations
+and returns `{ stdout, stderr, exitCode }`.
 
 ```ts
 import { runFlightplan, type FileSystemPort } from "@svilupp/flightplan/shell";
@@ -161,9 +162,9 @@ Just-bash is one tested consumer; it is a dev dependency only. Production code a
 have no dependency on it.
 
 `ports.env` defaults to `{}`. AI requires `[config.ai] enabled = true` plus an injected
-`aiRuntimeFactory` or explicit provider
-credentials in that environment. `run` requires `driverFactory` and otherwise returns exit 2.
-Hosts can disable `lint` or `run` with `ports.capabilities` and cap each output stream with
+`aiRuntimeFactory` or explicit provider credentials in that environment. `run` requires
+`driverFactory` or `namedSessionBorrower` and otherwise returns exit 2. Hosts can disable each
+supported command with `ports.capabilities` and cap each output stream with
 `ports.limits.maxOutputBytes` (default 1 MiB).
 
 Pass cancellation as `context.signal` and a run deadline as `ports.timeoutMs`. Flightplan returns
@@ -275,6 +276,11 @@ outside the interrupted filesystem, even if a previously dispatched summary writ
 Provider usage may be unknown after cancellation. Session release and durable recovery belong to
 the host.
 
+The native CLI forwards SIGINT and SIGTERM to cancellation, waits for bounded cleanup, and exits
+130 or 143 respectively. A cancelled sweep stops scheduling units. Ordinary flow or setup failure
+still attempts the teardown hook after root entry admission when the browser connection is usable.
+Rejected entry contracts and cancellation skip flow hooks. Driver cleanup runs in either case.
+
 ## Cloudflare and host-owned sessions
 
 `[config.connect] mode = "hosted"` supports `cloudflare`,
@@ -370,6 +376,8 @@ is always `at_most_once` - the linter rejects any other value. Do not add `on_fa
 to a step that may have dispatched. Use `retry = { policy = "never" }` for dangerous steps and let an
 exact postcondition rescue an uncertain result.
 
+Backward failure jumps cannot cross an `at_most_once` step that completed or may have dispatched.
+
 ### WebMCP calls
 
 Flightplan uses browser-pilot's WebMCP bridge through the `webmcp_call` step. It invokes one exact
@@ -448,6 +456,9 @@ Author-facing selector prefixes are `ref:`, `role:`, `text:`, `css:`, and leadin
 Keep the natural-language entry concise. Internal `fingerprint:` lock tokens are not author-facing
 selectors.
 
+CSS inference is heuristic. A tag name and a literal accessible name can be identical; use `css:`
+or `text:` to make the intended selector explicit.
+
 ### 3. Treat readiness as a semantic condition
 
 A changed URL or committed navigation is not application readiness. Attach a postcondition to the
@@ -471,6 +482,8 @@ For compatibility, an explicitly configured `nav_ms` also supplies the document 
 `flightplan config <flow> --json` shows effective deadlines and their sources. Strict
 `OwnerActionDriver` hosts enforce their own deadlines; named-session compatibility borrowers
 use the driver deadlines. See [execution policy and migration](docs/EXECUTION_POLICY.md).
+A timed-out navigation needs an after assertion with `exact` or `origin_path` URL matching to
+recover; destination content alone is insufficient.
 
 ### 4. Make assertions exact and scoped
 
@@ -480,10 +493,14 @@ Available text matches: `exact`, `contains`, `regex`.
 
 Use `css:h1` or `css:nav[aria-label='Main navigation']` for CSS assertion selectors. Bare attribute,
 ID and class selectors remain supported in assertions. Unprefixed CSS-looking names are rejected;
-use `text:` for literal text that resembles CSS. Invalid CSS fails the assertion. Valid selectors
-with no matches satisfy `hidden` and `count = 0`. Empty strings are valid for `fill` and `value`
-assertions, so clearing a field does not require a placeholder-based workaround.
-Use CSS for DOM element counts; semantic selectors count matching accessibility nodes.
+use `text:` for literal text that resembles CSS. `hidden`, `state = "hidden"`, and `count = 0`
+require an explicit selector such as `css:app-banner` or `text:Shipping notice`. A valid selector
+with no matches proves absence. CSS absence requires a driver that can query the live DOM.
+Empty strings are valid for `fill` and `value` assertions.
+Explicit `role:` and `text:` assertion selectors match the full accessible name, so `text:Paid`
+does not select `Unpaid`. Text assertion `match` controls the comparison after selection.
+Use CSS for DOM element counts; semantic selectors count matching accessibility nodes. A heading
+and a link with the same name count as two nodes.
 
 Use `state` for `enabled`, `disabled`, `checked`, `unchecked`, `selected`, `dialog`, `menu`, and
 `new_page`. Use `transition` for `url_changed`, `text_changed`, `value_changed`, and `state_changed`.
@@ -494,8 +511,9 @@ different tenant. Use a selector or landmark for every business-state assertion.
 
 ### 5. Arm popups on the trigger action
 
-Declare the popup on the step that opens it. Flightplan arms observation before dispatch and preserves
-the opener page:
+Declare the popup on the `click`, `fill`, `select`, or `ai_pick` step that opens it. Flightplan arms
+observation before dispatch and preserves the opener page. Other verbs, including `press`, reject
+popup declarations during loading:
 
 ```toml
 [[steps]]
@@ -661,6 +679,9 @@ advisor, AI assertions, and the L5 path-repair planner require `[config.ai] enab
 Ambient keys never grant permission. Explicit AI requirements in composed steps or setup/teardown
 hooks fail preflight before browser acquisition when AI is disabled. Cached extraction maps still
 replay without AI; an uncached selectorless extraction fails with an authoring diagnostic.
+
+Planner enablement is rejected when any prepared step, child flow, or setup/teardown hook contains
+an `at_most_once` effect.
 
 ### Bounded JEV profiles
 

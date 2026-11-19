@@ -100,7 +100,7 @@ async function readLock(flowPath: string, fs: FileSystemPort): Promise<LoadedLoc
 async function resolveImportInfo(
   loaded: LoadedFlow,
   fs: FileSystemPort,
-): Promise<ImportLintInfo | null> {
+): Promise<(ImportLintInfo & { modulePaths: readonly string[] }) | null> {
   const flow = loaded.flow;
   const runSteps = flow.steps.filter((s) => s.do === "run");
   const hasRefs =
@@ -144,9 +144,11 @@ async function resolveImportInfo(
   let cycle: string[] | null = null;
   let scope: ImportScopeModule[] | null = null;
   let executedFlows: ImportLintInfo["executedFlows"];
+  let modulePaths: readonly string[] = [];
   if (refs.every((r) => r.exists)) {
     try {
       const graph = await resolveImports(loaded, { fs, bindInputs: false });
+      modulePaths = [...graph.nodes.keys()].filter((path) => path !== loaded.path);
       // Annotate every direct ref with the referenced module's flow id + declared inputs.
       for (const ref of refs) {
         const node = graph.nodes.get(ref.resolved);
@@ -168,7 +170,13 @@ async function resolveImportInfo(
     }
   }
 
-  return { refs, cycle, scope, ...(executedFlows ? { executedFlows } : {}) };
+  return { refs, cycle, scope, modulePaths, ...(executedFlows ? { executedFlows } : {}) };
+}
+
+/** Keep graph membership alongside diagnostics so directory lint can identify entry roots. */
+interface LintFileAnalysis {
+  result: LintResult;
+  modulePaths: readonly string[];
 }
 
 /** Options for {@link lintFile}. */
@@ -226,12 +234,14 @@ export async function lintText(
   nominalPath: string,
   deps?: { fs?: FileSystemPort; cwd?: string },
 ): Promise<LintResult> {
-  return lintFileImpl(
-    nominalPath,
-    sourceText,
-    deps?.fs ?? (await defaultFileSystem()),
-    deps?.cwd ?? ambientCwd(),
-  );
+  return (
+    await lintFileImpl(
+      nominalPath,
+      sourceText,
+      deps?.fs ?? (await defaultFileSystem()),
+      deps?.cwd ?? ambientCwd(),
+    )
+  ).result;
 }
 
 /**
@@ -239,12 +249,14 @@ export async function lintText(
  * (unreadable file, bad TOML, schema violation) becomes a diagnostic.
  */
 export async function lintFile(path: string, opts?: LintFileOptions): Promise<LintResult> {
-  return lintFileImpl(
-    path,
-    opts?.sourceText,
-    opts?.fs ?? (await defaultFileSystem()),
-    opts?.cwd ?? ambientCwd(),
-  );
+  return (
+    await lintFileImpl(
+      path,
+      opts?.sourceText,
+      opts?.fs ?? (await defaultFileSystem()),
+      opts?.cwd ?? ambientCwd(),
+    )
+  ).result;
 }
 
 async function lintFileImpl(
@@ -252,7 +264,7 @@ async function lintFileImpl(
   sourceTextOverride: string | undefined,
   fs: FileSystemPort,
   cwd: string,
-): Promise<LintResult> {
+): Promise<LintFileAnalysis> {
   const file = isAbsolute(path) ? path : resolve(cwd, path);
   const baseDir = dirname(file);
 
@@ -265,14 +277,17 @@ async function lintFileImpl(
       sourceText = await fs.readTextFile(file);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      return tally(file, [
-        {
-          ruleId: "io/unreadable",
-          severity: "error",
-          message: `Could not read file: ${detail}`,
-          file,
-        },
-      ]);
+      return {
+        modulePaths: [],
+        result: tally(file, [
+          {
+            ruleId: "io/unreadable",
+            severity: "error",
+            message: `Could not read file: ${detail}`,
+            file,
+          },
+        ]),
+      };
     }
   }
 
@@ -290,23 +305,26 @@ async function lintFileImpl(
         : err instanceof Error
           ? err.message
           : String(err);
-    return tally(file, [
-      {
-        ruleId: "parse/toml-syntax",
-        severity: "error",
-        message: detail,
-        file,
-        ...(err instanceof TomlParseError &&
-        err.cause &&
-        typeof err.cause === "object" &&
-        "line" in err.cause &&
-        "column" in err.cause &&
-        typeof err.cause.line === "number" &&
-        typeof err.cause.column === "number"
-          ? { sourceRange: { line: err.cause.line, column: err.cause.column } }
-          : {}),
-      },
-    ]);
+    return {
+      modulePaths: [],
+      result: tally(file, [
+        {
+          ruleId: "parse/toml-syntax",
+          severity: "error",
+          message: detail,
+          file,
+          ...(err instanceof TomlParseError &&
+          err.cause &&
+          typeof err.cause === "object" &&
+          "line" in err.cause &&
+          "column" in err.cause &&
+          typeof err.cause.line === "number" &&
+          typeof err.cause.column === "number"
+            ? { sourceRange: { line: err.cause.line, column: err.cause.column } }
+            : {}),
+        },
+      ]),
+    };
   }
 
   // 2.5. Expand `for_each` steps on the RAW doc so every per-step rule sees concrete steps
@@ -347,13 +365,16 @@ async function lintFileImpl(
   };
 
   const schemaDiagnostics: Diagnostic[] = [];
+  let modulePaths: readonly string[] = [];
 
   if (declaredKind === FILE_KINDS[1]) {
     // flow
     try {
       const loaded = parseFlowFile(sourceText, file);
       ctx.flow = loaded.flow;
-      ctx.imports = await resolveImportInfo(loaded, fs);
+      const imports = await resolveImportInfo(loaded, fs);
+      ctx.imports = imports;
+      modulePaths = imports?.modulePaths ?? [];
       const loadedLock = await readLock(file, fs);
       ctx.lock = loadedLock?.info ?? null;
       ctx.lockDoc = loadedLock?.doc ?? null;
@@ -386,10 +407,12 @@ async function lintFileImpl(
     doc.steps.every(isRecord)
   ) {
     // Direct missing imports are independent of malformed sibling steps/schema keys.
-    ctx.imports = await resolveImportInfo(
+    const imports = await resolveImportInfo(
       { flow: doc as unknown as LoadedFlow["flow"], path: file, sourceText, sourceHash },
       fs,
     );
+    ctx.imports = imports;
+    modulePaths = imports?.modulePaths ?? [];
   }
 
   // 4. Run every rule.
@@ -415,7 +438,7 @@ async function lintFileImpl(
     );
     if (!duplicate) diagnostics.push(issue);
   }
-  return tally(file, enrichDiagnostics(diagnostics, sourceText));
+  return { result: tally(file, enrichDiagnostics(diagnostics, sourceText)), modulePaths };
 }
 
 /**
@@ -470,10 +493,36 @@ export async function expandPaths(
 
 /** Lint many paths (files, directories, or globs). Returns the aggregate result. */
 export async function lintPaths(paths: string[], opts?: LintFileOptions): Promise<MultiLintResult> {
-  const files = await expandPaths(paths, { fs: opts?.fs, cwd: opts?.cwd });
+  const fs = opts?.fs ?? (await defaultFileSystem());
+  const cwd = opts?.cwd ?? ambientCwd();
+  const files = await expandPaths(paths, { fs, cwd });
+  // Explicit file arguments always request standalone admission, even when a directory or
+  // another entry also references that file. Directory/glob members are composition modules.
+  const explicitEntries = new Set<string>();
+  for (const path of paths) {
+    if (/[*?[]/.test(path)) continue;
+    const abs = isAbsolute(path) ? path : resolve(cwd, path);
+    if (!(await fs.stat(abs))?.isDirectory) explicitEntries.add(abs);
+  }
+  const analyses: LintFileAnalysis[] = [];
+  for (const file of files) analyses.push(await lintFileImpl(file, opts?.sourceText, fs, cwd));
+  const referenced = new Set(analyses.flatMap((analysis) => analysis.modulePaths));
   const results: LintResult[] = [];
-  for (const f of files) {
-    results.push(await lintFile(f, opts));
+  for (const { result } of analyses) {
+    // Entry admission already checks the actual callable flows and hooks using the parent's
+    // policy. Keep each module's structural diagnostics without re-admitting it standalone.
+    results.push(
+      referenced.has(result.file) && !explicitEntries.has(result.file)
+        ? tally(
+            result.file,
+            result.diagnostics.filter(
+              (item) =>
+                item.ruleId !== "ai/explicit-permission" &&
+                item.ruleId !== "effect/path-repair-at-most-once",
+            ),
+          )
+        : result,
+    );
   }
   let errorCount = 0;
   let warningCount = 0;

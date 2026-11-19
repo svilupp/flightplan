@@ -32,6 +32,7 @@ import { checkFlow } from "../inspection/check.ts";
 import { InvocationError } from "../invocation/index.ts";
 import { formatHuman, formatJson, lintPaths } from "../lint/index.ts";
 import { resolve } from "../paths.ts";
+import { RunControl } from "../runner/control.ts";
 import {
   type DriverFactory,
   RunInterruptedError,
@@ -168,8 +169,8 @@ export function validateCommandArgs(args: ParsedArgs): void {
   const values: Array<[string, boolean]> = [
     ["--json", args.json],
     ["--deny-warnings", args.denyWarnings],
-    ["--inputs", args.inputs.length > 0],
-    ["--input-envs", args.inputEnvs.length > 0],
+    ["--input", args.inputs.length > 0],
+    ["--input-env", args.inputEnvs.length > 0],
     ["--inputs-file", args.inputsFile !== null],
     ["--idempotency-key", args.idempotencyKey !== null],
     ["--session", args.session !== null],
@@ -205,6 +206,10 @@ export function validateCommandArgs(args: ParsedArgs): void {
 
 function flagField(name: string): string {
   switch (name) {
+    case "--input":
+      return "inputs";
+    case "--input-env":
+      return "inputEnvs";
     case "--no-lock-write":
       return "noLockWrite";
     case "--start-tier":
@@ -723,9 +728,11 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
   // so the entry flow's [connect] (or the attach-localhost:9222 default) is authoritative and
   // imported flows' [connect] blocks are intentionally ignored.
   let config: ResolvedConfig;
+  let flowSource: string;
   let inputs: InputValues | undefined;
   try {
     const loaded = await loadFlowFile(flowPath, io.fs);
+    flowSource = loaded.sourceText;
     inputs = await readCliInputs(args, loaded.flow, io);
     const layers: Config[] = [];
     if (loaded.flow.config) layers.push(loaded.flow.config);
@@ -762,6 +769,7 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
   }
 
   const runOpts: RunOptions = {
+    flowSource,
     flowPath,
     cwd: io.cwd,
     config,
@@ -804,7 +812,7 @@ export async function executeRun(argv: string[], io: CommandIO): Promise<{ exitC
     result = await runFlow(runOpts);
   } catch (err) {
     if (err instanceof RunInterruptedError) {
-      commandError(argv, io, err.code, `flightplan run: ${err.message}`);
+      commandError(argv, io, err.code, `flightplan run: ${err.message} (cleanup: ${err.cleanup}).`);
       return { exitCode: err.code === "RUN_TIMEOUT" ? EXIT.deadline : EXIT.cancelled };
     }
     if (err && typeof err === "object" && "runResult" in err) {
@@ -869,14 +877,16 @@ export async function executeDiscovery(
 /** Current-page inspection. Explicit named borrowing is required for browser observations. */
 export async function executeCheck(argv: string[], io: CommandIO): Promise<{ exitCode: number }> {
   let driver: import("../driver/types.ts").Driver | undefined;
+  const control = new RunControl({ signal: io.signal, timeoutMs: io.timeoutMs });
+  const fs = control.guard(io.fs, "fs");
   try {
     const args = parseArgs(argv);
     validateCommandArgs(args);
     const flowPath = resolve(io.cwd, args.positionals[0]!);
-    const loaded = await loadFlowFile(flowPath, io.fs);
-    const inputs = await readCliInputs(args, loaded.flow, io);
+    const loaded = await control.wait(() => loadFlowFile(flowPath, fs));
+    const inputs = await control.wait(() => readCliInputs(args, loaded.flow, { ...io, fs }));
     // Binding and dependency validation precede connection acquisition.
-    const initial = await checkFlow({ flowPath, inputs, env: io.env, fs: io.fs });
+    const initial = await control.wait(() => checkFlow({ flowPath, inputs, env: io.env, fs }));
     if (
       initial.diagnostics.some((diagnostic) => diagnostic.severity === "error") ||
       initial.items.some((item) => item.status === "failed")
@@ -895,20 +905,40 @@ export async function executeCheck(argv: string[], io: CommandIO): Promise<{ exi
         io.namedSessionBorrower ?? nativeNamedSessionBorrower,
         { providerEnv: io.env },
       );
-      driver = adapter.factory(connection, { signal: io.signal ?? new AbortController().signal });
+      driver = control.attach(
+        adapter.factory(connection, { signal: control.signal, deadline: control.deadline }),
+      );
       await driver.connect(connection);
     }
     const report = driver
-      ? await checkFlow({ flowPath, inputs, env: io.env, fs: io.fs, driver })
+      ? await control.wait(() => checkFlow({ flowPath, inputs, env: io.env, fs, driver }))
       : initial;
     if (driver?.teardown) {
       const acquired = driver;
       driver = undefined;
-      await acquired.teardown();
+      await control.wait(() => acquired.teardown());
     }
+    control.check();
     io.stdout(JSON.stringify(report, null, 2));
     return { exitCode: report.ok ? EXIT.ok : EXIT.failed };
   } catch (error) {
+    const interruption = control.interruptedError;
+    if (interruption) {
+      // RunControl owns bounded cleanup, including a connect that settles after cancellation.
+      driver = undefined;
+      try {
+        await control.interrupted(error);
+      } catch {
+        // The same interruption now carries the cleanup outcome.
+      }
+      commandError(
+        argv,
+        io,
+        interruption.code,
+        `flightplan check: ${interruption.message} (cleanup: ${interruption.cleanup}).`,
+      );
+      return { exitCode: interruption.code === "RUN_TIMEOUT" ? EXIT.deadline : EXIT.cancelled };
+    }
     if (error instanceof InputBindingError && argv.includes("--json")) {
       io.stdout(
         JSON.stringify(
@@ -935,5 +965,6 @@ export async function executeCheck(argv: string[], io: CommandIO): Promise<{ exi
       await driver
         .teardown()
         .catch(() => io.stderr("flightplan check: session cleanup was not confirmed"));
+    control.dispose();
   }
 }

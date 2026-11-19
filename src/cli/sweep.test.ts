@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memoryFileSystem } from "../adapters/memory.ts";
 import { MockDriver } from "../driver/mock-driver.ts";
+import { RunInterruptedError } from "../runner/control.ts";
 import { runFlow } from "../runner/runner.ts";
 import type { RunOptions, RunResult } from "../runner/types.ts";
 import { type CommandIO, parseArgs, validateCommandArgs } from "./commands.ts";
@@ -131,6 +132,7 @@ test("bad inputs in the last flow stop sweep before any run", async () => {
   ).toBe(2);
   expect(runs).toBe(0);
   expect(output.join("\n")).toContain("token");
+  expect(output.join("\n")).toContain("/flows/b.toml");
 });
 
 test("disabled AI baseline is reported without downgrading or dispatching it", async () => {
@@ -275,6 +277,34 @@ test("native sweeps preserve driver recording while pinning sources", async () =
   }
 });
 
+test("overlapping native sweeps cannot dispatch into the same campaign", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "flightplan-sweep-exclusive-"));
+  try {
+    const path = join(dir, "flow.toml");
+    await writeFile(
+      path,
+      'version=1\nkind="flow"\nid="same"\ndescription="concurrent"\n[[steps]]\nid="wait"\ndo="wait"\nms=0',
+    );
+    const args = parseArgs(["sweep", path, "-o", join(dir, "campaign")]);
+    let dispatched = 0;
+    const trial = async () => {
+      dispatched++;
+      await Bun.sleep(5);
+      return { exitCode: 0 };
+    };
+    expect(
+      (await Promise.all([runSweep(args, trial), runSweep(args, trial)])).sort((a, b) => a - b),
+    ).toEqual([0, 2]);
+    expect(dispatched).toBe(1);
+    expect(JSON.parse(await readFile(join(dir, "campaign/sweep.json"), "utf8"))).toMatchObject({
+      passed: 1,
+      notPassed: 0,
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("secret env bindings work in sweep and thrown details stay out of its manifest", async () => {
   const { io, output } = fixture();
   io.env.TOKEN = "secret-sweep-canary";
@@ -307,4 +337,68 @@ test("secret env bindings work in sweep and thrown details stay out of its manif
   const manifest = await io.fs.readTextFile("/campaign/sweep.json");
   expect(manifest).toContain('"notPassed": 1');
   expect(manifest + output.join("\n")).not.toContain("secret-sweep-canary");
+});
+
+test("sweep propagates the active run interruption and never schedules another trial", async () => {
+  const { io, output } = fixture();
+  const controller = new AbortController();
+  io.signal = controller.signal;
+  await io.fs.writeTextFile("/flows/a.toml", flow("a", ""));
+  await io.fs.writeTextFile("/flows/b.toml", flow("b", ""));
+  const interruption = new RunInterruptedError("cancelled");
+  interruption.cleanup = "failed";
+  let calls = 0;
+  await expect(
+    runSweep(
+      parseArgs(["sweep", "/flows", "--input", "origin=https://example.test", "--trials", "2"]),
+      async (options) => {
+        calls++;
+        expect(options.signal).toBe(controller.signal);
+        controller.abort();
+        throw interruption;
+      },
+      io,
+    ),
+  ).rejects.toBe(interruption);
+  expect(calls).toBe(1);
+  expect(output.join("\n")).not.toContain("did not pass");
+  expect(output.join("\n")).not.toContain("Sweep complete");
+});
+
+test("sweep stops between units even when an adapter returns after cancellation", async () => {
+  const { io } = fixture();
+  const controller = new AbortController();
+  io.signal = controller.signal;
+  await io.fs.writeTextFile("/flows/a.toml", flow("a", ""));
+  let calls = 0;
+  await expect(
+    runSweep(
+      parseArgs(["sweep", "/flows", "--input", "origin=https://example.test", "--trials", "2"]),
+      async () => {
+        calls++;
+        controller.abort();
+        return { exitCode: 0 };
+      },
+      io,
+    ),
+  ).rejects.toMatchObject({ code: "RUN_CANCELLED", cleanup: "completed" });
+  expect(calls).toBe(1);
+});
+
+test("pre-aborted sweep does not prepare or claim a campaign", async () => {
+  const { io } = fixture();
+  const controller = new AbortController();
+  controller.abort();
+  io.signal = controller.signal;
+  await io.fs.writeTextFile("/flows/a.toml", flow("a", ""));
+  await expect(
+    runSweep(
+      parseArgs(["sweep", "/flows", "--input", "origin=https://example.test", "-o", "/campaign"]),
+      async () => {
+        throw new Error("unexpected dispatch");
+      },
+      io,
+    ),
+  ).rejects.toMatchObject({ code: "RUN_CANCELLED", cleanup: "completed" });
+  expect(await io.fs.stat("/campaign")).toBeNull();
 });

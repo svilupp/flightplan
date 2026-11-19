@@ -55,6 +55,7 @@ import {
   type AssertClock,
   type AssertContext,
   type AssertionResult,
+  assertionPhase,
   runAssertions,
 } from "../assert/index.ts";
 import { type ExecutionPolicy, ExecutionPolicyError } from "../config/execution-policy.ts";
@@ -85,6 +86,8 @@ import type {
 import { selectorUsedToStrategy } from "../driver/index.ts";
 import { KeyboardPreflightError } from "../driver/keyboard.ts";
 import { NavigationFailure } from "../driver/navigation.ts";
+import { InvalidSelectorError } from "../driver/normalize-selector.ts";
+import { OwnerActionError } from "../driver/owner-actions.ts";
 import type { ImportGraph } from "../flow/imports.ts";
 import { type InputValues, isInputJson } from "../flow/input.ts";
 import { computeSourceHash } from "../flow/load.ts";
@@ -128,7 +131,7 @@ import {
   type SessionImport,
 } from "../lock/index.ts";
 import { dirname, isAbsolute, relative as relativePath, resolve as resolvePath } from "../paths.ts";
-import { createRedactor, REDACTED, type Redactor } from "../redaction/index.ts";
+import { createRedactor, gatherSecretValues, REDACTED, type Redactor } from "../redaction/index.ts";
 import { ambientEnv, type FileSystemPort } from "../runtime.ts";
 import {
   aiCallEventAttrs,
@@ -210,6 +213,29 @@ export const systemRunClock: RunClock = {
   now: () => Date.now(),
   sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+
+// A raced wait must release its timer as well, or a cancelled CLI can stay alive for minutes.
+function interruptibleRunClock(signal: AbortSignal): RunClock {
+  return {
+    now: () => systemRunClock.now(),
+    sleep: (ms) =>
+      new Promise<void>((resolve, reject) => {
+        const abort = (): void => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        };
+        const timer = setTimeout(() => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        }, ms);
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) {
+          signal.removeEventListener("abort", abort);
+          abort();
+        }
+      }),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Step-do groupings
@@ -435,7 +461,7 @@ async function maybePersistScreenshot(
     return; // fail-closed: never persist a secret-adjacent frame to disk.
   }
   const idx = services.shotIndex.n++;
-  const path = `${services.screenshotsDir}/${String(idx).padStart(3, "0")}-${step.id}.png`;
+  const path = `${services.screenshotsDir}/${String(idx).padStart(3, "0")}-${encodeURIComponent(step.id)}.png`;
   try {
     let saved: string | null;
     if (services.mediaFs) {
@@ -1756,6 +1782,7 @@ async function executeSteps(
   // Per-step re-entry counter: how many times control has JUMPED into each step id. Bounded by the
   // failing step's `on_fail.max` so a self-retry / recovery loop can never spin forever.
   const reentries = new Map<string, number>();
+  const protectedDispatches = new Set<Step>();
   // Vision batching (PLAN_v003 §4 v003-3): pre-resolved `LadderResult`s keyed by step id, populated
   // ONCE when the loop first reaches the head of a ≥2-step same-page vision batch (the shared
   // screenshot + vision call + acts all happen there). Each entry is consumed (deleted) when its
@@ -1783,6 +1810,7 @@ async function executeSteps(
         captures: state.captures,
       }),
     );
+    services.redactor.addSecrets(gatherSecretValues([step], services.inputs));
 
     const stepAssertCtx =
       "__boundary" in step || step.do === "yield"
@@ -1826,6 +1854,11 @@ async function executeSteps(
       const targetId = onFail.goto === "self" ? step.id : onFail.goto;
       const targetIndex = idToIndex.get(targetId);
       if (targetIndex === undefined) return null; // unknown target (the linter flags this) → fail
+      if (
+        targetIndex <= cursor &&
+        steps.slice(targetIndex, cursor + 1).some((candidate) => protectedDispatches.has(candidate))
+      )
+        return null;
       const max = onFail.max ?? DEFAULT_ON_FAIL_MAX;
       const entered = reentries.get(targetId) ?? 0;
       if (entered >= max) return null; // re-entry budget exhausted → fail the run normally
@@ -1874,6 +1907,7 @@ async function executeSteps(
       services.activeSpan.current = services.runSpan;
     };
 
+    let performedAction: StepActionOutcome | undefined;
     try {
       setGuardStep(driver, step);
       if (driver.setDialogPolicy) {
@@ -1992,14 +2026,27 @@ async function executeSteps(
         if (err instanceof RunInterruptedError) throw err;
         // Any other driver/ladder throw is an INFRA error → abort the run with verdict `error`.
         const detail = err instanceof Error ? err.message : String(err);
+        const unsupportedOptions =
+          err instanceof OwnerActionError && err.reason === "action_options_unsupported";
         action = {
           ok: false,
-          error: detail,
-          ...(err instanceof GuardBlockedError ? { dispatchState: "not_dispatched" as const } : {}),
+          error: unsupportedOptions
+            ? "Owner host does not support action options such as timeout_ms."
+            : detail,
+          ...(unsupportedOptions
+            ? { dispatchState: err.dispatchState, retrySafe: false }
+            : err instanceof GuardBlockedError
+              ? { dispatchState: "not_dispatched" as const }
+              : {}),
         };
-        state.runError = `step ${step.id} threw: ${detail}`;
-        state.aborted = true;
+        if (!unsupportedOptions) {
+          state.runError = `step ${step.id} threw: ${detail}`;
+          state.aborted = true;
+        }
       }
+      performedAction = action;
+      if (step.effect === "at_most_once" && action.dispatchState !== "not_dispatched")
+        protectedDispatches.add(rawStep);
 
       // L4 advisory verdict (Phase 4). The step still counts as failed (the advisor never acts);
       // we capture the verdict to act on after the loop and to annotate the summary. It NEVER
@@ -2075,9 +2122,18 @@ async function executeSteps(
 
       const rescuePassed =
         !action.ok &&
+        action.popup?.matched !== false &&
         (action.dispatchState === "dispatched" || action.dispatchState === "uncertain") &&
         afterDeterministicCount > 0 &&
-        afterDeterministicFailed === 0;
+        afterDeterministicFailed === 0 &&
+        (step.do !== "goto" ||
+          step.assert?.some(
+            (assertion) =>
+              assertion.type === "url" &&
+              assertion.url === step.url &&
+              (assertion.match === "exact" || assertion.match === "origin_path") &&
+              assertionPhase(assertion) === "after",
+          ) === true);
       const transportAmbiguous = rescuePassed || action.transportAmbiguous === true;
       const criticalPossibleDispatch = action.dispatchState !== "not_dispatched";
       if (!action.ok && !rescuePassed) {
@@ -2292,6 +2348,38 @@ async function executeSteps(
 
       cursor += 1;
     } catch (err) {
+      if (err instanceof InvalidSelectorError) {
+        const detail = services.redactor.redactText(`invalid selector: ${err.message}`);
+        const dispatchState =
+          performedAction === undefined
+            ? "not_dispatched"
+            : (performedAction.dispatchState ?? (performedAction.ok ? "dispatched" : "uncertain"));
+        const metadata: StepActionOutcome = {
+          ...performedAction,
+          ok: false,
+          dispatchState,
+          retrySafe: false,
+        };
+        state.verdictFailed = true;
+        state.failedStep ??= step.id;
+        state.aborted = true;
+        if (
+          step.effect === "at_most_once" &&
+          dispatchState !== "not_dispatched" &&
+          !performedAction?.ok
+        )
+          state.inconclusiveReason = `${detail}; the at-most-once effect may have dispatched`;
+        const durationMs = clock.now() - stepStart;
+        await emitStepEnd(writers, step.id, false, durationMs, {
+          ...metadata,
+          healed: false,
+          error: detail,
+          ...(step.effect !== undefined ? { effect: step.effect } : {}),
+        });
+        recordStepSummary(state, step, false, metadata.tier, detail, false, durationMs, metadata);
+        endStep(false, durationMs, false, metadata.tier);
+        break;
+      }
       // A budget overflow anywhere in the step (action OR a routed ai_judge assertion): fail fast
       // with `inconclusive`, recording this step as partial evidence (a step_end + summary row).
       if (isBudgetExceeded(err)) {
@@ -2705,7 +2793,7 @@ export async function runFlow(opts: RunOptions): Promise<RunResult> {
           ...opts,
           signal: control.signal,
           fs: control.guard(fs, "fs"),
-          clock: control.guard(opts.clock ?? systemRunClock, "clock"),
+          clock: control.guard(opts.clock ?? interruptibleRunClock(control.signal), "clock"),
           driverFactory: (cfg) => {
             control.check();
             return control.attach(
@@ -3040,9 +3128,15 @@ async function runFlowImpl(
   // The produced video path (opt-in `[browser] record`), collected in the finally before teardown.
   let videoPath: string | null = null;
   let cleanupFailure: unknown;
+  let connected = false;
+  let entryAdmitted = false;
+  let recordingStarted = false;
 
   try {
-    if (!state.aborted) await driver.connect(connectCfg);
+    if (!state.aborted) {
+      await driver.connect(connectCfg);
+      connected = true;
+    }
     // --- (3.1) apply [config.auth] (Cloudflare Access wiring) BEFORE the setup hook / first goto ---
     // Feature-detected: a driver built against a browser-pilot release predating
     // `setExtraHTTPHeaders`/`mintCfAccessJwt` simply skips this (no `[config.auth]` support). An
@@ -3081,6 +3175,7 @@ async function runFlowImpl(
     if (!state.aborted && !injectedFs && services.record && driver.startRecording) {
       try {
         await driver.startRecording({ dir: runDir.screenshotsDir });
+        recordingStarted = true;
       } catch {
         // recording is best-effort — a start failure degrades to no capture, never fails the run.
       }
@@ -3103,6 +3198,8 @@ async function runFlowImpl(
         services,
       );
     }
+
+    entryAdmitted = !state.aborted;
 
     // --- (4) setup hook (referenced flow) ---
     if (loaded.flow.setup && !state.aborted) {
@@ -3162,8 +3259,7 @@ async function runFlowImpl(
 
     // --- (5.6) re-save the saved-auth-state cookie snapshot after a successful run, when
     // `[config.auth].cookie_save` is on (SAME success gate as the lock flush above, PLUS
-    // `!state.aborted` — deliberately: an aborted run never even connected/applied auth, so there
-    // is nothing fresh worth capturing) ---
+    // `!state.aborted` so only a successfully completed main flow refreshes saved auth) ---
     // Runs BEFORE the flow `teardown` hook (6), since teardown may log out / clear cookies.
     if (
       !state.aborted &&
@@ -3185,12 +3281,20 @@ async function runFlowImpl(
         onWarn(`flightplan: auth state save failed (non-fatal): ${detail}`);
       }
     }
-
-    // --- (6) teardown hook (best-effort; runs even after a step failure, before driver teardown) ---
-    if (loaded.flow.teardown && !state.aborted) {
-      // Teardown runs on its own fresh sub-state so its (best-effort) outcome does not corrupt
-      // the main run verdict; failures are not folded into the main state.
-      const teardownState: RunState = freshRunState();
+  } catch (err) {
+    // A cancellation/deadline is an embedding error, not a harness failure — propagate it so the
+    // `runFlow` wrapper's `control.interruptedError` check maps it to a `RunInterruptedError`,
+    // never a `runError`/`error` verdict.
+    if (err instanceof RunInterruptedError) throw err;
+    if (err && typeof err === "object" && "providerCleanup" in err) cleanupFailure = err;
+    // connect() or a fatal harness error → verdict `error` (not a flow `failed`).
+    const detail = err instanceof Error ? err.message : String(err);
+    state.runError = state.runError ?? `connect/harness error: ${detail}`;
+  } finally {
+    // Ordinary flow failure still needs its hook. Cancellation fences new hook mutations;
+    // RunControl owns bounded driver cleanup on that path.
+    if (loaded.flow.teardown && connected && entryAdmitted && !opts.signal?.aborted) {
+      const teardownState = freshRunState();
       try {
         await runHookFlow(
           loaded.flow.teardown,
@@ -3208,23 +3312,22 @@ async function runFlowImpl(
           fs,
           opts.cwd,
         );
-      } catch {
-        // teardown is best-effort — never let it turn a good run into an error.
+        if (computeVerdict(teardownState) !== "passed")
+          onWarn(
+            "flightplan: teardown flow did not complete successfully (main verdict preserved)",
+          );
+      } catch (error) {
+        if (!opts.signal?.aborted) {
+          const detail = error instanceof Error ? error.message : String(error);
+          onWarn(
+            `flightplan: teardown flow failed (main verdict preserved): ${redactor.redactText(detail)}`,
+          );
+        }
       }
     }
-  } catch (err) {
-    // A cancellation/deadline is an embedding error, not a harness failure — propagate it so the
-    // `runFlow` wrapper's `control.interruptedError` check maps it to a `RunInterruptedError`,
-    // never a `runError`/`error` verdict.
-    if (err instanceof RunInterruptedError) throw err;
-    if (err && typeof err === "object" && "providerCleanup" in err) cleanupFailure = err;
-    // connect() or a fatal harness error → verdict `error` (not a flow `failed`).
-    const detail = err instanceof Error ? err.message : String(err);
-    state.runError = state.runError ?? `connect/harness error: ${detail}`;
-  } finally {
     // --- (6.5) stop recording BEFORE teardown so the driver can finalize any video artifact ---
     // `null` (no single webm produced) is the graceful-degrade case — frames may still be on disk.
-    if (!state.aborted && !injectedFs && services.record && driver.stopRecording) {
+    if (recordingStarted && !opts.signal?.aborted && driver.stopRecording) {
       try {
         videoPath = (await driver.stopRecording()) ?? null;
       } catch {
@@ -3764,6 +3867,16 @@ function buildSummary(
   return {
     summary_version: 1,
     verdict,
+    ...(verdict === "inconclusive"
+      ? {
+          inconclusive_reason: redactor.redactText(
+            state.inconclusiveReason ??
+              (state.budgetExceeded
+                ? `budget exceeded: ${state.budgetExceeded}`
+                : "run outcome could not be established"),
+          ),
+        }
+      : {}),
     flow_id: flowId,
     run_id: runDir.runId,
     run_dir: runDir.dir,

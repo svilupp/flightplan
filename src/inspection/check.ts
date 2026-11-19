@@ -99,8 +99,8 @@ export async function checkFlow(options: {
       }
       try {
         const result = await runAssertion(
-          { ...assertion, timeout_ms: 1 },
-          { driver, defaultTimeoutMs: 1, mode: "deferred", failOnAssertion: true },
+          { ...assertion, timeout_ms: 0 },
+          { driver, defaultTimeoutMs: 0, mode: "deferred", failOnAssertion: true },
         );
         report.items.push({
           code: "ENTRY_CONDITION",

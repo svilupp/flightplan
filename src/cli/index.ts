@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { nodeFileSystem } from "../adapters/node/index.ts";
 import { loadFlowFile } from "../flow/index.ts";
 import { NodeInvocationStore } from "../invocation/node.ts";
+import { RunInterruptedError } from "../runner/control.ts";
 import {
   CliUsageError,
   type CommandIO,
@@ -126,25 +127,25 @@ export async function runMigrateEffects(args: ParsedArgs): Promise<number> {
   }
 }
 
-async function dispatch(argv: string[], args: ParsedArgs): Promise<number> {
+async function dispatch(argv: string[], args: ParsedArgs, io: CommandIO): Promise<number> {
   switch (args.command) {
     case "check":
-      return (await executeCheck(argv, nodeCommandIO())).exitCode;
+      return (await executeCheck(argv, io)).exitCode;
     case "list":
     case "describe":
-      return (await executeDiscovery(argv, nodeCommandIO())).exitCode;
+      return (await executeDiscovery(argv, io)).exitCode;
     case "config":
-      return executeConfig(args.positionals[0]!, nodeCommandIO());
+      return executeConfig(args.positionals[0]!, io);
     case "lint":
-      return (await executeLint(argv, nodeCommandIO())).exitCode;
+      return (await executeLint(argv, io)).exitCode;
     case "run":
-      return (await executeRun(argv, nodeCommandIO())).exitCode;
+      return (await executeRun(argv, io)).exitCode;
     case "explain":
       return runExplain(args);
     case "report":
       return runReport(args);
     case "sweep":
-      return runSweep(args);
+      return runSweep(args, undefined, io);
     case "migrate-effects":
       return runMigrateEffects(args);
     case null:
@@ -154,8 +155,55 @@ async function dispatch(argv: string[], args: ParsedArgs): Promise<number> {
   }
 }
 
-/** Entrypoint. Resolves to the process exit code; never calls process.exit itself. */
-export async function main(argv: string[]): Promise<number> {
+async function dispatchWithSignals(
+  argv: string[],
+  args: ParsedArgs,
+  io: CommandIO,
+): Promise<number> {
+  const controller = new AbortController();
+  let receivedSignal: "SIGINT" | "SIGTERM" | undefined;
+  const interrupt = (signal: "SIGINT" | "SIGTERM"): void => {
+    if (receivedSignal !== undefined) return;
+    receivedSignal = signal;
+    controller.abort();
+  };
+  const onInterrupt = (): void => interrupt("SIGINT");
+  const onTerminate = (): void => interrupt("SIGTERM");
+  const onExternalAbort = (): void => controller.abort(io.signal?.reason);
+  process.on("SIGINT", onInterrupt);
+  process.on("SIGTERM", onTerminate);
+  io.signal?.addEventListener("abort", onExternalAbort, { once: true });
+  if (io.signal?.aborted) onExternalAbort();
+  try {
+    let exitCode: number;
+    try {
+      exitCode = await dispatch(argv, args, { ...io, signal: controller.signal });
+    } catch (error) {
+      if (!(error instanceof RunInterruptedError)) throw error;
+      const message = `flightplan ${args.command}: ${error.message} (cleanup: ${error.cleanup}).`;
+      if (args.json)
+        io.stdout(
+          JSON.stringify({
+            ok: false,
+            diagnostics: [{ code: error.code, severity: "error", message }],
+          }),
+        );
+      else io.stderr(message);
+      exitCode = error.code === "RUN_TIMEOUT" ? EXIT.deadline : EXIT.cancelled;
+    }
+    return receivedSignal === "SIGTERM" ? 143 : receivedSignal === "SIGINT" ? 130 : exitCode;
+  } finally {
+    process.removeListener("SIGINT", onInterrupt);
+    process.removeListener("SIGTERM", onTerminate);
+    io.signal?.removeEventListener("abort", onExternalAbort);
+  }
+}
+
+/**
+ * Resolve a native CLI command to its exit code and dispose scoped signal handlers.
+ * The optional host ports keep process lifecycle behavior testable without a browser.
+ */
+export async function main(argv: string[], io: CommandIO = nodeCommandIO()): Promise<number> {
   let args: ParsedArgs;
   try {
     args = parseArgs(argv);
@@ -207,7 +255,9 @@ export async function main(argv: string[]): Promise<number> {
     throw err;
   }
 
-  return dispatch(argv, args);
+  return args.command === "run" || args.command === "check" || args.command === "sweep"
+    ? dispatchWithSignals(argv, args, io)
+    : dispatch(argv, args, io);
 }
 
 // Only run when invoked directly (not when imported by a test). This explicit Node-compatible

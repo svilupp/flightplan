@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Step, TargetNotFoundError } from "browser-pilot";
+import { type Step, TargetNotFoundError, TimeoutError } from "browser-pilot";
 import { CookieStateError } from "browser-pilot/core";
 import { createGuardedDriver } from "../guard/driver.ts";
 import { BrowserPilotDriver, getBrowserPilotProvenance } from "./browser-pilot-driver.ts";
@@ -200,6 +200,56 @@ test("settle failures retain their phase and independent deadline", async () => 
     timeoutMs: 700,
   } satisfies Partial<NavigationFailure>);
 });
+
+test("definitive document rejection stays distinct from a navigation timeout", async () => {
+  const driver = new BrowserPilotDriver();
+  const rejected = new Error("Cannot navigate to invalid URL");
+  seedDriver(driver, {}, {
+    goto: async () => {
+      throw rejected;
+    },
+  } as unknown as Page);
+  await expect(driver.goto("http://[invalid")).rejects.toBe(rejected);
+  seedDriver(driver, {}, {
+    goto: async () => {
+      throw new TimeoutError("Navigation timed out");
+    },
+  } as unknown as Page);
+  await expect(driver.goto("https://example.test")).rejects.toMatchObject({
+    code: "NAVIGATION_FAILED",
+  });
+});
+
+test.each(["wanted", "other"])(
+  "observing a foreign popup %s does not grant teardown ownership",
+  async (targetId) => {
+    const driver = new BrowserPilotDriver();
+    const closed: string[] = [];
+    const popup = testPage("other", { openerTargetId: "user", type: "page" });
+    seedDriver(
+      driver,
+      {
+        expectNewPage: async () => popup,
+        cdpClient: {
+          send: async (method: string, args: { targetId?: string }) => {
+            if (method === "Target.getTargets")
+              return { targetInfos: [{ targetId: "other", openerId: "user", type: "page" }] };
+            if (method === "Target.closeTarget" && args.targetId) closed.push(args.targetId);
+            return {};
+          },
+        },
+        disconnect: async () => {},
+      },
+      testPage("owned", {}),
+    );
+    Object.assign(driver, {
+      connection: { kind: "attach", foreground: false, openedTargetIds: ["owned"] },
+    });
+    await driver.expectNewPage({ openerTargetId: "user", targetId }, async () => {});
+    await driver.teardown();
+    expect(closed).toEqual(["owned"]);
+  },
+);
 
 describe("BrowserPilotDriver popup integration", () => {
   test("passes opener and target filters, then switches to the pinned popup once", async () => {

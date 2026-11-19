@@ -24,7 +24,7 @@ import { resolveConfigWithDefaults } from "../config/index.ts";
 import { loadFlowFile } from "../flow/index.ts";
 import { InputBindingError } from "../flow/input.ts";
 import { expandPaths } from "../lint/index.ts";
-import { type RunOptions, runFlow } from "../runner/index.ts";
+import { RunInterruptedError, type RunOptions, runFlow } from "../runner/index.ts";
 import { prepareRun } from "../runner/prepare.ts";
 import { type CommandIO, type ParsedArgs, readCliInputs } from "./commands.ts";
 
@@ -157,7 +157,8 @@ async function executeSweepUnit(
       ...(unit.arm === "baseline" ? { startTier: "L3" } : {}),
     });
     return { ...unit, ok: result.exitCode === 0, exitCode: result.exitCode };
-  } catch {
+  } catch (failure) {
+    if (failure instanceof RunInterruptedError) throw failure;
     // A thrown adapter error can contain bound secrets. Detailed redacted evidence belongs to the run.
     return { ...unit, ok: false, error: "Run could not complete; inspect its redacted artifacts." };
   }
@@ -177,9 +178,18 @@ export async function runSweepUnit(
       await prepareSweepFlow(unit.flowPath, baseArgs, nativeIo()),
       runFlowFn,
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof RunInterruptedError) throw error;
     return { ...unit, ok: false, error: "Flow inputs or dependencies could not be prepared." };
   }
+}
+
+// These scheduling boundaries have no active runner or browser acquisition to clean up.
+function checkCancellation(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  const error = new RunInterruptedError("cancelled");
+  error.cleanup = "completed";
+  throw error;
 }
 
 /** Summary line for a single sweep unit result, used in both progress + final logging. */
@@ -202,6 +212,7 @@ export async function runSweep(
   runFlowFn: (opts: RunOptions) => Promise<{ exitCode: number }> = runFlow,
   io: CommandIO = nativeIo(),
 ): Promise<number> {
+  checkCancellation(io.signal);
   const flowsPath = args.positionals[0];
   if (flowsPath === undefined) {
     io.stderr("flightplan sweep: expected a flows directory (or glob).");
@@ -213,6 +224,7 @@ export async function runSweep(
   try {
     flowPaths = await expandPaths([flowsPath], { fs: io.fs, cwd: io.cwd });
   } catch (err) {
+    checkCancellation(io.signal);
     const detail =
       err instanceof InputBindingError
         ? err.message
@@ -220,6 +232,7 @@ export async function runSweep(
     io.stderr(`flightplan sweep: ${detail}`);
     return 2;
   }
+  checkCancellation(io.signal);
   if (flowPaths.length === 0) {
     io.stderr(`flightplan sweep: no .toml flow files matched ${JSON.stringify(flowsPath)}.`);
     return 2;
@@ -228,8 +241,10 @@ export async function runSweep(
   const pathsById = new Map<string, string>();
   const preparedFlows: PreparedSweepFlow[] = [];
   for (const p of flowPaths) {
+    checkCancellation(io.signal);
     try {
       const prepared = await prepareSweepFlow(p, args, io);
+      checkCancellation(io.signal);
       const artifactId = prepared.flowId.normalize("NFC").toLowerCase();
       if (
         !artifactId ||
@@ -241,7 +256,7 @@ export async function runSweep(
         /[.\s]$/.test(artifactId)
       ) {
         io.stderr(
-          `flightplan sweep: Flow id ${JSON.stringify(prepared.flowId)} cannot name a campaign artifact directory.`,
+          `flightplan sweep: Flow id ${JSON.stringify(prepared.flowId)} in ${p} cannot name a campaign artifact directory.`,
         );
         return 2;
       }
@@ -255,6 +270,8 @@ export async function runSweep(
       pathsById.set(artifactId, p);
       preparedFlows.push(prepared);
     } catch (err) {
+      if (err instanceof RunInterruptedError) throw err;
+      checkCancellation(io.signal);
       const detail =
         err instanceof InputBindingError
           ? err.message
@@ -264,6 +281,7 @@ export async function runSweep(
     }
   }
 
+  checkCancellation(io.signal);
   const campaignDir =
     args.out !== null ? args.out : join(".flightplan-runs", `sweep-${Date.now()}`);
   const absCampaignDir = isAbsolute(campaignDir) ? campaignDir : resolve(io.cwd, campaignDir);
@@ -274,7 +292,22 @@ export async function runSweep(
       return 2;
     }
     await io.fs.mkdir(absCampaignDir, { recursive: true });
+    if (!io.fs.createTextFileExclusive) {
+      io.stderr(
+        "flightplan sweep: Filesystem must support createTextFileExclusive to isolate campaign output.",
+      );
+      return 2;
+    }
+    const claimed = await io.fs.createTextFileExclusive(
+      join(absCampaignDir, "sweep.json"),
+      '{"state":"running"}\n',
+    );
+    if (!claimed) {
+      io.stderr("flightplan sweep: Campaign output is already claimed; choose a new -o path.");
+      return 2;
+    }
   } catch {
+    checkCancellation(io.signal);
     io.stderr("flightplan sweep: Campaign output directory could not be prepared.");
     return 2;
   }
@@ -291,7 +324,9 @@ export async function runSweep(
   );
   const results: SweepUnitResult[] = [];
   for (const { unit, prepared } of units) {
+    checkCancellation(io.signal);
     const result = await executeSweepUnit(absCampaignDir, unit, prepared, runFlowFn);
+    checkCancellation(io.signal);
     results.push(result);
     if (result.ok) {
       io.stdout(`[ok]   ${unitLabel(unit)}`);
@@ -301,6 +336,7 @@ export async function runSweep(
     }
   }
 
+  checkCancellation(io.signal);
   const passCount = results.filter((r) => r.ok).length;
   const failCount = results.length - passCount;
   await io.fs.writeTextFile(

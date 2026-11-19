@@ -38,9 +38,9 @@
 // the accessibility-tree snapshot (browser-pilot 0.1.0) whose `selector` is synthetic):
 //   - `ref:eN`            → element.ref === "eN"
 //   - `[data-...="v"]`     → element.selector === target (synthetic backend-node selector echo)
-//   - `role:button:Name`   → element.role === role AND element.name contains/equals Name
+//   - `role:button:Name`   → element.role === role AND element.name === Name
 //   - `role:button`        → element.role === role
-//   - `text:Foo`           → element.name contains "Foo" (interactive-role-scoped per FINDINGS §8)
+//   - `text:Foo`           → element.name === "Foo"
 //   - plain string         → element.name contains the string (case-insensitive) OR
 //                            element.selector === string OR element.ref === string
 // When an assertion has NO `selector`, the target is the page as a whole:
@@ -110,20 +110,54 @@ async function poll(
   const { driver, timeoutMs, pollIntervalMs, clock } = opts;
   const start = clock.now();
   const deadline = start + timeoutMs;
+  let probeExpired = false;
+
+  const check = async (): Promise<Probe> => {
+    // A zero timeout is a single observation, used by inspection without polling.
+    if (timeoutMs === 0) return probe(makeSnapshotSource(driver));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired: Probe = {
+      pass: false,
+      message: `assertion probe exceeded ${timeoutMs}ms deadline`,
+    };
+    try {
+      const result = await Promise.race([
+        Promise.resolve().then(() => probe(makeSnapshotSource(driver))),
+        new Promise<Probe>((resolve) => {
+          timer = setTimeout(
+            () => {
+              probeExpired = true;
+              resolve(expired);
+            },
+            Math.max(1, deadline - clock.now()),
+          );
+        }),
+      ]);
+      if (timeoutMs > 0 && clock.now() > deadline) {
+        probeExpired = true;
+        return expired;
+      }
+      return result;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
 
   let last: Probe = { pass: false, message: "not evaluated" };
 
   // First, immediate attempt (so timeoutMs=0 still checks once). The probe fetches the snapshot
   // LAZILY through the source — a pure synthetic/CSS target (resolved via `driver.elementState`)
   // never triggers a snapshot round-trip; see `makeSnapshotSource` + `resolveTargetState`.
-  last = await probe(makeSnapshotSource(driver));
+  last = await check();
   if (last.pass) return done(true);
+  if (probeExpired) return done(false);
 
   while (clock.now() < deadline) {
     const remaining = deadline - clock.now();
     await clock.sleep(Math.min(pollIntervalMs, remaining));
-    last = await probe(makeSnapshotSource(driver));
+    last = await check();
     if (last.pass) return done(true);
+    if (probeExpired) break;
   }
 
   return done(false);
@@ -171,12 +205,27 @@ interface ParsedTarget {
 }
 function parseTarget(target: string): ParsedTarget {
   target = target.trim();
+  if (/^within\(/.test(target) || />>\s*(?:role:|text:)/.test(target))
+    return { kind: "synthetic", raw: target };
   if (target.startsWith("ref:")) return { kind: "ref", raw: target.slice("ref:".length) };
   if (target.startsWith("role:")) {
-    const rest = target.slice("role:".length);
-    const sep = rest.indexOf(":");
-    if (sep === -1) return { kind: "role", role: rest, raw: target };
-    return { kind: "role", role: rest.slice(0, sep), name: rest.slice(sep + 1), raw: target };
+    const rest = target.slice("role:".length).trim();
+    if (/\[\d+\]$/.test(rest)) return { kind: "synthetic", raw: target };
+    const bracket = /^(.*?)\[\s*name\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]]*?))\s*\]$/.exec(rest);
+    const body = bracket?.[1] ?? rest;
+    const sep = body.indexOf(":");
+    const role = (sep === -1 ? body : body.slice(0, sep)).trim().toLowerCase();
+    if (!role || /[[\]]/.test(role)) throw new InvalidSelectorError("Malformed role selector.");
+    const name = (
+      bracket
+        ? (bracket[2] ?? bracket[3] ?? bracket[4])
+        : sep === -1
+          ? undefined
+          : body.slice(sep + 1)
+    )
+      ?.trim()
+      .replace(/^(['"])([\s\S]*)\1$/, "$2");
+    return { kind: "role", role, ...(name !== undefined ? { name } : {}), raw: target };
   }
   if (target.startsWith("text:"))
     return { kind: "text", name: target.slice("text:".length), raw: target };
@@ -184,14 +233,19 @@ function parseTarget(target: string): ParsedTarget {
   // `flow/normalize-target.ts`: STRIP the prefix and treat it as synthetic so it resolves via
   // `driver.elementState` (real DOM) rather than being name-matched against the AX snapshot.
   if (/^css:/i.test(target)) {
-    return { kind: "synthetic", raw: target.slice("css:".length).trim() };
+    const raw = target.slice("css:".length).trim();
+    if (/^(?:css:|role:|text:|ref:)/.test(raw))
+      throw new InvalidSelectorError(
+        "css: requires a raw CSS selector, without another selector prefix.",
+      );
+    return { kind: "synthetic", raw };
   }
   if (target.startsWith("[") || target.startsWith(".") || target.startsWith("#")) {
     return { kind: "synthetic", raw: target };
   }
   if (looksLikeUnprefixedAssertionSelector(target)) {
     throw new InvalidSelectorError(
-      `Selector ${JSON.stringify(target)} looks like CSS; prefix it with css:`,
+      `Selector ${JSON.stringify(target)} looks like CSS; prefix it with css: for CSS or text: for an accessible name.`,
     );
   }
   return { kind: "plain", raw: target };
@@ -204,9 +258,9 @@ function elementMatches(el: InteractiveElement, parsed: ParsedTarget): boolean {
       return el.ref === parsed.raw || el.ref === `e${parsed.raw}`;
     case "role":
       if (el.role !== parsed.role) return false;
-      return parsed.name === undefined || containsCI(el.name, parsed.name);
+      return parsed.name === undefined || el.name === parsed.name;
     case "text":
-      return parsed.name !== undefined && containsCI(el.name, parsed.name);
+      return parsed.name !== undefined && el.name === parsed.name;
     case "synthetic":
       return el.selector === parsed.raw;
     case "plain":
@@ -234,13 +288,11 @@ function targetVisible(snapshot: PageSnapshot, target: string): boolean {
   return flattenTree(snapshot.accessibilityTree).some((node) => {
     if (parsed.kind === "role") {
       if (node.role !== parsed.role) return false;
-      return (
-        parsed.name === undefined || (node.name !== undefined && containsCI(node.name, parsed.name))
-      );
+      return parsed.name === undefined || node.name === parsed.name;
     }
     // text/plain → match by accessible name
-    return node.name !== undefined && parsed.name !== undefined
-      ? containsCI(node.name, parsed.name)
+    return parsed.kind === "text"
+      ? node.name === parsed.name
       : node.name !== undefined && containsCI(node.name, parsed.raw);
   });
 }
@@ -273,13 +325,25 @@ interface TargetState {
  *    unavailable (feature-detected) — use the snapshot: presence/visibility from
  *    {@link targetVisible}, count from matching AX nodes and interactive refs, and text from
  *    matched names/values (with the same AX-tree fallback `text()` uses).
+ *  - Absence checks require an explicit selector. A DOM selector requires live DOM observation.
  */
 async function resolveTargetState(
   target: string,
   source: SnapshotSource,
   opts: ConditionOpts,
+  evidence?: "absence",
 ): Promise<TargetState> {
   const parsed = parseTarget(target);
+  if (evidence === "absence") {
+    if (parsed.kind === "plain")
+      throw new InvalidSelectorError(
+        "Absence requires an explicit selector. Use css: for CSS or text: or role: for an accessible name.",
+      );
+    if (parsed.kind === "synthetic" && !opts.driver.elementState)
+      throw new InvalidSelectorError(
+        "This selector requires driver.elementState; absence cannot be verified from a snapshot.",
+      );
+  }
   if (parsed.kind === "synthetic" && opts.driver.elementState) {
     // Pure synthetic/CSS target with the live-DOM primitive: answered WITHOUT a snapshot fetch.
     const s = await opts.driver.elementState(parsed.raw);
@@ -416,7 +480,7 @@ export function hidden(
   expectedText?: string,
 ): Promise<AssertionResult> {
   return poll("hidden", target, opts, async (source) => {
-    const state = await resolveTargetState(target, source, opts);
+    const state = await resolveTargetState(target, source, opts, "absence");
     const textOk = expectedText === undefined || containsCI(state.text, expectedText);
     const consideredVisible = state.visible && textOk;
     return {
@@ -525,7 +589,14 @@ export function state(
   expectedValue?: string,
 ): Promise<AssertionResult> {
   return poll("state", target ?? expected, opts, async (source) => {
-    const current = target ? await resolveTargetState(target, source, opts) : undefined;
+    const current = target
+      ? await resolveTargetState(
+          target,
+          source,
+          opts,
+          expected === "hidden" ? "absence" : undefined,
+        )
+      : undefined;
     let ok = false;
     if (!current) ok = false;
     else if (expected === "visible") ok = current.visible;
@@ -713,7 +784,7 @@ export function value(
  */
 export function count(target: string, n: number, opts: ConditionOpts): Promise<AssertionResult> {
   return poll("count", target, opts, async (source) => {
-    const state = await resolveTargetState(target, source, opts);
+    const state = await resolveTargetState(target, source, opts, n === 0 ? "absence" : undefined);
     const observed = state.count;
     const ok = observed === n;
     return {
@@ -733,13 +804,9 @@ function matchesNodeTarget(node: SnapshotNode, target: string): boolean {
       return node.ref === parsed.raw || node.ref === `e${parsed.raw}`;
     case "role":
       if (node.role !== parsed.role) return false;
-      return (
-        parsed.name === undefined || (node.name !== undefined && containsCI(node.name, parsed.name))
-      );
+      return parsed.name === undefined || node.name === parsed.name;
     case "text":
-      return (
-        node.name !== undefined && parsed.name !== undefined && containsCI(node.name, parsed.name)
-      );
+      return parsed.name !== undefined && node.name === parsed.name;
     case "synthetic":
       return false;
     case "plain":

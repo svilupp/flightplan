@@ -141,10 +141,14 @@ compatibility borrowers use driver deadlines.
 
 ### Write exact postconditions
 
-Prefix CSS assertion selectors with `css:`, including tag names such as `css:h1`. Valid zero-match
-queries can prove absence; malformed selectors cannot. Use `value = ""` to clear a field or assert
-an empty value. Use `match = "exact"` and scope the selector for business state. Available URL modes are
-`exact`, `origin_path`, `glob`, and `contains`; text modes are `exact`, `contains`, and `regex`.
+Prefix CSS assertion selectors with `css:`, including tag names such as `css:h1`. For `hidden`,
+`state = "hidden"`, and `count = 0`, give an explicit selector such as `css:app-banner` or
+`text:Shipping notice`. A valid query with no matches proves absence. Use `value = ""` to clear a
+field or assert an empty value. Explicit `role:` and `text:` assertion selectors match full accessible names;
+use the assertion's `match` for substring checks. Semantic counts measure accessibility nodes;
+use CSS for DOM element counts. Use `match = "exact"` and scope the selector for business state.
+Available URL modes are `exact`, `origin_path`, `glob`, and `contains`; text modes are `exact`,
+`contains`, and `regex`.
 Use state assertions for `enabled`, `checked`, `selected`, and `new_page`; use transition assertions
 for `url_changed`, `text_changed`, `value_changed`, and `state_changed`.
 
@@ -311,6 +315,9 @@ remote guard with AI off is a preflight error, including shadow mode; do not sil
 Zero call/cost budgets stop remote work before it starts, including guard work; zero screenshots
 stop model image capture. Recording remains independent: use `[config.browser] record = false`.
 Trusted injected guard callbacks remain active. `--frozen --no-lock-write` controls lock persistence.
+Frozen mode permits live fallback without a lock; check lock existence separately when a promoted
+baseline is required. Planner enablement is rejected if a prepared step, child flow, or hook has
+an `at_most_once` effect. Backward failure jumps cannot cross protected steps that may have dispatched.
 Use `lint --deny-warnings` for a strict gate. Sweep shares run's `--input`, `--input-env`, and
 `--inputs-file` flags and validates all bindings before dispatch. Inspect `sweep.json` for denied
 baseline units; `report` only aggregates executed runs.
@@ -354,8 +361,11 @@ Keep business loops in the host. Prefer explicit extraction selectors; secret fi
 discovery and `check` for current entry inspection only. Secret inputs use `--input-env`;
 retries reuse one `--idempotency-key`. A new key does not prove a mutation is safe to repeat.
 Child and hook secret inputs share run-wide redaction; secret extraction in either disables
-recording for the whole run. Changed dependencies or nonsecret environment bindings conflict with
-an existing invocation key. Reconcile the earlier outcome before issuing a new key after an upgrade.
+recording for the whole run. Changed dependencies or bound destinations conflict with an existing
+invocation key, including secret-marked raw URLs. Declared secret inputs retain reference-based
+rotation. Identity remains scoped to the store and namespace; CLI defaults use the working
+directory, and shared claims can conflict after relocation. Reconcile the earlier outcome before
+issuing a new key after an upgrade.
 
 Read `docs/BROWSER_PILOT_INTEGRATION.md` for named sessions, guards and host yield. Require verified
 handback and fresh observations before resuming BP actions. Local guards cannot override owner

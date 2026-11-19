@@ -137,19 +137,34 @@ export function looksLikeUnprefixedSelector(value: string): boolean {
 }
 
 // These checks apply only to assertions. Bare action targets can still be natural language.
-const ASSERTION_HTML_TAG =
-  /^(html|head|body|base|link|meta|style|title|address|article|aside|footer|header|h[1-6]|hgroup|main|nav|section|search|blockquote|dd|div|dl|dt|figcaption|figure|hr|li|menu|ol|p|pre|ul|a|abbr|b|bdi|bdo|br|cite|code|data|dfn|em|i|kbd|mark|q|rp|rt|ruby|s|samp|small|span|strong|sub|sup|time|u|var|wbr|area|audio|img|map|track|video|embed|iframe|object|picture|source|canvas|noscript|script|del|ins|caption|col|colgroup|table|tbody|td|tfoot|th|thead|tr|button|datalist|fieldset|form|input|label|legend|meter|optgroup|option|output|progress|select|textarea|details|dialog|summary|slot|template|svg|path|g|rect|circle|ellipse|line|polyline|polygon|text|defs|symbol|use|clipPath|mask|foreignObject|math|mi|mo|mn|ms|mtext|\*|[a-z][\w]*-[\w-]+)(?=$|[\s.#[:>+~,|])(.*)$/is;
+const ASSERTION_TAG_NAMES = new Set(
+  (
+    "html head body base link meta style title address article aside footer header h1 h2 h3 h4 h5 h6 " +
+    "hgroup main nav section search blockquote center dd div dl dt figcaption figure hr li menu ol p pre ul " +
+    "a abbr b bdi bdo br cite code data dfn em i kbd mark q rp rt ruby s samp small span strong sub sup " +
+    "time u var wbr area audio img map track video embed iframe object picture source canvas noscript script " +
+    "del ins caption col colgroup table tbody td tfoot th thead tr button datalist fieldset form input label " +
+    "legend meter optgroup option output progress select textarea details dialog summary slot template svg " +
+    "path g rect circle ellipse line polyline polygon text defs symbol use clipPath mask foreignObject math " +
+    "mi mo mn ms mtext *"
+  ).split(" "),
+);
+
+/** Whether an assertion selector identifies its search method without interpreting a bare name. */
+export function hasExplicitAssertionSelector(value: string): boolean {
+  const v = value.trim();
+  return classifyLocator(v) !== "nl" || /^[.#]|^within\(|>>\s*(?:role:|text:)/.test(v);
+}
 
 /** Assertion selectors must disambiguate bare tags from names with css: or text:. */
 export function looksLikeUnprefixedAssertionSelector(value: string): boolean {
-  if (looksLikeUnprefixedSelector(value)) return true;
-  const suffix = ASSERTION_HTML_TAG.exec(value.trim())?.[2];
-  if (suffix === undefined) return false;
-  return (
-    suffix === "" ||
-    /^[.#[]/.test(suffix) ||
-    /^:[\w-]+(?:\(|$)/.test(suffix) ||
-    /^\s*[>+~,|]/.test(suffix) ||
-    /^\s+[\w*#.[:]/.test(suffix)
-  );
+  const v = value.trim();
+  if (hasExplicitAssertionSelector(v)) return false;
+  if (/^::?[\w-]/.test(v) || looksLikeUnprefixedSelector(v)) return true;
+  if (/^[A-Za-z][\w-]*(?:[.#[]|::?[\w-])/.test(v)) return true;
+  if (/[\w*#.[\]]\s*[+~,|]\s*[\w*#.[:]/.test(v)) return true;
+  // A tag followed by prose is not enough evidence. Only an entire chain of known,
+  // correctly cased tags qualifies. Names identical to tags still need css: or text:;
+  // this intentionally conservative heuristic is not a CSS parser.
+  return v.length > 0 && v.split(/\s+/).every((part) => ASSERTION_TAG_NAMES.has(part));
 }

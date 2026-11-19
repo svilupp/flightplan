@@ -1894,3 +1894,21 @@ assert=[{type="url",url="https://example.test/missing",match="exact",timeout_ms=
   ]);
   expect(driver.callsTo("goto")).toHaveLength(1);
 });
+
+test("a navigation timeout cannot be rescued by content already on the previous page", async () => {
+  const { flowPath, outDir } = await writeFlow(
+    'version=1\nkind="flow"\nid="weak-navigation"\ndescription="weak navigation"\n[[steps]]\nid="open"\ndo="goto"\nurl="https://example.test/new"\nassert=[{type="visible",selector="role:heading:Ready"}]\n[[steps]]\nid="later"\ndo="wait"\nms=0',
+  );
+  const driver = new MockDriver().setSnapshot(
+    makeSnapshot({
+      url: "https://example.test/old",
+      accessibilityTree: [{ ref: "h1", role: "heading", name: "Ready" }],
+    }),
+  );
+  driver.goto = async () => {
+    throw new NavigationFailure(new Error("Page.navigate timed out"), 30);
+  };
+  const result = await runFlow(optsFor(flowPath, outDir, driver, defaultConfig()));
+  expect(result.summary.verdict).toBe("failed");
+  expect(result.summary.steps.map((step) => step.stepId)).toEqual(["open"]);
+});

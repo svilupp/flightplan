@@ -129,19 +129,108 @@ test("a changed nonsecret environment URL conflicts with the same invocation key
   ]);
 });
 
-test("changing only a secret environment URL replays the original invocation", async () => {
+test("a changed secret environment URL conflicts instead of replaying a different destination", async () => {
   const { fs, driver, env, opts } = await environmentInvocation(true);
   const first = await runFlow(opts);
   expect(first.summary.verdict).toBe("passed");
+  expect(await runFlow(opts)).toEqual(first);
   env.TARGET = "https://example.test/second";
-  const replay = await runFlow(opts);
-  expect(replay).toEqual(first);
+  await expect(runFlow(opts)).rejects.toThrow("INVOCATION_CONFLICT");
   expect(driver.callsTo("connect")).toHaveLength(1);
   expect(driver.callsTo("goto").map((call) => call.args[0])).toEqual([
     "https://example.test/first",
   ]);
   await expectRedactedArtifacts(fs, first, ["https://example.test/first"]);
 });
+
+test("a single secret login URL binds its destination and unclassified credential changes", async () => {
+  const fs = memoryFileSystem();
+  const driver = new MockDriver();
+  const env = { BASE: "https://staging.example.test", TOKEN: "fixture-login-token" };
+  await fs.writeTextFile(
+    "/root.toml",
+    header("root") +
+      '[[steps]]\nid="login"\ndo="goto"\nurl="${env.BASE}/login?token=${env.TOKEN}"\nsecret=true',
+  );
+  const opts = {
+    ...options(fs, driver),
+    env,
+    idempotencyKey: "secret-destination",
+    invocationStore: new MemoryInvocationStore(),
+  };
+  const first = await runFlow(opts);
+  expect(first.summary.verdict).toBe("passed");
+  expect(await runFlow(opts)).toEqual(first);
+  env.BASE = "https://production.example.test";
+  await expect(runFlow(opts)).rejects.toThrow("INVOCATION_CONFLICT");
+  env.BASE = "https://staging.example.test";
+  env.TOKEN = "rotated-unclassified-token";
+  await expect(runFlow(opts)).rejects.toThrow("INVOCATION_CONFLICT");
+  expect(driver.callsTo("connect")).toHaveLength(1);
+  expect(driver.callsTo("goto")).toHaveLength(1);
+});
+
+for (const location of ["entry", "child", "setup", "teardown"] as const) {
+  test(`secret substrings cannot erase a changed public destination in a ${location} scope`, async () => {
+    const fs = memoryFileSystem();
+    const driver = new MockDriver();
+    const env = { A: "oldtenant", B: "newtenant", BASE: "https://oldtenant.example.test" };
+    const secretFlow =
+      header("protected") +
+      '[inputs.a]\ntype="string"\nsecret=true\ndefault={from_env="A"}\n' +
+      '[inputs.b]\ntype="string"\nsecret=true\ndefault={from_env="B"}\n' +
+      '[[steps]]\nid="open"\ndo="goto"\nurl="${env.BASE}/login"\nsecret=true';
+    await fs.writeTextFile("/protected.toml", secretFlow);
+    await fs.writeTextFile(
+      "/root.toml",
+      location === "entry"
+        ? secretFlow
+        : location === "child"
+          ? `${header("root")}[[steps]]\nid="child"\ndo="run"\nflow="./protected.toml"`
+          : `${header("root")}${location}="./protected.toml"\n[[steps]]\nid="wait"\ndo="wait"\nms=0`,
+    );
+    const opts = {
+      ...options(fs, driver),
+      env,
+      idempotencyKey: "public-destination",
+      invocationStore: new MemoryInvocationStore(),
+    };
+    expect((await runFlow(opts)).summary.verdict).toBe("passed");
+    env.BASE = "https://newtenant.example.test";
+    await expect(runFlow(opts)).rejects.toThrow("INVOCATION_CONFLICT");
+    expect(driver.callsTo("connect")).toHaveLength(1);
+    expect(driver.callsTo("goto")).toHaveLength(1);
+  });
+}
+
+for (const child of [false, true]) {
+  test(`explicit secret rotation does not alter matching public hostname text (${child ? "child with override" : "entry"})`, async () => {
+    const fs = memoryFileSystem();
+    const driver = new MockDriver();
+    const env = { BASE: "https://oldtenant.example.test", TOKEN: "oldtenant" };
+    const destination =
+      '[[steps]]\nid="login"\ndo="goto"\nurl="${env.BASE}/login?token=${inputs.token}"\nsecret=true';
+    await fs.writeTextFile(
+      "/root.toml",
+      child
+        ? `${header("root")}[[steps]]\nid="call"\ndo="run"\nflow="./child.toml"\nwith={token="\${env.TOKEN}"}`
+        : header("root") + secretInput("TOKEN") + destination,
+    );
+    if (child) await fs.writeTextFile("/child.toml", header("child") + secretInput() + destination);
+    const opts = {
+      ...options(fs, driver),
+      env,
+      idempotencyKey: "credential-rotation",
+      invocationStore: new MemoryInvocationStore(),
+    };
+    const first = await runFlow(opts);
+    expect(first.summary.verdict).toBe("passed");
+    env.TOKEN = "rotated-credential";
+    expect(await runFlow(opts)).toEqual(first);
+    expect(driver.callsTo("connect")).toHaveLength(1);
+    expect(driver.callsTo("goto")).toHaveLength(1);
+  });
+}
 
 test("claim-time environment mutation cannot change the admitted destination", async () => {
   const { driver, env, store, opts } = await environmentInvocation(false);
@@ -255,6 +344,65 @@ test("immutable filesystem ports support a complete run", async () => {
   const driver = new MockDriver();
   await fs.writeTextFile("/root.toml", header("root") + '[[steps]]\nid="wait"\ndo="wait"\nms=0');
   expect((await runFlow(options(fs, driver))).summary.verdict).toBe("passed");
+});
+
+test("a private login does not hide a changed public destination from an invocation key", async () => {
+  const fs = memoryFileSystem();
+  const driver = new MockDriver();
+  const env = { BASE: "https://staging.example.test", TOKEN: "fixture-login-token" };
+  await fs.writeTextFile(
+    "/root.toml",
+    header("root") +
+      '[[steps]]\nid="login"\ndo="goto"\nurl="${env.BASE}/login?token=${env.TOKEN}"\nsecret=true\n[[steps]]\nid="checkout"\ndo="goto"\nurl="${env.BASE}/checkout"',
+  );
+  const opts = {
+    ...options(fs, driver),
+    env,
+    idempotencyKey: "destination",
+    invocationStore: new MemoryInvocationStore(),
+  };
+  expect((await runFlow(opts)).summary.verdict).toBe("passed");
+  env.BASE = "https://production.example.test";
+  await expect(runFlow(opts)).rejects.toThrow("INVOCATION_CONFLICT");
+  expect(driver.callsTo("connect")).toHaveLength(1);
+});
+
+test("an overridden default does not change invocation identity", async () => {
+  const fs = memoryFileSystem();
+  const driver = new MockDriver();
+  const env = { BASE: "https://unused.example.test" };
+  await fs.writeTextFile(
+    "/root.toml",
+    header("root") +
+      '[inputs.destination]\ntype="string"\ndefault="${env.BASE}"\n[[steps]]\nid="checkout"\ndo="goto"\nurl="${inputs.destination}"',
+  );
+  const opts = {
+    ...options(fs, driver),
+    env,
+    inputs: { destination: "https://checkout.example.test" },
+    idempotencyKey: "overridden",
+    invocationStore: new MemoryInvocationStore(),
+  };
+  const first = await runFlow(opts);
+  env.BASE = "https://another-unused.example.test";
+  expect(await runFlow(opts)).toEqual(first);
+  expect(driver.callsTo("connect")).toHaveLength(1);
+});
+
+test("runtime capture binding registers a secret URL before tracing it", async () => {
+  const fs = memoryFileSystem();
+  const driver = new MockDriver();
+  const token = "fixture-private-url-token";
+  driver.currentUrl = async () => "public-item";
+  await fs.writeTextFile(
+    "/root.toml",
+    header("root") +
+      '[[steps]]\nid="capture"\ndo="wait"\nms=0\ncapture={name="item",type="url"}\n[[steps]]\nid="open"\ndo="goto"\nurl="https://example.test/${env.TOKEN}/${capture.item}"\nsecret=true',
+  );
+  const result = await runFlow({ ...options(fs, driver), env: { TOKEN: token } });
+  expect(result.summary.verdict).toBe("passed");
+  expect(driver.callsTo("goto")[0]?.args[0]).toBe(`https://example.test/${token}/public-item`);
+  await expectRedactedArtifacts(fs, result, [token]);
 });
 
 test.each(["${literal}", "\u0000flightplan:literal:"])(

@@ -20,8 +20,12 @@ export {
 } from "./ai/sdk.ts";
 export * from "./artifacts/index.ts";
 export * from "./assert/index.ts";
+export { ExecutionPolicyError } from "./config/execution-policy.ts";
 export * from "./config/index.ts";
 export * from "./driver/index.ts";
+export { KeyboardPreflightError } from "./driver/keyboard.ts";
+export { NavigationFailure } from "./driver/navigation.ts";
+export { InvalidSelectorError } from "./driver/normalize-selector.ts";
 export * from "./flow/index.ts";
 export * from "./guard/index.ts";
 export type { CheckItem, CheckReport } from "./inspection/check.ts";

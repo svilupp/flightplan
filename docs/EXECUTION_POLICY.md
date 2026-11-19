@@ -31,6 +31,10 @@ Then retain the classifier, provider, credentials, model registry and limits app
 flow. `classifier` selects L2 only; it does not disable deeper AI paths when permission is enabled.
 Only the entry flow's configuration governs a composed run.
 
+Planner enablement is rejected when the prepared flow, including child flows and setup/teardown
+hooks, contains an `at_most_once` step. Backward failure jumps also cannot cross a protected step
+that completed or may have dispatched.
+
 `max_model_calls = 0` and `max_cost_usd = 0` reject remote work before dispatch and before model
 image preparation. `max_screenshots = 0` rejects model image capture. Remote guards honor these
 global zero limits while keeping their existing separate positive request/cost accounting. An
@@ -39,8 +43,13 @@ their existing accounting semantics and do not reserve a universal upper bound f
 An injected extraction mapper has its own call counter; positive limits are not aggregated with
 a separately injected AI runtime. Local heuristic selection can run with AI permission and zero remote budgets.
 
+A later `[run]` table replaces the whole earlier table. Repeat every required limit when replacing
+it; omitted fields do not inherit earlier ceilings. Inspect `flightplan config <flow> --json`.
+
 Recording is independent. Disable it with `[config.browser] record = false`. Frozen replay and
 `--no-lock-write` control locks, not AI permission or recording.
+Frozen mode permits live fallback when no lock exists. If CI requires a promoted lock, check that
+the lock file exists before running.
 
 ## Navigation deadlines
 
@@ -55,6 +64,8 @@ A step override affects document loading only. Document and settle failures iden
 and limit; a timeout does not establish that navigation was never dispatched. Strict
 `OwnerActionDriver` hosts enforce their own deadlines and retain option restrictions.
 Named-session compatibility borrowers use the driver deadlines.
+A timed-out `goto` can recover only when an after assertion proves the requested URL with
+`match = "exact"` or `"origin_path"`; content checks alone cannot prove the destination.
 
 ## Attached browsers and keyboard input
 
@@ -79,6 +90,18 @@ externally and do not overlap them with an owner session sharing that browser pr
 cleanup does not isolate cookies or application state. Raw-attach leasing is deferred.
 Teardown closes owned tabs and their popup descendants, including failed popup expectations, while preserving reused tabs.
 
+## Cleanup and interruption
+
+After root entry admission, ordinary flow or setup failure permits one teardown-hook attempt on a
+usable connection before driver cleanup. Rejected root entry contracts do not execute authored
+teardown. Cleanup failures are reported without replacing the original flow verdict. External
+cancellation skips flow hooks and uses bounded driver cleanup.
+
+The native CLI forwards SIGINT and SIGTERM through the run cancellation signal, returning 130
+and 143 respectively. Sweep stops scheduling new units after cancellation. Interruption reports
+retain partial artifacts and distinguish completed, failed, or pending cleanup; cancellation does
+not produce a successful run summary.
+
 ## Strict lint and sweeps
 
 `flightplan lint <paths> --deny-warnings` returns exit 1 for warnings as well as errors, retaining
@@ -90,6 +113,8 @@ aborts the campaign with exit 2 and no dispatch. Duplicate flow IDs, overlapping
 and flow IDs that collide with campaign manifests are also rejected before trials. An existing
 campaign output directory must be empty; a missing directory is created. Prepared source text is
 pinned for the campaign. Trials remain sequential. Keep secrets in environment-backed bindings.
+Campaigns claim `sweep.json` exclusively before dispatch. Custom sweep filesystems must implement
+`createTextFileExclusive`; overlapping sweeps cannot share the same output directory.
 
 `--compare-baseline` requests an L3 arm, so AI-disabled baseline units fail without dispatch or
 downgrading; valid tiered units still run. Campaign exit 1 reports any failed unit. `sweep.json`
@@ -109,8 +134,15 @@ Preparation retains every source file and each call site's effective inputs. Sec
 from child flows and setup/teardown hooks are redacted throughout the shared run artifacts.
 Secret extraction fields in any composed step or hook disable recording for the whole run.
 
-Invocation keys bind to the complete source graph and prepared actions, including nonsecret
-environment references. A changed child file or bound destination returns `INVOCATION_CONFLICT`.
-Execution uses the source and input snapshots admitted before the claim; credential rotation keeps
-secret values out of the binding. Stored keys from earlier versions may conflict after this upgrade.
-Check the previous outcome before choosing a new key, which authorizes a new execution.
+Invocation keys bind to the complete source graph and prepared actions, including bound
+destinations. A changed child file or destination returns `INVOCATION_CONFLICT`. Execution uses
+the source and input snapshots admitted before the claim. Declared secret inputs retain
+reference-based credential rotation. Secret-marked raw URLs remain part of the one-way binding
+digest; even a credential-only URL change can conservatively conflict. Raw secret URLs are not
+stored in the binding.
+
+Bindings include normalized source paths. The CLI stores claims under the current working
+directory and uses that directory as the namespace. Relocation normally creates separate storage;
+sharing a store and namespace can conflict after relocation. Portable replay identity is deferred.
+Stored keys from earlier versions may also conflict after this upgrade. Check the previous outcome
+before choosing a new key, which authorizes a new execution.

@@ -1,8 +1,8 @@
 import { ExecutionPolicyError } from "../config/execution-policy.ts";
 import type { Driver } from "../driver/types.ts";
-import { inputMetadata } from "../flow/input.ts";
+import { type InputValues, inputMetadata } from "../flow/input.ts";
 import type { BoundFlowScope } from "../flow/run.ts";
-import { collectRefs } from "../flow/template.ts";
+import { applyTemplatingDeep, restoreInputLiterals } from "../flow/template.ts";
 import { defaultFileSystem } from "../fs-default.ts";
 import { prepareRun } from "../runner/prepare.ts";
 import type { DriverFactory, RunOptions, RunResult } from "../runner/types.ts";
@@ -19,15 +19,6 @@ function canonical(value: unknown): unknown {
     );
   return value;
 }
-function containsSecret(value: unknown, secrets: ReadonlySet<string>): boolean {
-  if (typeof value === "string") return [...secrets].some((secret) => value.includes(secret));
-  if (Array.isArray(value)) return value.some((child) => containsSecret(child, secrets));
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    Object.values(value).some((child) => containsSecret(child, secrets))
-  );
-}
 function secretReference(value: unknown): unknown {
   if (
     value !== null &&
@@ -41,33 +32,41 @@ function secretReference(value: unknown): unknown {
   return "<secret-input>";
 }
 
-// Source hashes retain the authored structure. Bind only referenced environment values,
-// rather than redacting structural step fields whose text might coincide with a credential.
-function boundEnvironment(
+// Keep input provenance until identity is built: replacing secret substrings after flattening
+// can erase unrelated public destinations. Each executed scope still owns its authored steps.
+function boundActions(
   scopes: readonly BoundFlowScope[],
   env: Record<string, string | undefined>,
-  secrets: ReadonlySet<string>,
-): Record<string, unknown> {
-  const names = new Set(
-    scopes.flatMap((scope) =>
-      collectRefs(JSON.stringify(scope.loaded.flow))
-        .filter((ref) => ref.source === "env")
-        .map((ref) => ref.name),
-    ),
-  );
-  const values: Record<string, unknown> = {};
-  for (const name of names) {
-    const value = env[name];
-    const secret =
-      typeof value === "string" &&
-      value.length > 0 &&
-      [...secrets].some((payload) => payload.includes(value) || value.includes(payload));
-    values[name] = secret ? { from_env: name } : value;
-    if (typeof value === "string" && !secret) {
-      for (const ref of collectRefs(value)) if (ref.source === "env") names.add(ref.name);
-    }
-  }
-  return values;
+): unknown[] {
+  return scopes.map(({ loaded, inputs }) => {
+    const bindingInputs: InputValues = Object.fromEntries(
+      Object.entries(inputs).map(([name, value]) => {
+        const declaration = loaded.flow.inputs?.[name];
+        return [
+          name,
+          declaration !== undefined && inputMetadata(declaration).secret
+            ? `<secret-input:${name}>`
+            : value,
+        ];
+      }),
+    );
+    // Child effective inputs are bound separately in their own scope. Rebinding `with`
+    // here would hash raw credentials even when the child explicitly declares them secret.
+    const steps = loaded.flow.steps.map((step) =>
+      step.do === "run"
+        ? Object.fromEntries(Object.entries(step).filter(([key]) => key !== "with"))
+        : step,
+    );
+    return {
+      source: loaded.path,
+      actions: restoreInputLiterals(
+        applyTemplatingDeep(
+          { steps, before: loaded.flow.before, after: loaded.flow.after },
+          { inputs: bindingInputs, env, deferCaptures: true },
+        ),
+      ),
+    };
+  });
 }
 export const INVOCATION_MUTATORS = new Set([
   "click",
@@ -108,7 +107,7 @@ export async function runWithInvocation(
   if (!store || !key?.trim()) throw new InvocationError("INVOCATION_STORE_REQUIRED");
   const fs = opts.fs ?? (await defaultFileSystem());
   const env = opts.env ?? ambientEnv();
-  const { loaded, scopes, sourceTexts, secrets, policyIssues } = await prepareRun(opts, fs, env);
+  const { loaded, scopes, sourceTexts, policyIssues } = await prepareRun(opts, fs, env);
   if (policyIssues.length) throw new ExecutionPolicyError(policyIssues);
   const effectiveInputs = scopes
     .map((scope): [string, Record<string, unknown>] => {
@@ -117,9 +116,7 @@ export async function runWithInvocation(
         Object.fromEntries(
           Object.entries(scope.inputs).map(([name, value]) => {
             const declaration = scope.loaded.flow.inputs?.[name];
-            const secret =
-              (declaration !== undefined && inputMetadata(declaration).secret) ||
-              containsSecret(value, secrets);
+            const secret = declaration !== undefined && inputMetadata(declaration).secret;
             return [
               name,
               secret
@@ -150,7 +147,7 @@ export async function runWithInvocation(
             ([idA, hashA], [idB, hashB]) => idA.localeCompare(idB) || hashA.localeCompare(hashB),
           ),
         inputs: effectiveInputs,
-        env: boundEnvironment(scopes, env, secrets),
+        actions: boundActions(scopes, env),
         slice: [opts.fromStep, opts.toStep],
         connect:
           opts.config.connect?.mode === "attach"

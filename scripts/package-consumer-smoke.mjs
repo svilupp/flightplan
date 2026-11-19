@@ -39,6 +39,16 @@ const {
 } = await import("@svilupp/flightplan/worker");
 assert.equal(typeof workerRunFlow, "function");
 assert.equal(typeof memoryFileSystem, "function");
+for (const entry of ["@svilupp/flightplan", "@svilupp/flightplan/worker"]) {
+  const api = await import(entry);
+  for (const name of [
+    "ExecutionPolicyError",
+    "NavigationFailure",
+    "KeyboardPreflightError",
+    "InvalidSelectorError",
+  ])
+    assert.equal(typeof api[name], "function", `${entry} exports ${name}`);
+}
 
 // A MockDriver flow run entirely through the `./worker` entry with the `./worker`-exported
 // `memoryFileSystem` — no Node fs, proving the curated worker barrel is self-sufficient.

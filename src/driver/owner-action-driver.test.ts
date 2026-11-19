@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { memoryFileSystem } from "../adapters/memory.ts";
 import { resolveConfigWithDefaults } from "../config/index.ts";
 import { createGuardedDriver } from "../guard/driver.ts";
 import { runFlow } from "../runner/runner.ts";
@@ -104,6 +105,30 @@ const config = {
   target_policy: "exact",
   target_id: "page",
 } as const;
+
+test("timed navigation reports unsupported options before owner authorization", async () => {
+  const f = fixture();
+  const driver = new OwnerActionDriver({
+    acquire: async () => f.lease,
+    requiredAssurance: "owner-serialized-prechecked-native",
+  });
+  const result = await runFlow({
+    flowPath: "/flow.toml",
+    flowSource:
+      'version=1\nkind="flow"\nid="timed-owner"\ndescription="timed navigation"\n[[steps]]\nid="open"\ndo="goto"\nurl="https://example.test"\ntimeout_ms=500\non_fail={goto="self",max=2}',
+    fs: memoryFileSystem(),
+    out: "/runs",
+    config: resolveConfigWithDefaults([{ connect: config, browser: { dialog: "fail" } }]),
+    env: {},
+    driverFactory: () => driver,
+    noLockWrite: true,
+  });
+  expect(result.summary.verdict).toBe("failed");
+  expect(result.summary.steps[0]).toMatchObject({ ok: false, dispatchState: "not_dispatched" });
+  expect(result.summary.steps[0]?.error).toContain("does not support action options");
+  expect(f.dispatched()).toBe(0);
+  expect(f.events).toEqual(["handback", "detach"]);
+});
 test("restricted driver rejects raw and unsupported capabilities without owner dispatch", async () => {
   const f = fixture();
   const driver = new OwnerActionDriver({

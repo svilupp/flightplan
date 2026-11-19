@@ -8,6 +8,46 @@ import { runFlow } from "./runner.ts";
 
 const header = 'version=1\nkind="flow"\nid="policy"\ndescription="policy"\n';
 
+for (const location of ["entry", "child", "setup", "teardown"] as const) {
+  test(`planner admission rejects protected ${location} steps before browser or model acquisition`, async () => {
+    const fs = memoryFileSystem();
+    const protectedSteps =
+      '[[steps]]\nid="protected"\ndo="press"\nkey="Enter"\neffect="at_most_once"';
+    await fs.writeTextFile(
+      "/protected.toml",
+      header.replace('id="policy"', 'id="protected"') + protectedSteps,
+    );
+    const source =
+      location === "entry"
+        ? header + protectedSteps
+        : location === "child"
+          ? header + '[[steps]]\nid="child"\ndo="run"\nflow="./protected.toml"'
+          : header + `${location}="./protected.toml"\n[[steps]]\nid="wait"\ndo="wait"\nms=0`;
+    let acquisitions = 0;
+    let runtimes = 0;
+    await expect(
+      runFlow({
+        flowPath: "/flow.toml",
+        flowSource: source,
+        fs,
+        out: "/runs",
+        config: resolveConfigWithDefaults([{ ai: { enabled: true }, plan: { enabled: true } }]),
+        env: {},
+        driverFactory: () => {
+          acquisitions++;
+          return new MockDriver();
+        },
+        aiRuntimeFactory: () => {
+          runtimes++;
+          throw new Error("unexpected AI acquisition");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "PLAN_UNSAFE_EFFECT" });
+    expect(acquisitions).toBe(0);
+    expect(runtimes).toBe(0);
+  });
+}
+
 for (const hook of ["setup", "teardown"]) {
   test.each(["/", "/flows/"])(
     `${hook} at %s executes its preflight source even if the file changes`,

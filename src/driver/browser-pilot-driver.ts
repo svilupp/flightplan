@@ -9,6 +9,7 @@
 // Static imports use the portable graph. Native attach/launch/token hosts load
 // the root entry lazily; Worker hosts supply an owner-held lease acquirer.
 import {
+  ActionDispatchUncertainError,
   type BorrowedBrowser,
   type EmitWsOptions as BpEmitWsOptions,
   type Browser,
@@ -30,6 +31,7 @@ import {
   restoreCookieState,
   type Step,
   TargetNotFoundError,
+  TimeoutError,
 } from "browser-pilot/core";
 import { type JevVisualEvidence, validateVisualEvidence } from "../ai/vision-evidence.ts";
 import type { AuthConfig, ConnectConfig } from "../config/types.ts";
@@ -157,7 +159,7 @@ interface AttachConnection {
 /** Minimal shape of chrome-launcher's `LaunchedChrome` — enough for kill()/port. */
 interface LaunchedChrome {
   port: number;
-  kill(): void;
+  kill(): void | Promise<void>;
 }
 interface LaunchConnection {
   kind: "launch";
@@ -475,6 +477,8 @@ export class BrowserPilotDriver implements Driver {
       );
     }
     const chrome = await launch(launchOpts);
+    // Cleanup owns Chrome as soon as launch succeeds, including failed discovery/connect.
+    this.connection = { kind: "launch", chrome };
     const version = (await (
       await fetch(`http://127.0.0.1:${chrome.port}/json/version`)
     ).json()) as { webSocketDebuggerUrl: string };
@@ -483,7 +487,6 @@ export class BrowserPilotDriver implements Driver {
       provider: "generic",
       wsUrl: version.webSocketDebuggerUrl,
     });
-    this.connection = { kind: "launch", chrome };
     // Fresh launched Chrome → its single blank tab.
     this.activePage = await this.browser.page();
     await this.installDialogHandler();
@@ -686,7 +689,6 @@ export class BrowserPilotDriver implements Driver {
 
     try {
       const popup = await browser.expectNewPage(action, options);
-      if (this.connection?.kind === "attach") this.connection.openedTargetIds.push(popup.targetId);
       const targetProvenance = popup.getTargetProvenance();
       if (expectation.targetId !== undefined && popup.targetId !== expectation.targetId) {
         return {
@@ -702,6 +704,12 @@ export class BrowserPilotDriver implements Driver {
             JSON.stringify(expectation.targetId),
         };
       }
+
+      if (
+        this.connection?.kind === "attach" &&
+        (targetProvenance.openerTargetId ?? openerTargetId) === active.targetId
+      )
+        this.connection.openedTargetIds.push(popup.targetId);
 
       // Switch only after the dependency has attached and initialized the pinned popup. All
       // subsequent Driver operations therefore target the matched popup, while the opener's page
@@ -840,7 +848,7 @@ export class BrowserPilotDriver implements Driver {
       }
       if (conn?.kind === "launch") {
         try {
-          conn.chrome.kill(); // we own the launched Chrome → kill it (synchronous)
+          await conn.chrome.kill();
         } catch {
           // process may already be gone; non-fatal
         }
@@ -868,6 +876,14 @@ export class BrowserPilotDriver implements Driver {
     try {
       await page.goto(url, { timeout });
     } catch (cause) {
+      // A rejected CDP command (for example an invalid URL) must not be rescued by
+      // postconditions that still describe the previous page. Only uncertain outcomes qualify.
+      if (
+        !(cause instanceof ActionDispatchUncertainError) &&
+        !(cause instanceof TimeoutError) &&
+        !(cause instanceof Error && /timed?\s*out|timeout|outcome unknown/i.test(cause.message))
+      )
+        throw cause;
       throw new NavigationFailure(cause, timeout);
     }
     // A step's document timeout never extends the optional client-side settle window.
@@ -1034,9 +1050,13 @@ export class BrowserPilotDriver implements Driver {
     const page = this.requirePage();
     const normalized = normalizeSelectorArg(selector);
     // BP 0.8 treats CSS syntax errors as no matches. Validate syntax before an absence check.
-    if (!/^(?:role:|text:)/.test(normalized)) {
+    const scoped =
+      /^within\(\s*([\s\S]+?)\s*\)\s+(?:role:|text:)/.exec(normalized) ??
+      /^([\s\S]+?)\s*>>\s*(?:role:|text:)/.exec(normalized);
+    const css = scoped?.[1]?.trim().replace(/^(['"])(.*)\1$/, "$2") ?? normalized;
+    if (scoped || /^css:/i.test(selector.trim()) || !/^(?:role:|text:)/.test(normalized)) {
       const valid = await page.evaluate<boolean>(`(() => {
-        try { document.createDocumentFragment().querySelector(${JSON.stringify(normalized)}); return true; }
+        try { document.createDocumentFragment().querySelector(${JSON.stringify(css)}); return true; }
         catch { return false; }
       })()`);
       if (valid !== true)

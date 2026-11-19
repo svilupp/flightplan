@@ -7,8 +7,42 @@ import {
   classifyLocator,
   cssOnlyTarget,
   describeTarget,
+  looksLikeUnprefixedAssertionSelector,
   normalizeTarget,
 } from "./normalize-target.ts";
+
+describe("assertion selector inference", () => {
+  test.each([
+    "center",
+    "div span",
+    "input:checked",
+    "span::after",
+    "button:disabled:first-of-type",
+    ":disabled",
+    "button + input",
+    "button, input",
+    "my-widget.active",
+  ])("detects unprefixed CSS evidence in %s", (selector) => {
+    expect(looksLikeUnprefixedAssertionSelector(selector)).toBe(true);
+  });
+  test.each([
+    "Search results",
+    "Summary",
+    "Main navigation",
+    "Sign-in",
+    "I agree to the terms",
+    "search results",
+    "my-widget",
+    "H1",
+    "role:button:Paid",
+    "text:center",
+    "css:center",
+    "within(role:dialog:Summary) >> role:button:Paid",
+    "css:#summary >> text:Paid",
+  ])("preserves explicit selectors, scopes and natural-language names in %s", (selector) => {
+    expect(looksLikeUnprefixedAssertionSelector(selector)).toBe(false);
+  });
+});
 
 describe("classifyLocator", () => {
   test("ref: prefix classifies as ref", () => {

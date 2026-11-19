@@ -31,6 +31,7 @@
 // An exhausted repair simply escalates to the AI tiers exactly as today.
 
 import type { CoveringElement, InteractiveElement } from "../driver/index.ts";
+import { KeyboardPreflightError } from "../driver/keyboard.ts";
 import type { Step } from "../flow/types.ts";
 import { type L1Options, resolveL1 } from "./l1.ts";
 import type { ResolutionAttempt, ResolveContext, StepExecution } from "./types.ts";
@@ -125,8 +126,14 @@ function coveringSelector(el: CoveringElement | undefined): string | undefined {
  * optionally. Returns a human note describing what was tried (for the `resolution_attempt`).
  */
 async function dismissCovering(exec: StepExecution, ctx: ResolveContext): Promise<string> {
-  const parts: string[] = ["escape"];
-  await ctx.driver.press("Escape");
+  const parts: string[] = [];
+  try {
+    await ctx.driver.press("Escape");
+    parts.push("escape");
+  } catch (error) {
+    if (!(error instanceof KeyboardPreflightError)) throw error;
+    parts.push("escape not dispatched (focus unavailable)");
+  }
   const sel = coveringSelector(exec.coveringElement);
   if (sel) {
     await ctx.driver.click(sel, { optional: true });

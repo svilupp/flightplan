@@ -412,3 +412,60 @@ describe("explain — error handling", () => {
     expect(formatExplainReport(loaded)).toContain("PASSED");
   });
 });
+
+describe("explain — inconclusive reasons", () => {
+  test.each([
+    "max_steps budget exceeded: 1 >= 1",
+    "Mutation may have been dispatched; its result could not be confirmed.",
+  ])("renders the recorded reason: %s", async (reason) => {
+    const summary: RunSummary = {
+      summary_version: 1,
+      verdict: "inconclusive",
+      inconclusive_reason: reason,
+      flow_id: "inconclusive",
+      run_id: "run",
+      run_dir: "(set below)",
+      failed_step: null,
+      failed_assertions: [],
+      advisory_verdict: null,
+      healed_steps: [],
+      drift_count: 0,
+      screenshot_paths: [],
+      video_path: null,
+      trace_path: "trace.jsonl",
+      total_cost_usd: 0,
+      model_usage: [],
+      proposed_patch_path: null,
+      replan_count: 0,
+      repaired_steps: [],
+      steps: [],
+    };
+    const dir = await writeRunDir({ run: [runStart], summary });
+    const loaded = await loadRun(dir);
+    expect(formatExplainReport(loaded)).toContain(reason);
+    expect(buildExplainJson(loaded)).toMatchObject({
+      verdict: "inconclusive",
+      exit_code: 3,
+      inconclusive_reason: reason,
+    });
+  });
+
+  test("older inconclusive runs use a neutral explanation", async () => {
+    const dir = await writeRunDir({
+      run: [
+        runStart,
+        {
+          type: "run_end",
+          ts: runStart.ts + 1,
+          verdict: "inconclusive",
+          totals: { steps_run: 0, drift_count: 0, total_cost_usd: 0, model_usage: [] },
+        },
+      ],
+    });
+    const loaded = await loadRun(dir);
+    const report = formatExplainReport(loaded);
+    expect(report).toContain("did not establish a conclusive outcome");
+    expect(report).not.toContain("budget");
+    expect(buildExplainJson(loaded).inconclusive_reason).toBeNull();
+  });
+});

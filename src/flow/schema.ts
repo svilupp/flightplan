@@ -602,25 +602,42 @@ export const EvaluateStepSchema = z
   })
   .strict();
 
-export const StepSchema = z.discriminatedUnion("do", [
-  GotoStepSchema,
-  ClickStepSchema,
-  FillStepSchema,
-  SelectStepSchema,
-  PressStepSchema,
-  WaitStepSchema,
-  AssertStepSchema,
-  AiPickStepSchema,
-  ExtractStepSchema,
-  YieldStepSchema,
-  RunStepSchema,
-  SwitchFrameStepSchema,
-  SwitchToMainStepSchema,
-  EmitStepSchema,
-  WebMcpCallStepSchema,
-  EvalStepSchema,
-  EvaluateStepSchema,
-]);
+export const StepSchema = z
+  .discriminatedUnion("do", [
+    GotoStepSchema,
+    ClickStepSchema,
+    FillStepSchema,
+    SelectStepSchema,
+    PressStepSchema,
+    WaitStepSchema,
+    AssertStepSchema,
+    AiPickStepSchema,
+    ExtractStepSchema,
+    YieldStepSchema,
+    RunStepSchema,
+    SwitchFrameStepSchema,
+    SwitchToMainStepSchema,
+    EmitStepSchema,
+    WebMcpCallStepSchema,
+    EvalStepSchema,
+    EvaluateStepSchema,
+  ])
+  .superRefine((step, ctx) => {
+    const popupField = step.expect_page
+      ? "expect_page"
+      : step.popup
+        ? "popup"
+        : step.new_page
+          ? "new_page"
+          : undefined;
+    if (popupField && !["click", "fill", "select", "ai_pick"].includes(step.do))
+      ctx.addIssue({
+        code: "custom",
+        path: [popupField],
+        message:
+          "Popup expectations require click, fill, select, or ai_pick; this verb cannot arm observation before dispatch.",
+      });
+  });
 
 // ---------------------------------------------------------------------------
 // Imports — string | string[] (PLAN_v002 v002-5: imports are a LIBRARY — they register flow
