@@ -1,12 +1,16 @@
 ---
 name: recording-pr-walkthroughs
-description: Record browser feature walkthroughs with browser-pilot and Flightplan. Use when a pull request needs a short demo video of a UI change or a workflow replay.
+description: Record short browser walkthroughs with browser-pilot and Flightplan. Use a video to demonstrate a UI change or workflow for a pull request, demo, progress update, or handoff.
 ---
 
-# Recording PR walkthroughs
+# Recording browser walkthroughs
 
-Show one user-visible change and its result. Use a demo account or fixture data and
-get past sign-in before recording. Chrome captures the tab's actual pixels.
+Show how a change works in a short clip. Capture the starting screen, the
+interaction, and the result. Share the clip in a pull request, demo, progress
+update, or handoff.
+
+Use a demo account or fixture data. Sign in before recording because Chrome
+captures the tab's actual pixels.
 
 Use browser-pilot CLI 0.9.0 or newer. Use the default browser-pilot daemon when
 Flightplan drives the tab.
@@ -36,17 +40,20 @@ Flightplan drives the tab.
 
    For a replay, check that the outcome assertion passed. Keep a walkthrough on
    one tab and aim for 15–45 seconds. The recorder defaults to 90 seconds.
-4. Play back the clip and check that the result is visible. For broad GitHub
-   playback, convert the AV1 MP4 to H.264 if `ffmpeg` is available.
+4. Play back the clip and check that the result is visible. Return the local MP4 path.
 
-   ```sh
-   ffmpeg -n -i .flightplan-runs/walkthrough.mp4 -c:v libx264 -crf 24 -pix_fmt yuv420p \
-     -movflags +faststart .flightplan-runs/walkthrough-github.mp4
-   ```
+## Share on GitHub
 
-   Use 10 MB as the size limit for free GitHub plans. Return the local clip path.
-   When the user asks to attach it, use the PR editor or `gh pr comment --attach`
-   if the installed GitHub CLI supports it. [GitHub attachment limits and codecs](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files) · [GitHub CLI attachments](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli)
+For broad GitHub playback, convert the AV1 MP4 to H.264 if `ffmpeg` is available.
+
+```sh
+ffmpeg -n -i .flightplan-runs/walkthrough.mp4 -c:v libx264 -crf 24 -pix_fmt yuv420p \
+  -movflags +faststart .flightplan-runs/walkthrough-github.mp4
+```
+
+Use 10 MB as the size limit for free GitHub plans. When the user asks to attach
+the clip, use the PR editor or `gh pr comment --attach` if the installed GitHub
+CLI supports it. [GitHub attachment limits and codecs](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files) · [GitHub CLI attachments](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli)
 
 ## If native recording is unavailable
 

@@ -317,10 +317,11 @@ inject `nativeOwnerActionDriverFactory`. The driver uses `borrowOwnerActions`, t
 and owner-issued preparation/approval handles. Raw Page/CDP/evaluation access is unavailable.
 A compatibility borrower has raw authority and does not enforce owner policy.
 
-### Record a PR walkthrough
+### Record a browser walkthrough
 
-Use browser-pilot CLI 0.9.0 or newer and desktop Chrome 153 or newer. Open a demo
-tab and start its named session with the default browser-pilot daemon.
+Record a short clip to demonstrate work in a pull request, progress update, demo,
+or handoff. Use browser-pilot CLI 0.9.0 or newer and desktop Chrome 153 or newer.
+Open a demo tab and start its named session with the default browser-pilot daemon.
 
 ```sh
 bp connect --name demo --target-url localhost:3000

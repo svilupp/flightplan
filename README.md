@@ -888,8 +888,8 @@ Flightplan ships the following Codex skills under [`docs/skills/`](docs/skills).
   debug, and prove Flightplan TOML flows.
 - [`building-flightplan-automations`](docs/skills/building-flightplan-automations) - build complete
   browser automations with Flightplan as the workflow and proof layer.
-- [`recording-pr-walkthroughs`](docs/skills/recording-pr-walkthroughs) - record a PR-ready browser
-  demo while Flightplan or browser-pilot drives the tab.
+- [`recording-pr-walkthroughs`](docs/skills/recording-pr-walkthroughs) - show how a browser
+  feature works in a short video while Flightplan or browser-pilot drives the tab.
 
 Use browser-pilot for reconnaissance or narrow driver diagnosis, then run the final automation
 through Flightplan.
@@ -918,7 +918,7 @@ See [recipe inputs, extraction, outputs and idempotency](docs/CALLABLE_RECIPES.m
 Handback verifies the final target and invalidates saved element references. Missing owner APIs
 fail with `BP_NAMED_SESSION_UNAVAILABLE` without opening a replacement connection.
 
-Record a PR clip while a flow runs on a named session. The video command requires
-browser-pilot CLI 0.9.0 or newer. See [record a PR walkthrough](docs/BROWSER_PILOT_INTEGRATION.md#record-a-pr-walkthrough).
+Record a browser demo while a flow runs on a named session. The video command requires
+browser-pilot CLI 0.9.0 or newer. See [record a browser walkthrough](docs/BROWSER_PILOT_INTEGRATION.md#record-a-browser-walkthrough).
 
 Flightplan requires browser-pilot 0.8 or later within the 0.8 release series. See [session ownership, guards and host yield](docs/BROWSER_PILOT_INTEGRATION.md#shared-named-owner).

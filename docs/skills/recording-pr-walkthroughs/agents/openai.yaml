@@ -1,4 +1,4 @@
 interface:
-  display_name: "Recording PR Walkthroughs"
-  short_description: "Capture a browser walkthrough for a pull request"
-  default_prompt: "Use $recording-pr-walkthroughs to record a short video of this feature for my pull request."
+  display_name: "Recording Browser Walkthroughs"
+  short_description: "Record a short demo of a browser feature"
+  default_prompt: "Use $recording-pr-walkthroughs to show how this feature works in a short video."
