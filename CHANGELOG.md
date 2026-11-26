@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.1] - 2026-11-26
+
+- Add a [PR walkthrough guide](docs/BROWSER_PILOT_INTEGRATION.md#record-a-pr-walkthrough)
+  and the `recording-pr-walkthroughs` skill. Record a named tab with browser-pilot
+  CLI 0.9.0 or newer while Flightplan replays the flow.
+
 ## [0.6.0] - 2026-11-06
 
 - Require explicit AI permission with `[config.ai] enabled = true`. See [migration details](docs/EXECUTION_POLICY.md).

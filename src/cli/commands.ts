@@ -438,6 +438,8 @@ Examples:
   flightplan lint path/to/flow.toml       Validate a flow file
   flightplan run path/to/flow.toml        Execute a flow against a browser
   flightplan run path/to/flow.toml --json Execute a flow, emit run-summary JSON
+  flightplan run demo.toml --session demo
+                                          Replay on a tab captured by bp record video (BP CLI 0.9+)
   flightplan explain <run.jsonl>         Diagnose a failed run
   flightplan report .flightplan-runs/    Aggregate runs into a metrics report
   flightplan sweep path/to/flows --trials 3 --compare-baseline -o /tmp/campaign

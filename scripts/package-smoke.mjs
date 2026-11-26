@@ -60,6 +60,8 @@ try {
     "docs/schemas/config.schema.json",
     "docs/skills/authoring-flightplan-workflows/SKILL.md",
     "docs/skills/building-flightplan-automations/SKILL.md",
+    "docs/skills/recording-pr-walkthroughs/SKILL.md",
+    "docs/skills/recording-pr-walkthroughs/agents/openai.yaml",
   ]) {
     assert.ok(packagedPaths.has(path), `Missing published documentation: ${path}`);
   }
