@@ -317,6 +317,30 @@ inject `nativeOwnerActionDriverFactory`. The driver uses `borrowOwnerActions`, t
 and owner-issued preparation/approval handles. Raw Page/CDP/evaluation access is unavailable.
 A compatibility borrower has raw authority and does not enforce owner policy.
 
+### Record a browser walkthrough
+
+Record a short clip to demonstrate work in a pull request, progress update, demo,
+or handoff. Use browser-pilot CLI 0.9.0 or newer and desktop Chrome 153 or newer.
+Open a demo tab and start its named session with the default browser-pilot daemon.
+
+```sh
+bp connect --name demo --target-url localhost:3000
+bp record video -s demo -f .flightplan-runs/walkthrough.mp4 --label "Save a filtered view"
+```
+
+Wait for the recording message. Lint the flow and run it on the same session
+in a second terminal.
+
+```sh
+flightplan lint demo.toml &&
+  flightplan run demo.toml --session demo --frozen --no-lock-write
+```
+
+Browser-pilot saves the clip when Flightplan returns control. Keep the demo on
+one tab and use assertions to verify the result. The recorder saves to the path
+passed with `-f`. See the [walkthrough skill](skills/recording-pr-walkthroughs/SKILL.md)
+for playback and GitHub attachments.
+
 ## Action guards
 
 ```toml

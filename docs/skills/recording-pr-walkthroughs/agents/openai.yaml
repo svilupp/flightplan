@@ -1,0 +1,4 @@
+interface:
+  display_name: "Recording Browser Walkthroughs"
+  short_description: "Record a short demo of a browser feature"
+  default_prompt: "Use $recording-pr-walkthroughs to show how this feature works in a short video."

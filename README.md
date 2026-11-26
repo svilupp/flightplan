@@ -882,15 +882,17 @@ installing it into this checkout, run `bun run test:package /absolute/path/brows
 
 ## Skills
 
-The release includes two Codex skills under [`docs/skills/`](docs/skills):
+Flightplan ships the following Codex skills under [`docs/skills/`](docs/skills).
 
 - [`authoring-flightplan-workflows`](docs/skills/authoring-flightplan-workflows) - write, lint, run,
   debug, and prove Flightplan TOML flows.
 - [`building-flightplan-automations`](docs/skills/building-flightplan-automations) - build complete
   browser automations with Flightplan as the workflow and proof layer.
+- [`recording-pr-walkthroughs`](docs/skills/recording-pr-walkthroughs) - show how a browser
+  feature works in a short video while Flightplan or browser-pilot drives the tab.
 
-The second skill makes the boundary explicit: use browser-pilot for reconnaissance or narrow driver
-diagnosis, then run the final automation through Flightplan.
+Use browser-pilot for reconnaissance or narrow driver diagnosis, then run the final automation
+through Flightplan.
 
 Flightplan is under active development. Treat the flow, lock, and artifact checks as part of the
 workflow, not as optional polish.
@@ -915,5 +917,8 @@ See [recipe inputs, extraction, outputs and idempotency](docs/CALLABLE_RECIPES.m
 `--session work` borrows an existing BP session; `--target-id` selects an exact page.
 Handback verifies the final target and invalidates saved element references. Missing owner APIs
 fail with `BP_NAMED_SESSION_UNAVAILABLE` without opening a replacement connection.
+
+Record a browser demo while a flow runs on a named session. The video command requires
+browser-pilot CLI 0.9.0 or newer. See [record a browser walkthrough](docs/BROWSER_PILOT_INTEGRATION.md#record-a-browser-walkthrough).
 
 Flightplan requires browser-pilot 0.8 or later within the 0.8 release series. See [session ownership, guards and host yield](docs/BROWSER_PILOT_INTEGRATION.md#shared-named-owner).
